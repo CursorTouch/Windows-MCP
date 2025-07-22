@@ -15,6 +15,10 @@ from uiautomation import (
     GetRootControl,
     GetScreenSize,
     SetWindowTopmost,
+    IsTopLevelWindow,
+    IsZoomed,
+    IsIconic,
+    IsWindowVisible,
 )
 
 from src.desktop.config import BROWSER_NAMES, EXCLUDED_APPS, WINDOW_SWITCH_MODE
@@ -48,6 +52,7 @@ class Desktop:
             tree_state=tree_state,
         )
         return self.desktop_state
+<<<<<<< HEAD
 
     def get_taskbar(self) -> Control:
         root = GetRootControl()
@@ -75,6 +80,13 @@ class Desktop:
     def is_app_browser(self, node: Control) -> bool:
         process = Process(node.ProcessId)
         return process.name() in BROWSER_NAMES
+
+    def get_window_element_from_element(self, element: Control) -> Control:
+        while element is not None:
+            if IsTopLevelWindow(element.NativeWindowHandle):
+                return element
+            element = element.GetParentControl()
+        return None
 
     def get_apps_from_start_menu(self) -> dict[str, str]:
         command = "Get-StartApps | ConvertTo-Csv -NoTypeInformation"
@@ -349,6 +361,7 @@ class Desktop:
                             depth=depth,
                             status=status,
                             size=size,
+                            process_id=element.ProcessId,
                             handle=element.NativeWindowHandle,
                         )
                     )
