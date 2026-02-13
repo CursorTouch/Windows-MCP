@@ -57,6 +57,22 @@ async def lifespan(app: FastMCP):
 mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
 
 
+def _to_physical(loc: list[int], coordinate_system: str) -> list[int]:
+    """Convert coordinates to physical space if needed.
+
+    Args:
+        loc: [x, y] coordinates.
+        coordinate_system: "physical" (no conversion) or "logical" (multiply by DPI scale).
+
+    Returns:
+        [x, y] in physical coordinates ready for pyautogui.
+    """
+    if coordinate_system == "logical":
+        scale = desktop.get_dpi_scaling()
+        return [int(loc[0] * scale), int(loc[1] * scale)]
+    return loc
+
+
 @mcp.tool(
     name="App",
     description="Manages Windows applications with three modes: 'launch' (opens the prescibed application), 'resize' (adjusts active window size/position), 'switch' (brings specific window into focus).",
@@ -165,7 +181,13 @@ def state_tool(use_vision: bool | str = False, use_dom: bool | str = False, ctx:
 
 @mcp.tool(
     name="Click",
-    description="Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only (no click), 1=single click (select/focus), 2=double click (open/activate).",
+    description=(
+        "Performs mouse clicks at specified coordinates [x, y]. "
+        "Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. "
+        "Supports clicks: 0=hover only (no click), 1=single click (select/focus), 2=double click (open/activate). "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
     annotations=ToolAnnotations(
         title="Click",
         readOnlyHint=False,
@@ -179,10 +201,12 @@ def click_tool(
     loc: list[int],
     button: Literal["left", "right", "middle"] = "left",
     clicks: int = 1,
+    coordinate_system: Literal["physical", "logical"] = "physical",
     ctx: Context = None,
 ) -> str:
     if len(loc) != 2:
         raise ValueError("Location must be a list of exactly 2 integers [x, y]")
+    loc = _to_physical(loc, coordinate_system)
     x, y = loc[0], loc[1]
     desktop.click(loc=loc, button=button, clicks=clicks)
     num_clicks = {0: "Hover", 1: "Single", 2: "Double"}
@@ -191,7 +215,14 @@ def click_tool(
 
 @mcp.tool(
     name="Type",
-    description="Types text at specified coordinates [x, y]. Set clear=True to clear existing text first, False to append. Set press_enter=True to submit after typing. Set caret_position to 'start' (beginning), 'end' (end), or 'idle' (default).",
+    description=(
+        "Types text at specified coordinates [x, y]. "
+        "Set clear=True to clear existing text first, False to append. "
+        "Set press_enter=True to submit after typing. "
+        "Set caret_position to 'start' (beginning), 'end' (end), or 'idle' (default). "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
     annotations=ToolAnnotations(
         title="Type",
         readOnlyHint=False,
@@ -207,10 +238,12 @@ def type_tool(
     clear: bool | str = False,
     caret_position: Literal["start", "idle", "end"] = "idle",
     press_enter: bool | str = False,
+    coordinate_system: Literal["physical", "logical"] = "physical",
     ctx: Context = None,
 ) -> str:
     if len(loc) != 2:
         raise ValueError("Location must be a list of exactly 2 integers [x, y]")
+    loc = _to_physical(loc, coordinate_system)
     x, y = loc[0], loc[1]
     desktop.type(
         loc=loc,
@@ -224,7 +257,15 @@ def type_tool(
 
 @mcp.tool(
     name="Scroll",
-    description="Scrolls at coordinates [x, y] or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls amount (1 wheel ≈ 3-5 lines). Use for navigating long content, lists, and web pages.",
+    description=(
+        "Scrolls at coordinates [x, y] or current mouse position if loc=None. "
+        "Type: vertical (default) or horizontal. "
+        "Direction: up/down for vertical, left/right for horizontal. "
+        "wheel_times controls amount (1 wheel ≈ 3-5 lines). "
+        "Use for navigating long content, lists, and web pages. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
     annotations=ToolAnnotations(
         title="Scroll",
         readOnlyHint=False,
@@ -239,10 +280,13 @@ def scroll_tool(
     type: Literal["horizontal", "vertical"] = "vertical",
     direction: Literal["up", "down", "left", "right"] = "down",
     wheel_times: int = 1,
+    coordinate_system: Literal["physical", "logical"] = "physical",
     ctx: Context = None,
 ) -> str:
     if loc and len(loc) != 2:
         raise ValueError("Location must be a list of exactly 2 integers [x, y]")
+    if loc:
+        loc = _to_physical(loc, coordinate_system)
     response = desktop.scroll(loc, type, direction, wheel_times)
     if response:
         return response
@@ -255,7 +299,13 @@ def scroll_tool(
 
 @mcp.tool(
     name="Move",
-    description="Moves mouse cursor to coordinates [x, y]. Set drag=True to perform a drag-and-drop operation from the current mouse position to the target coordinates. Default (drag=False) is a simple cursor move (hover).",
+    description=(
+        "Moves mouse cursor to coordinates [x, y]. "
+        "Set drag=True to perform a drag-and-drop operation from the current mouse position "
+        "to the target coordinates. Default (drag=False) is a simple cursor move (hover). "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
     annotations=ToolAnnotations(
         title="Move",
         readOnlyHint=False,
@@ -265,10 +315,16 @@ def scroll_tool(
     ),
 )
 @with_analytics(analytics, "Move-Tool")
-def move_tool(loc: list[int], drag: bool | str = False, ctx: Context = None) -> str:
+def move_tool(
+    loc: list[int],
+    drag: bool | str = False,
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
     drag = drag is True or (isinstance(drag, str) and drag.lower() == "true")
     if len(loc) != 2:
         raise ValueError("loc must be a list of exactly 2 integers [x, y]")
+    loc = _to_physical(loc, coordinate_system)
     x, y = loc[0], loc[1]
     if drag:
         desktop.drag(loc)
