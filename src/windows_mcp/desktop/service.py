@@ -1599,7 +1599,7 @@ class Desktop:
     def brightness_control(self, action: str, level: int | None = None) -> str:
         """Control display brightness via WMI."""
         if action == "get":
-            ps = "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness"
+            ps = "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness | Select-Object -First 1).CurrentBrightness"
             result, status = self.execute_command(ps, timeout=10)
             if status != 0:
                 return "Error: Cannot read brightness (may not be supported on desktop monitors)."
@@ -1610,7 +1610,7 @@ class Desktop:
                 return "Error: level is required for 'set' action"
             if level < 0 or level > 100:
                 return "Error: level must be 0-100"
-            ps = f"(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods).WmiSetBrightness(1, {level})"
+            ps = f"Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | ForEach-Object {{ $_.WmiSetBrightness(1, {level}) }}"
             result, status = self.execute_command(ps, timeout=10)
             if status != 0:
                 return f"Error: Cannot set brightness (may not be supported on desktop monitors). {result}"
@@ -1678,7 +1678,7 @@ class Desktop:
             items_str = ", ".join(ps_quote(c) for c in choices)
             ps = (
                 "Add-Type -AssemblyName System.Windows.Forms\n"
-                f"$form = New-Object System.Windows.Forms.Form -Property @{{Text={safe_title}; Width=350; Height=200; StartPosition='CenterScreen'}}\n"
+                f"$form = New-Object System.Windows.Forms.Form -Property @{{Text={safe_title}; Width=350; Height=200; StartPosition='CenterScreen'; TopMost=$true}}\n"
                 f"$combo = New-Object System.Windows.Forms.ComboBox -Property @{{Left=10; Top=50; Width=310; DropDownStyle='DropDownList'}}\n"
                 f"@({items_str}) | ForEach-Object {{ $combo.Items.Add($_) | Out-Null }}\n"
                 "$combo.SelectedIndex = 0\n"
@@ -1903,11 +1903,11 @@ class Desktop:
             # Escape filesystem wildcard special chars before wrapping
             sanitized = query.replace('[', '`[').replace(']', '`]')
             safe_query = ps_quote(f"*{sanitized}*")
-            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "'C:\\'"
+            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "\"$env:USERPROFILE\""
             ps = f"Get-ChildItem -Path {search_dir} -Recurse -Filter {safe_query} -ErrorAction SilentlyContinue | Select-Object -First {max_results} -ExpandProperty FullName"
         elif search_type == "content":
             safe_query = ps_quote(query)
-            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "'C:\\'"
+            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "\"$env:USERPROFILE\""
             ps = f"Get-ChildItem -Path {search_dir} -Recurse -File -ErrorAction SilentlyContinue | Select-String -Pattern {safe_query} -SimpleMatch -List -ErrorAction SilentlyContinue | Select-Object -First {max_results} -ExpandProperty Path"
         else:
             return f"Error: Unknown search_type: {search_type}"
