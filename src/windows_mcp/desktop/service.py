@@ -101,13 +101,29 @@ _HIGHLIGHT_COLORS = {
 
 
 def _escape_text_for_sendkeys(text: str) -> str:
-    """Escape special characters so uia.SendKeys types them correctly."""
+    """Escape ALL special characters so uia.SendKeys types them literally.
+
+    SendKeys special chars: +^%~()[]{}
+    + = Shift, ^ = Ctrl, % = Alt, ~ = Enter
+    () = grouping, [] = reserved, {} = key names
+    All must be wrapped in {x} to be typed literally.
+    """
     result = []
     for ch in text:
         if ch == "{":
             result.append("{{}")
         elif ch == "}":
             result.append("{}}")
+        elif ch in "+^%~":
+            result.append("{" + ch + "}")
+        elif ch == "(":
+            result.append("{(}")
+        elif ch == ")":
+            result.append("{)}")
+        elif ch == "[":
+            result.append("{[}")
+        elif ch == "]":
+            result.append("{]}")
         elif ch == "\n":
             result.append("{Enter}")
         elif ch == "\t":
@@ -2320,9 +2336,16 @@ class Desktop:
             pass
 
         # Try SelectionItemPattern (radio buttons, list items)
+        # Only select if element name/value matches the requested value
         try:
-            element.GetSelectionItemPattern().Select()
-            return f"Selected [{el_role}] {name} via SelectionItemPattern."
+            sip = element.GetSelectionItemPattern()
+            el_name_lower = name.lower().strip()
+            if el_name_lower == value.lower().strip():
+                sip.Select()
+                return f"Selected [{el_role}] {name} via SelectionItemPattern."
+            else:
+                # Element found but name doesn't match requested value — skip
+                pass
         except Exception:
             pass
 
@@ -2365,8 +2388,8 @@ class Desktop:
         try:
             element.SetFocus()
             sleep(0.1)
-        except Exception:
-            pass
+        except Exception as e:
+            return f"Error: Could not focus [{el_role}] {name}: {e}. Aborting to prevent typing into wrong window."
 
         if clear:
             # Select all then delete
@@ -2545,12 +2568,20 @@ class Desktop:
             create_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=create_flags,
-            )
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=create_flags,
+                )
+            except Exception as e:
+                os.close(fd)
+                try:
+                    os.remove(state_file)
+                except OSError:
+                    pass
+                return f"Error starting ffmpeg: {e}"
             os.write(fd, f"{proc.pid}\n{out}".encode())
             os.close(fd)
             return f"Recording started (PID {proc.pid}). Output: {out}"
@@ -2583,6 +2614,11 @@ class Desktop:
                 # Send CTRL_BREAK_EVENT for graceful ffmpeg shutdown
                 # (allows finalization of the MP4 container)
                 os.kill(pid, getattr(signal, "CTRL_BREAK_EVENT", signal.SIGINT))
+                # Wait up to 5s for ffmpeg to finalize the output file
+                try:
+                    p.wait(timeout=5)
+                except Exception:
+                    pass  # timeout or already exited
             except (OSError, ProcessLookupError):
                 pass
             try:
@@ -2686,11 +2722,58 @@ class Desktop:
 
     # ============== QUICK LOOK ==============
 
+    # File extensions blocked from os.startfile (executable/script types)
+    _BLOCKED_EXTENSIONS = {
+        ".exe",
+        ".bat",
+        ".cmd",
+        ".com",
+        ".scr",
+        ".pif",
+        ".msi",
+        ".msp",
+        ".ps1",
+        ".psm1",
+        ".psd1",
+        ".vbs",
+        ".vbe",
+        ".js",
+        ".jse",
+        ".wsf",
+        ".wsh",
+        ".ws",
+        ".hta",
+        ".cpl",
+        ".inf",
+        ".reg",
+        ".rgs",
+        ".sct",
+        ".shb",
+        ".shs",
+        ".lnk",
+        ".url",
+        ".application",
+        ".gadget",
+        ".msc",
+        ".jar",
+        ".py",
+        ".pyw",
+        ".rb",
+        ".sh",
+        ".bash",
+    }
+
     def quick_look(self, path: str) -> str:
-        """Open a file with its default application."""
+        """Open a file with its default application (blocks executables/scripts)."""
         resolved = pathlib.Path(path).resolve()
         if not resolved.exists():
             return f"Error: File not found: {resolved}"
+        ext = resolved.suffix.lower()
+        if ext in self._BLOCKED_EXTENSIONS:
+            return (
+                f"Error: Blocked file type '{ext}' — cannot open executables or "
+                f"scripts via QuickLook for security. Use PowerShell tool instead."
+            )
         try:
             os.startfile(str(resolved))
             return f"Opened: {resolved}"
@@ -2835,6 +2918,13 @@ class Desktop:
             return f"Maximized: {app_name}"
         elif action == "restore":
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            # Clear TOPMOST flag in case window was set fullscreen
+            HWND_NOTOPMOST = -2
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE
+            )
             return f"Restored: {app_name}"
         elif action == "close":
             win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
@@ -2842,8 +2932,9 @@ class Desktop:
         elif action == "fullscreen":
             screen_size = self.get_screen_size()
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            HWND_TOPMOST = -1
             ctypes.windll.user32.SetWindowPos(
-                hwnd, -1, 0, 0, screen_size.width, screen_size.height, 0x0040
+                hwnd, HWND_TOPMOST, 0, 0, screen_size.width, screen_size.height, 0x0040
             )
             return f"Fullscreen: {app_name}"
         else:

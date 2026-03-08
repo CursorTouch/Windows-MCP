@@ -126,7 +126,7 @@ def _path_to_physical(path: list[list[int]], coordinate_system: str) -> list[lis
 
 @mcp.tool(
     name="App",
-    description="Manages Windows applications with six modes: 'launch' (opens the prescribed application), 'resize' (adjusts active window size/position), 'switch' (brings specific window into focus), 'minimize'/'maximize'/'close'/'fullscreen'/'restore' (window control).",
+    description="Manages Windows applications: 'launch' (open app), 'resize' (adjust size/position), 'switch' (bring to focus), 'minimize'/'maximize'/'close'/'fullscreen'/'restore' (window control).",
     annotations=ToolAnnotations(
         title="App",
         readOnlyHint=False,
