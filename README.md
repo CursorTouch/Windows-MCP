@@ -399,6 +399,15 @@ MCP Client can access the following tools to interact with Windows:
 - `Process`: List running processes or terminate them by PID or name.
 - `Notification`: Send a Windows toast notification with a title and message.
 - `Registry`: Read, write, delete, or list Windows Registry values and keys.
+- `CursorPosition`: Get the current mouse cursor (x, y) coordinates.
+- `PixelColor`: Get the RGB color value at screen coordinates with hex code and color name.
+- `KeyHold`: Press or release keyboard keys independently for hold operations (e.g., hold Shift while clicking).
+- `ScreenInfo`: Get information about all connected monitors (resolution, position, primary).
+- `ScreenHighlight`: Highlight a screen region with a colored border for visual debugging.
+- `MousePath`: Move the mouse cursor smoothly through a series of waypoints.
+- `ScreenReader`: Read text from a screen region using OCR (Windows built-in or pytesseract fallback).
+- `WaitForChange`: Wait until a screen region visually changes beyond a threshold.
+- `FindImage`: Find a template image on screen using visual template matching (requires `pip install 'windows-mcp[vision]'`).
 
 ## 🤝 Connect with Us
 Stay updated and join our community:

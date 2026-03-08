@@ -43,6 +43,18 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
 ]
+vision = [
+    "opencv-python-headless>=4.8.0",
+    "numpy>=1.26.0",
+]
+ocr = [
+    "pytesseract>=0.3.10",
+]
+all = [
+    "opencv-python-headless>=4.8.0",
+    "numpy>=1.26.0",
+    "pytesseract>=0.3.10",
+]
 
 [project.urls]
 Homepage = "https://github.com/CursorTouch"

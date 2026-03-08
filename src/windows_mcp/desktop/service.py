@@ -1,4 +1,4 @@
-from windows_mcp.desktop.utils import ps_quote, ps_quote_for_xml
+from windows_mcp.desktop.utils import ps_quote, ps_quote_for_xml, _approximate_color_name
 from windows_mcp.vdm.core import (
     get_all_desktops,
     get_current_desktop,
@@ -44,6 +44,57 @@ _KEY_ALIASES = {
     "windows": "Win",
     "command": "Win",
     "option": "Alt",
+}
+
+# Virtual key code mapping for KeyHold tool
+_VK_MAP = {
+    "shift": uia.Keys.VK_SHIFT,
+    "ctrl": uia.Keys.VK_CONTROL,
+    "control": uia.Keys.VK_CONTROL,
+    "alt": uia.Keys.VK_MENU,
+    "win": uia.Keys.VK_LWIN,
+    "windows": uia.Keys.VK_LWIN,
+    "enter": uia.Keys.VK_RETURN,
+    "return": uia.Keys.VK_RETURN,
+    "tab": uia.Keys.VK_TAB,
+    "escape": uia.Keys.VK_ESCAPE,
+    "esc": uia.Keys.VK_ESCAPE,
+    "space": uia.Keys.VK_SPACE,
+    "backspace": uia.Keys.VK_BACK,
+    "delete": uia.Keys.VK_DELETE,
+    "insert": uia.Keys.VK_INSERT,
+    "home": uia.Keys.VK_HOME,
+    "end": uia.Keys.VK_END,
+    "pageup": uia.Keys.VK_PRIOR,
+    "pagedown": uia.Keys.VK_NEXT,
+    "up": uia.Keys.VK_UP,
+    "down": uia.Keys.VK_DOWN,
+    "left": uia.Keys.VK_LEFT,
+    "right": uia.Keys.VK_RIGHT,
+    "f1": uia.Keys.VK_F1,
+    "f2": uia.Keys.VK_F2,
+    "f3": uia.Keys.VK_F3,
+    "f4": uia.Keys.VK_F4,
+    "f5": uia.Keys.VK_F5,
+    "f6": uia.Keys.VK_F6,
+    "f7": uia.Keys.VK_F7,
+    "f8": uia.Keys.VK_F8,
+    "f9": uia.Keys.VK_F9,
+    "f10": uia.Keys.VK_F10,
+    "f11": uia.Keys.VK_F11,
+    "f12": uia.Keys.VK_F12,
+    "capslock": uia.Keys.VK_CAPITAL,
+    "numlock": uia.Keys.VK_NUMLOCK,
+    "scrolllock": uia.Keys.VK_SCROLL,
+    "printscreen": uia.Keys.VK_SNAPSHOT,
+}
+
+# BGR color values for Win32 GDI highlight rendering
+_HIGHLIGHT_COLORS = {
+    "red": 0x0000FF,
+    "green": 0x00FF00,
+    "blue": 0xFF0000,
+    "yellow": 0x00FFFF,
 }
 
 
@@ -1084,3 +1135,335 @@ class Desktop:
             yield
         finally:
             uia.ShowWindow(handle, win32con.SW_RESTORE)
+
+    def get_cursor_position(self) -> str:
+        x, y = uia.GetCursorPos()
+        return f"Cursor position: ({x}, {y})"
+
+    def get_pixel_color(self, loc: list[int]) -> str:
+        if len(loc) != 2:
+            return "Error: loc must be [x, y]"
+        x, y = loc[0], loc[1]
+        try:
+            img = ImageGrab.grab(bbox=(x, y, x + 1, y + 1))
+            pixel = img.getpixel((0, 0))
+            r, g, b = pixel[0], pixel[1], pixel[2]
+            hex_color = f"#{r:02X}{g:02X}{b:02X}"
+            name = _approximate_color_name(r, g, b)
+            return f"Color at ({x}, {y}): R={r}, G={g}, B={b} ({hex_color}) - {name}"
+        except Exception as e:
+            return f"Error reading pixel at ({x}, {y}): {str(e)}"
+
+    def key_hold(self, action: str, keys: list[str]) -> str:
+        if action not in ("down", "up"):
+            return f"Error: action must be 'down' or 'up', got '{action}'"
+        results = []
+        for key_name in keys:
+            k = key_name.strip().lower()
+            vk = _VK_MAP.get(k)
+            if vk is None and len(k) == 1:
+                vk = ord(k.upper())
+            if vk is None:
+                available = ", ".join(sorted(_VK_MAP.keys()))
+                return f"Error: Unknown key '{key_name}'. Available keys: {available}"
+            if action == "down":
+                uia.PressKey(vk, waitTime=0.05)
+                results.append(key_name)
+            elif action == "up":
+                uia.ReleaseKey(vk, waitTime=0.05)
+                results.append(key_name)
+        verb = "Pressed" if action == "down" else "Released"
+        return f"{verb} keys: {', '.join(results)}"
+
+    def get_screen_info(self) -> str:
+        try:
+            ps_cmd = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "[System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "
+                "$_.DeviceName + '|' + $_.Bounds.Width + '|' + $_.Bounds.Height + '|' "
+                "+ $_.Bounds.X + '|' + $_.Bounds.Y + '|' + $_.Primary }"
+            )
+            result, status = self.execute_command(ps_cmd, timeout=10)
+        except Exception:
+            size = self.get_screen_size()
+            return f"Monitors (1):\n[1] {size.width}x{size.height} (primary) at (0, 0)"
+
+        if status != 0 or not result.strip():
+            size = self.get_screen_size()
+            return f"Monitors (1):\n[1] {size.width}x{size.height} (primary) at (0, 0)"
+
+        lines = []
+        for i, line in enumerate(result.strip().split("\n"), 1):
+            parts = line.strip().split("|")
+            if len(parts) >= 6:
+                w, h, x, y = parts[1], parts[2], parts[3], parts[4]
+                primary_str = " (primary)" if parts[5].strip().lower() == "true" else ""
+                lines.append(f"[{i}] {w}x{h}{primary_str} at ({x}, {y})")
+
+        if not lines:
+            size = self.get_screen_size()
+            return f"Monitors (1):\n[1] {size.width}x{size.height} (primary) at (0, 0)"
+
+        return f"Monitors ({len(lines)}):\n" + "\n".join(lines)
+
+    def highlight_region(
+        self, loc: list[int], size: list[int], duration: float = 2.0, color: str = "red"
+    ) -> str:
+        if len(loc) != 2:
+            return "Error: loc must be [x, y]"
+        if len(size) != 2:
+            return "Error: size must be [width, height]"
+        x, y = loc[0], loc[1]
+        w, h = size[0], size[1]
+        duration = min(max(duration, 0.1), 30.0)  # Clamp between 100ms and 30s
+        color_val = _HIGHLIGHT_COLORS.get(color.lower(), 0x0000FF)
+        hdc = None
+        pen = None
+        try:
+            hdc = ctypes.windll.user32.GetDC(0)
+            if not hdc:
+                return "Error: Could not acquire screen device context"
+            pen = ctypes.windll.gdi32.CreatePen(0, 3, color_val)  # PS_SOLID, 3px
+            if not pen:
+                return "Error: Could not create GDI pen"
+            old_pen = ctypes.windll.gdi32.SelectObject(hdc, pen)
+            brush = ctypes.windll.gdi32.GetStockObject(5)  # NULL_BRUSH
+            old_brush = ctypes.windll.gdi32.SelectObject(hdc, brush)
+            ctypes.windll.gdi32.Rectangle(hdc, x, y, x + w, y + h)
+            ctypes.windll.gdi32.SelectObject(hdc, old_pen)
+            ctypes.windll.gdi32.SelectObject(hdc, old_brush)
+            sleep(duration)
+            # Invalidate the region to clear the highlight
+            ctypes.windll.user32.InvalidateRect(0, None, True)
+            return f"Highlighted region ({x}, {y}, {w}x{h}) in {color} for {duration}s."
+        except Exception as e:
+            return f"Error highlighting region: {str(e)}"
+        finally:
+            if pen:
+                ctypes.windll.gdi32.DeleteObject(pen)
+            if hdc:
+                ctypes.windll.user32.ReleaseDC(0, hdc)
+
+    def mouse_path(self, path: list[list[int]], duration: float = 0.5) -> str:
+        if not path or len(path) < 2:
+            return "Error: path must contain at least 2 waypoints [[x1,y1], [x2,y2], ...]"
+        if duration < 0:
+            return "Error: duration must be non-negative"
+        for i, point in enumerate(path):
+            if len(point) != 2:
+                return f"Error: waypoint {i} must be [x, y], got {point}"
+
+        if duration == 0:
+            x, y = path[-1]
+            uia.MoveTo(x, y, moveSpeed=0)
+            return f"Mouse moved through {len(path)} waypoints in 0s."
+
+        total_segments = len(path) - 1
+        segment_duration = duration / total_segments if total_segments > 0 else 0
+        steps_per_segment = max(1, int(segment_duration * 60))  # ~60 fps
+
+        for seg in range(total_segments):
+            x1, y1 = path[seg]
+            x2, y2 = path[seg + 1]
+            step_delay = segment_duration / steps_per_segment if steps_per_segment > 0 else 0
+            for step in range(steps_per_segment + 1):
+                t = step / steps_per_segment if steps_per_segment > 0 else 1.0
+                ix = int(x1 + (x2 - x1) * t)
+                iy = int(y1 + (y2 - y1) * t)
+                uia.MoveTo(ix, iy, moveSpeed=0)
+                if step_delay > 0:
+                    sleep(step_delay)
+
+        return f"Mouse moved through {len(path)} waypoints in {duration}s."
+
+    def read_screen_text(self, region: list[int] | None = None, language: str = "en") -> str:
+        tmp_path = None
+        try:
+            if region is not None:
+                if len(region) != 4:
+                    return "Error: region must be [x, y, width, height]"
+                x, y, w, h = region
+                if w <= 0 or h <= 0:
+                    return "Error: width and height must be positive"
+                img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            else:
+                img = ImageGrab.grab()
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+                img.save(tmp_path, format="PNG")
+
+            # Primary: Windows built-in OCR via PowerShell
+            safe_path = ps_quote(tmp_path)
+            ps_script = (
+                "Add-Type -AssemblyName 'System.Runtime.WindowsRuntime'\n"
+                "[void][Windows.Foundation.IAsyncOperation``1,Windows.Foundation,ContentType=WindowsRuntime]\n"
+                "[void][Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]\n"
+                "[void][Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime]\n"
+                "$stream = [System.IO.File]::OpenRead(" + safe_path + ")\n"
+                "$raStream = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($stream)\n"
+                "$decoder = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($raStream).GetAwaiter().GetResult()\n"
+                "$bitmap = $decoder.GetSoftwareBitmapAsync().GetAwaiter().GetResult()\n"
+                "$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()\n"
+                "if ($engine) {\n"
+                "  $result = $engine.RecognizeAsync($bitmap).GetAwaiter().GetResult()\n"
+                "  Write-Output $result.Text\n"
+                "} else { Write-Output 'OCR_ENGINE_UNAVAILABLE' }\n"
+                "$stream.Dispose()"
+            )
+            result, status = self.execute_command(ps_script, timeout=30)
+
+            if status == 0 and "OCR_ENGINE_UNAVAILABLE" not in result:
+                text = result.strip()
+                if text:
+                    return f"OCR text:\n{text}"
+                return "No text detected in the specified region."
+
+            # Fallback: pytesseract
+            try:
+                import pytesseract
+
+                text = pytesseract.image_to_string(img, lang=language).strip()
+                if text:
+                    return f"OCR text (pytesseract):\n{text}"
+                return "No text detected in the specified region."
+            except ImportError:
+                return (
+                    "Error: Windows OCR unavailable and pytesseract not installed. "
+                    "Install with: pip install 'windows-mcp[ocr]'"
+                )
+        except Exception as e:
+            return f"Error reading screen text: {str(e)}"
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    def wait_for_change(
+        self,
+        region: list[int],
+        timeout: float = 30.0,
+        threshold: float = 0.05,
+        poll_interval: float = 0.5,
+    ) -> str:
+        if len(region) != 4:
+            return "Error: region must be [x, y, width, height]"
+        x, y, w, h = region
+        if w <= 0 or h <= 0:
+            return "Error: width and height must be positive"
+        timeout = min(timeout, 60.0)  # Hard cap at 60s
+        poll_interval = max(poll_interval, 0.1)  # Prevent CPU spinning
+        bbox = (x, y, x + w, y + h)
+
+        try:
+            baseline = list(ImageGrab.grab(bbox=bbox).getdata())
+        except Exception as e:
+            return f"Error capturing baseline: {str(e)}"
+
+        total_pixels = len(baseline)
+        if total_pixels == 0:
+            return "Error: region has zero pixels."
+
+        start = time()
+        while (time() - start) < timeout:
+            sleep(poll_interval)
+            try:
+                current = list(ImageGrab.grab(bbox=bbox).getdata())
+            except Exception:
+                continue
+
+            diff_count = sum(1 for a, b in zip(baseline, current) if a != b)
+            diff_ratio = diff_count / total_pixels
+
+            if diff_ratio >= threshold:
+                elapsed = round(time() - start, 1)
+                pct = round(diff_ratio * 100, 1)
+                return (
+                    f"Change detected in region ({x}, {y}, {w}x{h}) after {elapsed}s. "
+                    f"{pct}% of pixels changed."
+                )
+
+        return (
+            f"Timeout: no significant change detected in region ({x}, {y}, {w}x{h}) "
+            f"after {timeout}s (threshold: {threshold * 100}%)."
+        )
+
+    def find_image(
+        self,
+        template_path: str,
+        region: list[int] | None = None,
+        threshold: float = 0.8,
+    ) -> str:
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            return (
+                "Error: opencv-python-headless and numpy are required. "
+                "Install with: pip install 'windows-mcp[vision]'"
+            )
+
+        # Resolve and validate path to prevent traversal attacks
+        import pathlib
+
+        try:
+            resolved = pathlib.Path(template_path).resolve()
+        except (ValueError, OSError):
+            return f"Error: Invalid template path: {template_path}"
+
+        if not resolved.is_file():
+            return f"Error: Template file not found: {template_path}"
+
+        # Only allow common image extensions
+        allowed_ext = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
+        if resolved.suffix.lower() not in allowed_ext:
+            return (
+                f"Error: Template must be an image file ({', '.join(sorted(allowed_ext))}), "
+                f"got '{resolved.suffix}'"
+            )
+
+        try:
+            template = cv2.imread(str(resolved), cv2.IMREAD_COLOR)
+            if template is None:
+                return f"Error: Could not read template image: {template_path}"
+
+            if region is not None:
+                if len(region) != 4:
+                    return "Error: region must be [x, y, width, height]"
+                x, y, w, h = region
+                if w <= 0 or h <= 0:
+                    return "Error: width and height must be positive"
+                screen_img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            else:
+                x, y = 0, 0
+                screen_img = ImageGrab.grab()
+
+            screen_rgb = np.array(screen_img)
+            screen_bgr = cv2.cvtColor(screen_rgb, cv2.COLOR_RGB2BGR)
+
+            th, tw = template.shape[:2]
+            sh, sw = screen_bgr.shape[:2]
+            if th > sh or tw > sw:
+                return f"Error: Template ({tw}x{th}) is larger than search area ({sw}x{sh})."
+
+            result = cv2.matchTemplate(screen_bgr, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            if max_val >= threshold:
+                cx = x + max_loc[0] + tw // 2
+                cy = y + max_loc[1] + th // 2
+                confidence = round(max_val, 3)
+                return (
+                    f"Match found at ({cx}, {cy}) with confidence {confidence}. "
+                    f"Template size: {tw}x{th}."
+                )
+            else:
+                return (
+                    f"No match found (best confidence: {round(max_val, 3)}, "
+                    f"threshold: {threshold}). Template: {tw}x{th}."
+                )
+        except Exception as e:
+            return f"Error during image matching: {str(e)}"
+

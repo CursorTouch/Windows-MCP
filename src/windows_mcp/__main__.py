@@ -71,6 +71,45 @@ async def lifespan(app: FastMCP):
 
 mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
 
+
+def _to_physical(loc: list[int], coordinate_system: str) -> list[int]:
+    """Convert coordinates to physical space if needed.
+
+    Args:
+        loc: [x, y] coordinates.
+        coordinate_system: "physical" (no conversion) or "logical" (multiply by DPI scale).
+
+    Returns:
+        [x, y] in physical coordinates ready for pyautogui.
+    """
+    if coordinate_system == "logical":
+        if desktop is None:
+            raise RuntimeError("Desktop service is not initialized.")
+        scale = desktop.get_dpi_scaling()
+        return [round(loc[0] * scale), round(loc[1] * scale)]
+    return loc
+
+
+def _region_to_physical(region: list[int], coordinate_system: str) -> list[int]:
+    """Convert a region [x, y, width, height] to physical space if needed."""
+    if coordinate_system == "logical":
+        if desktop is None:
+            raise RuntimeError("Desktop service is not initialized.")
+        scale = desktop.get_dpi_scaling()
+        return [round(v * scale) for v in region]
+    return region
+
+
+def _path_to_physical(path: list[list[int]], coordinate_system: str) -> list[list[int]]:
+    """Convert a list of [x, y] waypoints to physical space if needed."""
+    if coordinate_system == "logical":
+        if desktop is None:
+            raise RuntimeError("Desktop service is not initialized.")
+        scale = desktop.get_dpi_scaling()
+        return [[round(p[0] * scale), round(p[1] * scale)] for p in path]
+    return path
+
+
 @mcp.tool(
     name="App",
     description="Manages Windows applications with three modes: 'launch' (opens the prescibed application), 'resize' (adjusts active window size/position), 'switch' (brings specific window into focus).",
@@ -675,6 +714,255 @@ def registry_tool(mode: Literal['get', 'set', 'delete', 'list'], path: str, name
             return 'Error: mode must be "get", "set", "delete", or "list".'
     except Exception as e:
         return f'Error accessing registry: {str(e)}'
+
+
+@mcp.tool(
+    name="CursorPosition",
+    description="Returns the current mouse cursor position as (x, y) coordinates.",
+    annotations=ToolAnnotations(
+        title="CursorPosition",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "CursorPosition-Tool")
+def cursor_position_tool(ctx: Context = None) -> str:
+    try:
+        return desktop.get_cursor_position()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="PixelColor",
+    description=(
+        "Gets the RGB color value at specified screen coordinates [x, y]. "
+        "Returns color as RGB values and hex code with approximate color name. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
+    annotations=ToolAnnotations(
+        title="PixelColor",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "PixelColor-Tool")
+def pixel_color_tool(
+    loc: list[int],
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
+    try:
+        loc = _to_physical(loc, coordinate_system)
+        return desktop.get_pixel_color(loc)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="KeyHold",
+    description="Presses or releases keyboard keys independently, enabling key hold operations. Use action='down' to press and hold, 'up' to release. Supports modifier keys (shift, ctrl, alt, win) and special keys (f1-f12, enter, tab, escape, etc.). Release keys after use to avoid stuck keys.",
+    annotations=ToolAnnotations(
+        title="KeyHold",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "KeyHold-Tool")
+def key_hold_tool(action: Literal["down", "up"], keys: list[str], ctx: Context = None) -> str:
+    try:
+        return desktop.key_hold(action, keys)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="ScreenInfo",
+    description="Returns information about all connected monitors including resolution, position, and which is the primary display. Useful for multi-monitor setups and coordinate targeting.",
+    annotations=ToolAnnotations(
+        title="ScreenInfo",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "ScreenInfo-Tool")
+def screen_info_tool(ctx: Context = None) -> str:
+    try:
+        return desktop.get_screen_info()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="ScreenHighlight",
+    description=(
+        "Highlights a rectangular region on screen with a colored border for visual identification. "
+        "Useful for debugging automation targets. The highlight appears briefly then disappears. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
+    annotations=ToolAnnotations(
+        title="ScreenHighlight",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "ScreenHighlight-Tool")
+def screen_highlight_tool(
+    loc: list[int],
+    size: list[int],
+    duration: float = 2.0,
+    color: Literal["red", "green", "blue", "yellow"] = "red",
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
+    try:
+        loc = _to_physical(loc, coordinate_system)
+        size = _to_physical(size, coordinate_system)
+        return desktop.highlight_region(loc, size, duration, color)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="MousePath",
+    description=(
+        "Moves the mouse cursor smoothly through a series of waypoints. "
+        "Each waypoint is [x, y]. The movement is interpolated over the specified duration for smooth animation. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
+    annotations=ToolAnnotations(
+        title="MousePath",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "MousePath-Tool")
+def mouse_path_tool(
+    path: list[list[int]],
+    duration: float = 0.5,
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
+    try:
+        path = _path_to_physical(path, coordinate_system)
+        return desktop.mouse_path(path, duration)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="ScreenReader",
+    description=(
+        "Reads text from a screen region using OCR (Optical Character Recognition). "
+        "Uses Windows built-in OCR engine. Specify a region [x, y, width, height] to read from a specific area, "
+        "or omit for the full screen. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
+    annotations=ToolAnnotations(
+        title="ScreenReader",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "ScreenReader-Tool")
+def screen_reader_tool(
+    region: list[int] | None = None,
+    language: str = "en",
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
+    try:
+        if region is not None:
+            region = _region_to_physical(region, coordinate_system)
+        return desktop.read_screen_text(region, language)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="WaitForChange",
+    description=(
+        "Waits until a screen region visually changes beyond a threshold. "
+        "Useful for waiting for loading to complete, animations to finish, or content to update. "
+        "Compares pixel data between captures. Returns when change is detected or timeout is reached. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
+    annotations=ToolAnnotations(
+        title="WaitForChange",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "WaitForChange-Tool")
+def wait_for_change_tool(
+    region: list[int],
+    timeout: float = 30.0,
+    threshold: float = 0.05,
+    poll_interval: float = 0.5,
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
+    try:
+        region = _region_to_physical(region, coordinate_system)
+        return desktop.wait_for_change(region, timeout, threshold, poll_interval)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="FindImage",
+    description=(
+        "Finds a template image on screen using visual template matching. "
+        "Returns the center coordinates and confidence score of the best match. "
+        "Requires opencv-python-headless: pip install 'windows-mcp[vision]'. "
+        "Optionally restrict search to a region [x, y, width, height]. "
+        "Set coordinate_system='logical' to auto-convert from logical (DPI-scaled) coordinates to physical. "
+        "Default is 'physical' (no conversion)."
+    ),
+    annotations=ToolAnnotations(
+        title="FindImage",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "FindImage-Tool")
+def find_image_tool(
+    template_path: str,
+    region: list[int] | None = None,
+    threshold: float = 0.8,
+    coordinate_system: Literal["physical", "logical"] = "physical",
+    ctx: Context = None,
+) -> str:
+    try:
+        if region is not None:
+            region = _region_to_physical(region, coordinate_system)
+        return desktop.find_image(template_path, region, threshold)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 
 class Transport(Enum):
     STDIO = "stdio"
