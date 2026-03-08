@@ -408,6 +408,18 @@ MCP Client can access the following tools to interact with Windows:
 - `ScreenReader`: Read text from a screen region using OCR (Windows built-in or pytesseract fallback).
 - `WaitForChange`: Wait until a screen region visually changes beyond a threshold.
 - `FindImage`: Find a template image on screen using visual template matching (requires `pip install 'windows-mcp[vision]'`).
+- `VolumeControl`: Get/set system volume (0-100), mute/unmute/toggle via Windows Core Audio COM API.
+- `BrightnessControl`: Get/set display brightness (0-100) via WMI.
+- `AppList`: List all running applications, check if a specific app is running, or force-quit by name.
+- `Dialog`: Display message boxes, input prompts, or file/folder picker dialogs.
+- `SystemInfoExtended`: Detailed system info — OS version, CPU, RAM, disk, battery, network, uptime.
+- `DarkMode`: Get or toggle Windows dark/light app mode via registry.
+- `SayText`: Text-to-speech using Windows SAPI with optional voice and rate settings.
+- `PortCheck`: Check if a TCP/UDP port is in use, find the owning process, or list all listening ports.
+- `FileWatcher`: Watch a file or directory for changes (create, modify, delete) with timeout.
+- `SearchFiles`: Search for files by name pattern or content text within a directory tree.
+- `NetworkDiagnostics`: Ping hosts, DNS lookup, trace routes, check connectivity.
+- `AccessibilityInspector`: Inspect UI element accessibility properties at coordinates or for the focused element.
 
 ## 🤝 Connect with Us
 Stay updated and join our community:
