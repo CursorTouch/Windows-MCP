@@ -1,4 +1,4 @@
-from windows_mcp.desktop.utils import ps_quote, ps_quote_for_xml, _approximate_color_name
+from windows_mcp.desktop.utils import ps_quote, ps_quote_for_xml, approximate_color_name
 from windows_mcp.vdm.core import (
     get_all_desktops,
     get_current_desktop,
@@ -1145,11 +1145,11 @@ class Desktop:
             return "Error: loc must be [x, y]"
         x, y = loc[0], loc[1]
         try:
-            img = ImageGrab.grab(bbox=(x, y, x + 1, y + 1))
+            img = ImageGrab.grab(bbox=(x, y, x + 1, y + 1), all_screens=True)
             pixel = img.getpixel((0, 0))
             r, g, b = pixel[0], pixel[1], pixel[2]
             hex_color = f"#{r:02X}{g:02X}{b:02X}"
-            name = _approximate_color_name(r, g, b)
+            name = approximate_color_name(r, g, b)
             return f"Color at ({x}, {y}): R={r}, G={g}, B={b} ({hex_color}) - {name}"
         except Exception as e:
             return f"Error reading pixel at ({x}, {y}): {str(e)}"
@@ -1204,7 +1204,13 @@ class Desktop:
             size = self.get_screen_size()
             return f"Monitors (1):\n[1] {size.width}x{size.height} (primary) at (0, 0)"
 
-        return f"Monitors ({len(lines)}):\n" + "\n".join(lines)
+        try:
+            dpi_scale = self.get_dpi_scaling()
+            dpi_info = f"\nDPI scaling: {dpi_scale}x"
+        except Exception:
+            dpi_info = ""
+
+        return f"Monitors ({len(lines)}):\n" + "\n".join(lines) + dpi_info
 
     def highlight_region(
         self, loc: list[int], size: list[int], duration: float = 2.0, color: str = "red"
@@ -1215,6 +1221,8 @@ class Desktop:
             return "Error: size must be [width, height]"
         x, y = loc[0], loc[1]
         w, h = size[0], size[1]
+        if w <= 0 or h <= 0:
+            return "Error: width and height must be positive"
         duration = min(max(duration, 0.1), 30.0)  # Clamp between 100ms and 30s
         color_val = _HIGHLIGHT_COLORS.get(color.lower(), 0x0000FF)
         hdc = None
@@ -1285,9 +1293,9 @@ class Desktop:
                 x, y, w, h = region
                 if w <= 0 or h <= 0:
                     return "Error: width and height must be positive"
-                img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+                img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
             else:
-                img = ImageGrab.grab()
+                img = ImageGrab.grab(all_screens=True)
 
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp_path = tmp.name
@@ -1353,12 +1361,14 @@ class Desktop:
         x, y, w, h = region
         if w <= 0 or h <= 0:
             return "Error: width and height must be positive"
+        if not 0.0 <= threshold <= 1.0:
+            return "Error: threshold must be between 0.0 and 1.0"
         timeout = min(timeout, 60.0)  # Hard cap at 60s
         poll_interval = max(poll_interval, 0.1)  # Prevent CPU spinning
         bbox = (x, y, x + w, y + h)
 
         try:
-            baseline = list(ImageGrab.grab(bbox=bbox).getdata())
+            baseline = list(ImageGrab.grab(bbox=bbox, all_screens=True).getdata())
         except Exception as e:
             return f"Error capturing baseline: {str(e)}"
 
@@ -1370,7 +1380,7 @@ class Desktop:
         while (time() - start) < timeout:
             sleep(poll_interval)
             try:
-                current = list(ImageGrab.grab(bbox=bbox).getdata())
+                current = list(ImageGrab.grab(bbox=bbox, all_screens=True).getdata())
             except Exception:
                 continue
 
@@ -1396,6 +1406,9 @@ class Desktop:
         region: list[int] | None = None,
         threshold: float = 0.8,
     ) -> str:
+        if not 0.0 <= threshold <= 1.0:
+            return "Error: threshold must be between 0.0 and 1.0"
+
         try:
             import cv2
             import numpy as np
@@ -1435,10 +1448,10 @@ class Desktop:
                 x, y, w, h = region
                 if w <= 0 or h <= 0:
                     return "Error: width and height must be positive"
-                screen_img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+                screen_img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
             else:
                 x, y = 0, 0
-                screen_img = ImageGrab.grab()
+                screen_img = ImageGrab.grab(all_screens=True)
 
             screen_rgb = np.array(screen_img)
             screen_bgr = cv2.cvtColor(screen_rgb, cv2.COLOR_RGB2BGR)

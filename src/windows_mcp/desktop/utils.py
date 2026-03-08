@@ -34,11 +34,10 @@ _NAMED_COLORS = {
     "maroon": (128, 0, 0),
     "olive": (128, 128, 0),
     "lime": (0, 255, 0),
-    "aqua": (0, 255, 255),
 }
 
 
-def _approximate_color_name(r: int, g: int, b: int) -> str:
+def approximate_color_name(r: int, g: int, b: int) -> str:
     """Find the closest named color using Euclidean distance."""
     best_name = "unknown"
     best_dist = float("inf")

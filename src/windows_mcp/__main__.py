@@ -81,7 +81,13 @@ def _to_physical(loc: list[int], coordinate_system: str) -> list[int]:
 
     Returns:
         [x, y] in physical coordinates ready for pyautogui.
+
+    Raises:
+        ValueError: If loc does not have exactly 2 elements.
+        RuntimeError: If desktop service is not initialized in logical mode.
     """
+    if len(loc) != 2:
+        raise ValueError("loc must be [x, y]")
     if coordinate_system == "logical":
         if desktop is None:
             raise RuntimeError("Desktop service is not initialized.")
@@ -92,6 +98,8 @@ def _to_physical(loc: list[int], coordinate_system: str) -> list[int]:
 
 def _region_to_physical(region: list[int], coordinate_system: str) -> list[int]:
     """Convert a region [x, y, width, height] to physical space if needed."""
+    if len(region) != 4:
+        raise ValueError("region must be [x, y, width, height]")
     if coordinate_system == "logical":
         if desktop is None:
             raise RuntimeError("Desktop service is not initialized.")
@@ -102,6 +110,9 @@ def _region_to_physical(region: list[int], coordinate_system: str) -> list[int]:
 
 def _path_to_physical(path: list[list[int]], coordinate_system: str) -> list[list[int]]:
     """Convert a list of [x, y] waypoints to physical space if needed."""
+    for i, p in enumerate(path):
+        if len(p) != 2:
+            raise ValueError(f"waypoint {i} must be [x, y], got {p}")
     if coordinate_system == "logical":
         if desktop is None:
             raise RuntimeError("Desktop service is not initialized.")

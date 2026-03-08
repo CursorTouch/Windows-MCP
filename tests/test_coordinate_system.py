@@ -1,5 +1,6 @@
 """Tests for DPI coordinate_system conversion helpers in __main__.py."""
 
+import pytest
 from unittest.mock import patch
 
 
@@ -149,3 +150,31 @@ class TestPathToPhysical:
         mock_desktop.get_dpi_scaling.return_value = 2.0
         result = _path_to_physical([], "logical")
         assert result == []
+
+
+class TestInputValidation:
+    """Test input shape validation in DPI helpers."""
+
+    def test_to_physical_rejects_single_element(self):
+        from windows_mcp.__main__ import _to_physical
+
+        with pytest.raises(ValueError, match="loc must be"):
+            _to_physical([100], "physical")
+
+    def test_to_physical_rejects_three_elements(self):
+        from windows_mcp.__main__ import _to_physical
+
+        with pytest.raises(ValueError, match="loc must be"):
+            _to_physical([1, 2, 3], "physical")
+
+    def test_region_to_physical_rejects_wrong_length(self):
+        from windows_mcp.__main__ import _region_to_physical
+
+        with pytest.raises(ValueError, match="region must be"):
+            _region_to_physical([1, 2], "physical")
+
+    def test_path_to_physical_rejects_malformed_waypoint(self):
+        from windows_mcp.__main__ import _path_to_physical
+
+        with pytest.raises(ValueError, match="waypoint 1 must be"):
+            _path_to_physical([[0, 0], [100]], "physical")

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from windows_mcp.desktop.service import Desktop
-from windows_mcp.desktop.utils import _approximate_color_name
+from windows_mcp.desktop.utils import approximate_color_name
 
 
 @pytest.fixture
@@ -15,28 +15,28 @@ def desktop():
 
 class TestApproximateColorName:
     def test_exact_red(self):
-        assert _approximate_color_name(255, 0, 0) == "red"
+        assert approximate_color_name(255, 0, 0) == "red"
 
     def test_exact_green(self):
-        assert _approximate_color_name(0, 128, 0) == "green"
+        assert approximate_color_name(0, 128, 0) == "green"
 
     def test_exact_blue(self):
-        assert _approximate_color_name(0, 0, 255) == "blue"
+        assert approximate_color_name(0, 0, 255) == "blue"
 
     def test_exact_white(self):
-        assert _approximate_color_name(255, 255, 255) == "white"
+        assert approximate_color_name(255, 255, 255) == "white"
 
     def test_exact_black(self):
-        assert _approximate_color_name(0, 0, 0) == "black"
+        assert approximate_color_name(0, 0, 0) == "black"
 
     def test_near_red(self):
-        assert _approximate_color_name(250, 5, 5) == "red"
+        assert approximate_color_name(250, 5, 5) == "red"
 
     def test_near_yellow(self):
-        assert _approximate_color_name(250, 250, 10) == "yellow"
+        assert approximate_color_name(250, 250, 10) == "yellow"
 
     def test_returns_string(self):
-        result = _approximate_color_name(100, 100, 100)
+        result = approximate_color_name(100, 100, 100)
         assert isinstance(result, str)
         assert len(result) > 0
 
