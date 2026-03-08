@@ -5,6 +5,7 @@ from windows_mcp.desktop.service import Desktop, Size
 from windows_mcp.watchdog.service import WatchDog
 from contextlib import asynccontextmanager
 from fastmcp.utilities.types import Image
+from PIL import Image as PILImage
 from dataclasses import dataclass, field
 from windows_mcp.auth import AuthClient
 from mcp.types import ToolAnnotations
@@ -26,11 +27,13 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+
 @dataclass
 class Config:
     mode: str
-    sandbox_id: str = field(default='')
-    api_key: str = field(default='')
+    sandbox_id: str = field(default="")
+    api_key: str = field(default="")
+
 
 MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT = 1920, 1080
 
@@ -48,7 +51,7 @@ thus enabling to operate the desktop on the user's behalf.
 @asynccontextmanager
 async def lifespan(app: FastMCP):
     """Runs initialization code before the server starts and cleanup code after it shuts down."""
-    global desktop, watchdog, analytics,screen_size
+    global desktop, watchdog, analytics, screen_size
 
     # Initialize components here instead of at module level
     if os.getenv("ANONYMIZED_TELEMETRY", "true").lower() != "false":
@@ -123,7 +126,7 @@ def _path_to_physical(path: list[list[int]], coordinate_system: str) -> list[lis
 
 @mcp.tool(
     name="App",
-    description="Manages Windows applications with three modes: 'launch' (opens the prescibed application), 'resize' (adjusts active window size/position), 'switch' (brings specific window into focus).",
+    description="Manages Windows applications with six modes: 'launch' (opens the prescribed application), 'resize' (adjusts active window size/position), 'switch' (brings specific window into focus), 'minimize'/'maximize'/'close'/'fullscreen'/'restore' (window control).",
     annotations=ToolAnnotations(
         title="App",
         readOnlyHint=False,
@@ -133,9 +136,22 @@ def _path_to_physical(path: list[list[int]], coordinate_system: str) -> list[lis
     ),
 )
 @with_analytics(analytics, "App-Tool")
-def app_tool(mode:Literal['launch','resize','switch']='launch',name:str|None=None,window_loc:list[int]|None=None,window_size:list[int]|None=None, ctx: Context = None):
-    return desktop.app(mode,name,window_loc,window_size)
-    
+def app_tool(
+    mode: Literal[
+        "launch", "resize", "switch", "minimize", "maximize", "close", "fullscreen", "restore"
+    ] = "launch",
+    name: str | None = None,
+    window_loc: list[int] | None = None,
+    window_size: list[int] | None = None,
+    ctx: Context = None,
+):
+    if mode in ("minimize", "maximize", "close", "fullscreen", "restore"):
+        if not name:
+            return "Error: name is required for window control actions"
+        return desktop.window_control(name, mode)
+    return desktop.app(mode, name, window_loc, window_size)
+
+
 @mcp.tool(
     name="PowerShell",
     description="A comprehensive system tool for executing any PowerShell commands. Use it to navigate the file system, manage files and processes, and execute system-level operations. Capable of accessing web content (e.g., via Invoke-WebRequest), interacting with network resources, and performing complex administrative tasks. This tool provides full access to the underlying operating system capabilities, making it the primary interface for system automation, scripting, and deep system interaction.",
@@ -157,19 +173,19 @@ def powershell_tool(command: str, timeout: int = 30, ctx: Context = None) -> str
 
 
 @mcp.tool(
-    name='FileSystem',
+    name="FileSystem",
     description="Manages file system operations with eight modes: 'read' (read text file contents with optional line offset/limit), 'write' (create or overwrite a file, set append=True to append), 'copy' (copy file or directory to destination), 'move' (move or rename file/directory), 'delete' (delete file or directory, set recursive=True for non-empty dirs), 'list' (list directory contents with optional pattern filter), 'search' (find files matching a glob pattern), 'info' (get file/directory metadata like size, dates, type). Relative paths are resolved from the user's Desktop folder. Use absolute paths to access other locations.",
     annotations=ToolAnnotations(
         title="FileSystem",
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=False,
-        openWorldHint=False
-    )
-    )
+        openWorldHint=False,
+    ),
+)
 @with_analytics(analytics, "FileSystem-Tool")
 def file_system_tool(
-    mode: Literal['read', 'write', 'copy', 'move', 'delete', 'list', 'search', 'info'],
+    mode: Literal["read", "write", "copy", "move", "delete", "list", "search", "info"],
     path: str,
     destination: str | None = None,
     content: str | None = None,
@@ -179,56 +195,66 @@ def file_system_tool(
     overwrite: bool | str = False,
     offset: int | None = None,
     limit: int | None = None,
-    encoding: str = 'utf-8',
+    encoding: str = "utf-8",
     show_hidden: bool | str = False,
-    ctx: Context = None
+    ctx: Context = None,
 ) -> str:
     try:
         from platformdirs import user_desktop_dir
+
         default_dir = user_desktop_dir()
         if not os.path.isabs(path):
             path = os.path.join(default_dir, path)
         if destination and not os.path.isabs(destination):
             destination = os.path.join(default_dir, destination)
 
-        recursive = recursive is True or (isinstance(recursive, str) and recursive.lower() == 'true')
-        append = append is True or (isinstance(append, str) and append.lower() == 'true')
-        overwrite = overwrite is True or (isinstance(overwrite, str) and overwrite.lower() == 'true')
-        show_hidden = show_hidden is True or (isinstance(show_hidden, str) and show_hidden.lower() == 'true')
+        recursive = recursive is True or (
+            isinstance(recursive, str) and recursive.lower() == "true"
+        )
+        append = append is True or (isinstance(append, str) and append.lower() == "true")
+        overwrite = overwrite is True or (
+            isinstance(overwrite, str) and overwrite.lower() == "true"
+        )
+        show_hidden = show_hidden is True or (
+            isinstance(show_hidden, str) and show_hidden.lower() == "true"
+        )
 
         match mode:
-            case 'read':
+            case "read":
                 return filesystem.read_file(path, offset=offset, limit=limit, encoding=encoding)
-            case 'write':
+            case "write":
                 if content is None:
-                    return 'Error: content parameter is required for write mode.'
+                    return "Error: content parameter is required for write mode."
                 return filesystem.write_file(path, content, append=append, encoding=encoding)
-            case 'copy':
+            case "copy":
                 if destination is None:
-                    return 'Error: destination parameter is required for copy mode.'
+                    return "Error: destination parameter is required for copy mode."
                 return filesystem.copy_path(path, destination, overwrite=overwrite)
-            case 'move':
+            case "move":
                 if destination is None:
-                    return 'Error: destination parameter is required for move mode.'
+                    return "Error: destination parameter is required for move mode."
                 return filesystem.move_path(path, destination, overwrite=overwrite)
-            case 'delete':
+            case "delete":
                 return filesystem.delete_path(path, recursive=recursive)
-            case 'list':
-                return filesystem.list_directory(path, pattern=pattern, recursive=recursive, show_hidden=show_hidden)
-            case 'search':
+            case "list":
+                return filesystem.list_directory(
+                    path, pattern=pattern, recursive=recursive, show_hidden=show_hidden
+                )
+            case "search":
                 if pattern is None:
-                    return 'Error: pattern parameter is required for search mode.'
+                    return "Error: pattern parameter is required for search mode."
                 return filesystem.search_files(path, pattern, recursive=recursive)
-            case 'info':
+            case "info":
                 return filesystem.get_file_info(path)
             case _:
                 return f'Error: Unknown mode "{mode}". Use: read, write, copy, move, delete, list, search, info.'
     except Exception as e:
-        return f'Error in File tool: {str(e)}'
+        return f"Error in File tool: {str(e)}"
+
 
 @mcp.tool(
-    name='Snapshot',
-    description='Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot. Set use_dom=True for browser content to get web page elements instead of browser UI. Always call this first to understand the current desktop state before taking actions.',
+    name="Snapshot",
+    description="Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot. Set use_dom=True for browser content to get web page elements instead of browser UI. Always call this first to understand the current desktop state before taking actions.",
     annotations=ToolAnnotations(
         title="Snapshot",
         readOnlyHint=True,
@@ -238,25 +264,33 @@ def file_system_tool(
     ),
 )
 @with_analytics(analytics, "State-Tool")
-def state_tool(use_vision:bool|str=False,use_dom:bool|str=False, ctx: Context = None):
+def state_tool(use_vision: bool | str = False, use_dom: bool | str = False, ctx: Context = None):
     try:
-        use_vision = use_vision is True or (isinstance(use_vision, str) and use_vision.lower() == 'true')
-        use_dom = use_dom is True or (isinstance(use_dom, str) and use_dom.lower() == 'true')
-        
+        use_vision = use_vision is True or (
+            isinstance(use_vision, str) and use_vision.lower() == "true"
+        )
+        use_dom = use_dom is True or (isinstance(use_dom, str) and use_dom.lower() == "true")
+
         # Calculate scale factor to cap resolution at 1080p (1920x1080)
-        scale_width = MAX_IMAGE_WIDTH / screen_size.width if screen_size.width > MAX_IMAGE_WIDTH else 1.0
-        scale_height = MAX_IMAGE_HEIGHT / screen_size.height if screen_size.height > MAX_IMAGE_HEIGHT else 1.0
+        scale_width = (
+            MAX_IMAGE_WIDTH / screen_size.width if screen_size.width > MAX_IMAGE_WIDTH else 1.0
+        )
+        scale_height = (
+            MAX_IMAGE_HEIGHT / screen_size.height if screen_size.height > MAX_IMAGE_HEIGHT else 1.0
+        )
         scale = min(scale_width, scale_height)
-        
-        desktop_state=desktop.get_state(use_vision=use_vision,use_dom=use_dom,as_bytes=False,scale=scale)
-        
-        interactive_elements=desktop_state.tree_state.interactive_elements_to_string()
-        scrollable_elements=desktop_state.tree_state.scrollable_elements_to_string()
-        windows=desktop_state.windows_to_string()
-        active_window=desktop_state.active_window_to_string()
-        active_desktop=desktop_state.active_desktop_to_string()
-        all_desktops=desktop_state.desktops_to_string()
-        
+
+        desktop_state = desktop.get_state(
+            use_vision=use_vision, use_dom=use_dom, as_bytes=False, scale=scale
+        )
+
+        interactive_elements = desktop_state.tree_state.interactive_elements_to_string()
+        scrollable_elements = desktop_state.tree_state.scrollable_elements_to_string()
+        windows = desktop_state.windows_to_string()
+        active_window = desktop_state.active_window_to_string()
+        active_desktop = desktop_state.active_desktop_to_string()
+        all_desktops = desktop_state.desktops_to_string()
+
         # Convert screenshot to bytes for vision response
         screenshot_bytes = None
         if use_vision and desktop_state.screenshot is not None:
@@ -265,9 +299,10 @@ def state_tool(use_vision:bool|str=False,use_dom:bool|str=False, ctx: Context = 
             screenshot_bytes = buffered.getvalue()
             buffered.close()
     except Exception as e:
-        return [f'Error capturing desktop state: {str(e)}. Please try again.']
-    
-    return [dedent(f'''
+        return [f"Error capturing desktop state: {str(e)}. Please try again."]
+
+    return [
+        dedent(f"""
     Active Desktop:
     {active_desktop}
 
@@ -284,7 +319,9 @@ def state_tool(use_vision:bool|str=False,use_dom:bool|str=False, ctx: Context = 
     {interactive_elements or "No interactive elements found."}
 
     List of Scrollable Elements:
-    {scrollable_elements or 'No scrollable elements found.'}''')]+([Image(data=screenshot_bytes,format='png')] if use_vision and screenshot_bytes else [])
+    {scrollable_elements or "No scrollable elements found."}""")
+    ] + ([Image(data=screenshot_bytes, format="png")] if use_vision and screenshot_bytes else [])
+
 
 @mcp.tool(
     name="Click",
@@ -535,7 +572,7 @@ def multi_select_tool(
     locs: list[list[int]] | None = None,
     labels: list[int] | None = None,
     press_ctrl: bool | str = True,
-    ctx: Context = None
+    ctx: Context = None,
 ) -> str:
     if locs is None and labels is None:
         raise ValueError("Either locs or labels must be provided.")
@@ -548,7 +585,7 @@ def multi_select_tool(
                 locs.append(list(desktop.get_coordinates_from_label(label)))
             except Exception as e:
                 raise ValueError(f"Failed to find element with label {label}: {e}")
-                
+
     press_ctrl = press_ctrl is True or (
         isinstance(press_ctrl, str) and press_ctrl.lower() == "true"
     )
@@ -570,9 +607,7 @@ def multi_select_tool(
 )
 @with_analytics(analytics, "Multi-Edit-Tool")
 def multi_edit_tool(
-    locs: list[list] | None = None,
-    labels: list[list] | None = None,
-    ctx: Context = None
+    locs: list[list] | None = None, labels: list[list] | None = None, ctx: Context = None
 ) -> str:
     if locs is None and labels is None:
         raise ValueError("Either locs or labels must be provided.")
@@ -589,7 +624,7 @@ def multi_edit_tool(
                 locs.append([loc[0], loc[1], text])
             except Exception as e:
                 raise ValueError(f"Failed to process label item {item}: {e}")
-                
+
     desktop.multi_edit(locs)
     elements_str = ", ".join([f"({e[0]},{e[1]}) with text '{e[2]}'" for e in locs])
     return f"Multi-edited elements at: {elements_str}"
@@ -672,7 +707,6 @@ def process_tool(
         return f"Error managing processes: {str(e)}"
 
 
-
 @mcp.tool(
     name="Notification",
     description="Sends a Windows toast notification with a title and message. Useful for alerting the user remotely.",
@@ -692,39 +726,45 @@ def notification_tool(title: str, message: str, ctx: Context = None) -> str:
         return f"Error sending notification: {str(e)}"
 
 
-
 @mcp.tool(
-    name='Registry',
+    name="Registry",
     description='Accesses the Windows Registry. Use mode="get" to read a value, mode="set" to create/update a value, mode="delete" to remove a value or key, mode="list" to list values and sub-keys under a path. Paths use PowerShell format (e.g. "HKCU:\\Software\\MyApp", "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion").',
     annotations=ToolAnnotations(
         title="Registry",
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=False,
-        openWorldHint=False
-    )
+        openWorldHint=False,
+    ),
 )
 @with_analytics(analytics, "Registry-Tool")
-def registry_tool(mode: Literal['get', 'set', 'delete', 'list'], path: str, name: str | None = None, value: str | None = None, type: Literal['String', 'DWord', 'QWord', 'Binary', 'MultiString', 'ExpandString'] = 'String', ctx: Context = None) -> str:
+def registry_tool(
+    mode: Literal["get", "set", "delete", "list"],
+    path: str,
+    name: str | None = None,
+    value: str | None = None,
+    type: Literal["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] = "String",
+    ctx: Context = None,
+) -> str:
     try:
-        if mode == 'get':
+        if mode == "get":
             if name is None:
-                return 'Error: name parameter is required for get mode.'
+                return "Error: name parameter is required for get mode."
             return desktop.registry_get(path=path, name=name)
-        elif mode == 'set':
+        elif mode == "set":
             if name is None:
-                return 'Error: name parameter is required for set mode.'
+                return "Error: name parameter is required for set mode."
             if value is None:
-                return 'Error: value parameter is required for set mode.'
+                return "Error: value parameter is required for set mode."
             return desktop.registry_set(path=path, name=name, value=value, reg_type=type)
-        elif mode == 'delete':
+        elif mode == "delete":
             return desktop.registry_delete(path=path, name=name)
-        elif mode == 'list':
+        elif mode == "list":
             return desktop.registry_list(path=path)
         else:
             return 'Error: mode must be "get", "set", "delete", or "list".'
     except Exception as e:
-        return f'Error accessing registry: {str(e)}'
+        return f"Error accessing registry: {str(e)}"
 
 
 @mcp.tool(
@@ -998,7 +1038,9 @@ def volume_control_tool(
 @mcp.tool(
     name="BrightnessControl",
     description="Control display brightness: get current level or set to specific value (0-100). Works on laptops; may not be supported on desktop monitors.",
-    annotations=ToolAnnotations(title="BrightnessControl", readOnlyHint=False, destructiveHint=False),
+    annotations=ToolAnnotations(
+        title="BrightnessControl", readOnlyHint=False, destructiveHint=False
+    ),
 )
 @with_analytics(analytics, "BrightnessControl-Tool")
 def brightness_control_tool(
@@ -1056,7 +1098,9 @@ def dialog_tool(
 @mcp.tool(
     name="SystemInfoExtended",
     description="Get extended Windows system information: OS version, computer name, user, uptime, battery, dark mode, WiFi network.",
-    annotations=ToolAnnotations(title="SystemInfoExtended", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    annotations=ToolAnnotations(
+        title="SystemInfoExtended", readOnlyHint=True, destructiveHint=False, idempotentHint=True
+    ),
 )
 @with_analytics(analytics, "SystemInfoExtended-Tool")
 def system_info_extended_tool(ctx: Context = None) -> str:
@@ -1106,7 +1150,9 @@ def say_text_tool(
 @mcp.tool(
     name="PortCheck",
     description="Check if a network port is in use and what process owns it, or list all listening ports. Useful for dev server verification.",
-    annotations=ToolAnnotations(title="PortCheck", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    annotations=ToolAnnotations(
+        title="PortCheck", readOnlyHint=True, destructiveHint=False, idempotentHint=True
+    ),
 )
 @with_analytics(analytics, "PortCheck-Tool")
 def port_check_tool(
@@ -1142,7 +1188,9 @@ def file_watcher_tool(
 @mcp.tool(
     name="SearchFiles",
     description="Search for files by name or content using PowerShell. Optionally limit search to a specific directory.",
-    annotations=ToolAnnotations(title="SearchFiles", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    annotations=ToolAnnotations(
+        title="SearchFiles", readOnlyHint=True, destructiveHint=False, idempotentHint=True
+    ),
 )
 @with_analytics(analytics, "SearchFiles-Tool")
 def search_files_tool(
@@ -1161,7 +1209,9 @@ def search_files_tool(
 @mcp.tool(
     name="NetworkDiagnostics",
     description="Network diagnostics: ping a host, DNS lookup, HTTP endpoint check, or list network interfaces.",
-    annotations=ToolAnnotations(title="NetworkDiagnostics", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    annotations=ToolAnnotations(
+        title="NetworkDiagnostics", readOnlyHint=True, destructiveHint=False, idempotentHint=True
+    ),
 )
 @with_analytics(analytics, "NetworkDiagnostics-Tool")
 def network_diagnostics_tool(
@@ -1180,7 +1230,9 @@ def network_diagnostics_tool(
 @mcp.tool(
     name="AccessibilityInspector",
     description="Read the UI element tree of a Windows application window. Returns element hierarchy with control types, names, values, and enabled states.",
-    annotations=ToolAnnotations(title="AccessibilityInspector", readOnlyHint=True, destructiveHint=False),
+    annotations=ToolAnnotations(
+        title="AccessibilityInspector", readOnlyHint=True, destructiveHint=False
+    ),
 )
 @with_analytics(analytics, "AccessibilityInspector-Tool")
 def accessibility_inspector_tool(
@@ -1194,25 +1246,282 @@ def accessibility_inspector_tool(
         return f"Error: {str(e)}"
 
 
+# ============== UI ELEMENT TOOLS ==============
+
+
+@mcp.tool(
+    name="UIElement",
+    description=(
+        "Interact with UI elements in Windows applications using UIAutomation. "
+        "Modes: 'get' (element tree with depth/role filter), 'find' (search by name/role), "
+        "'click' (click by path or search), 'setValue' (set text/checkbox/slider value), "
+        "'typeInto' (focus element + type text), 'listWindows' (all windows with details), "
+        "'overview' (element role counts for app). "
+        "Path format: 'role index > role index' (e.g., 'pane 1 > button 2')."
+    ),
+    annotations=ToolAnnotations(
+        title="UIElement",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "UIElement-Tool")
+def ui_element_tool(
+    mode: Literal["get", "find", "click", "setValue", "typeInto", "listWindows", "overview"],
+    app: str | None = None,
+    path: str | None = None,
+    search: str | None = None,
+    role: str | None = None,
+    value: str | None = None,
+    text: str | None = None,
+    depth: int = 2,
+    clear: bool = False,
+    ctx: Context = None,
+) -> str:
+    try:
+        if mode == "get":
+            if not app:
+                return "Error: app is required for 'get' mode"
+            return desktop.ui_element_get(app, min(depth, 5), role)
+        elif mode == "find":
+            if not app:
+                return "Error: app is required for 'find' mode"
+            if not search:
+                return "Error: search is required for 'find' mode"
+            return desktop.ui_element_find(app, search, role)
+        elif mode == "click":
+            if not app:
+                return "Error: app is required for 'click' mode"
+            if not path and not search:
+                return "Error: path or search is required for 'click' mode"
+            return desktop.ui_element_click(app, path, search)
+        elif mode == "setValue":
+            if not app:
+                return "Error: app is required for 'setValue' mode"
+            if value is None:
+                return "Error: value is required for 'setValue' mode"
+            if not path and not search:
+                return "Error: path or search is required for 'setValue' mode"
+            return desktop.ui_element_set_value(app, value, path, search)
+        elif mode == "typeInto":
+            if not app:
+                return "Error: app is required for 'typeInto' mode"
+            if text is None:
+                return "Error: text is required for 'typeInto' mode"
+            if not path and not search:
+                return "Error: path or search is required for 'typeInto' mode"
+            return desktop.ui_element_type_into(app, text, path, search, clear)
+        elif mode == "listWindows":
+            return desktop.ui_element_list_windows()
+        elif mode == "overview":
+            if not app:
+                return "Error: app is required for 'overview' mode"
+            return desktop.ui_element_overview(app)
+        else:
+            return f"Error: Unknown mode: {mode}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="WindowScreenshot",
+    description=(
+        "Capture a screenshot of a specific window by app name or window handle. "
+        "Returns the window screenshot as an image."
+    ),
+    annotations=ToolAnnotations(
+        title="WindowScreenshot",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "WindowScreenshot-Tool")
+def window_screenshot_tool(
+    app: str | None = None,
+    handle: int | None = None,
+    ctx: Context = None,
+) -> list:
+    try:
+        if not app and not handle:
+            return "Error: app or handle is required"
+        img = desktop.capture_window_screenshot(app, handle)
+        if img is None:
+            return "Error: Could not capture window screenshot."
+        # Resize if larger than max
+        if img.width > MAX_IMAGE_WIDTH or img.height > MAX_IMAGE_HEIGHT:
+            ratio = min(MAX_IMAGE_WIDTH / img.width, MAX_IMAGE_HEIGHT / img.height)
+            img = img.resize((int(img.width * ratio), int(img.height * ratio)), PILImage.LANCZOS)
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        img_bytes = buffered.getvalue()
+        buffered.close()
+        return [Image(data=img_bytes, format="png")]
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="MultiMonitor",
+    description="Get information about all connected monitors including resolution, position, working area, and which is primary.",
+    annotations=ToolAnnotations(
+        title="MultiMonitor",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "MultiMonitor-Tool")
+def multi_monitor_tool(ctx: Context = None) -> str:
+    try:
+        return desktop.get_multi_monitor_info()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="ScreenRecord",
+    description="Control screen recording using ffmpeg: start recording, stop recording, or check status. Requires ffmpeg in PATH.",
+    annotations=ToolAnnotations(
+        title="ScreenRecord",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "ScreenRecord-Tool")
+def screen_record_tool(
+    action: Literal["start", "stop", "status"] = "start",
+    output_path: str | None = None,
+    duration: int | None = None,
+    fps: int = 15,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.screen_record(action, output_path, duration, min(fps, 60))
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="MenuClick",
+    description="Navigate and click menu items by path in a Windows application. Use '>' to separate menu levels (e.g., 'File > Save As').",
+    annotations=ToolAnnotations(
+        title="MenuClick",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "MenuClick-Tool")
+def menu_click_tool(
+    app: str,
+    menu_path: str,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.menu_click(app, menu_path)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="QuickLook",
+    description="Open a file with its default Windows application. Similar to double-clicking the file in Explorer.",
+    annotations=ToolAnnotations(
+        title="QuickLook",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@with_analytics(analytics, "QuickLook-Tool")
+def quick_look_tool(path: str, ctx: Context = None) -> str:
+    try:
+        return desktop.quick_look(path)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="WindowTiling",
+    description=(
+        "Arrange windows in tiling layouts. "
+        "Modes: 'left'/'right'/'top'/'bottom' (half-screen tiling), "
+        "'maximize', 'minimize', 'restore', 'cascade' (cascade all windows). "
+        "Requires app name for single-window operations."
+    ),
+    annotations=ToolAnnotations(
+        title="WindowTiling",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "WindowTiling-Tool")
+def window_tiling_tool(
+    mode: Literal["left", "right", "top", "bottom", "maximize", "minimize", "restore", "cascade"],
+    app: str | None = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.window_tiling(mode, app)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="ClipboardInfo",
+    description="Get detailed clipboard format information: available formats, text preview, image dimensions. More detailed than Clipboard tool's 'get' mode.",
+    annotations=ToolAnnotations(
+        title="ClipboardInfo",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "ClipboardInfo-Tool")
+def clipboard_info_tool(ctx: Context = None) -> str:
+    try:
+        return desktop.get_clipboard_info()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 class Transport(Enum):
     STDIO = "stdio"
     SSE = "sse"
     STREAMABLE_HTTP = "streamable-http"
+
     def __str__(self):
         return self.value
+
 
 class Mode(Enum):
     LOCAL = "local"
     REMOTE = "remote"
+
     def __str__(self):
         return self.value
+
 
 @click.command()
 @click.option(
     "--transport",
     help="The transport layer used by the MCP server.",
-    type=click.Choice([Transport.STDIO.value,Transport.SSE.value,Transport.STREAMABLE_HTTP.value]),
-    default='stdio'
+    type=click.Choice(
+        [Transport.STDIO.value, Transport.SSE.value, Transport.STREAMABLE_HTTP.value]
+    ),
+    default="stdio",
 )
 @click.option(
     "--host",
@@ -1228,20 +1537,19 @@ class Mode(Enum):
     type=int,
     show_default=True,
 )
-
 def main(transport, host, port):
-    config=Config(
-        mode=os.getenv("MODE",Mode.LOCAL.value).lower(),
-        sandbox_id=os.getenv("SANDBOX_ID",''),
-        api_key=os.getenv("API_KEY",'')
+    config = Config(
+        mode=os.getenv("MODE", Mode.LOCAL.value).lower(),
+        sandbox_id=os.getenv("SANDBOX_ID", ""),
+        api_key=os.getenv("API_KEY", ""),
     )
     match config.mode:
         case Mode.LOCAL.value:
             match transport:
                 case Transport.STDIO.value:
-                    mcp.run(transport=Transport.STDIO.value,show_banner=False)
-                case Transport.SSE.value|Transport.STREAMABLE_HTTP.value:
-                    mcp.run(transport=transport,host=host,port=port,show_banner=False)
+                    mcp.run(transport=Transport.STDIO.value, show_banner=False)
+                case Transport.SSE.value | Transport.STREAMABLE_HTTP.value:
+                    mcp.run(transport=transport, host=host, port=port, show_banner=False)
                 case _:
                     raise ValueError(f"Invalid transport: {transport}")
         case Mode.REMOTE.value:
@@ -1249,19 +1557,20 @@ def main(transport, host, port):
                 raise ValueError("SANDBOX_ID is required for MODE: remote")
             if not config.api_key:
                 raise ValueError("API_KEY is required for MODE: remote")
-            client=AuthClient(api_key=config.api_key,sandbox_id=config.sandbox_id)
+            client = AuthClient(api_key=config.api_key, sandbox_id=config.sandbox_id)
             client.authenticate()
-            backend=StreamableHttpTransport(url=client.proxy_url,headers=client.proxy_headers)
-            proxy_mcp=FastMCP.as_proxy(ProxyClient(backend),name="windows-mcp")
+            backend = StreamableHttpTransport(url=client.proxy_url, headers=client.proxy_headers)
+            proxy_mcp = FastMCP.as_proxy(ProxyClient(backend), name="windows-mcp")
             match transport:
                 case Transport.STDIO.value:
-                    proxy_mcp.run(transport=Transport.STDIO.value,show_banner=False)
-                case Transport.SSE.value|Transport.STREAMABLE_HTTP.value:
-                    proxy_mcp.run(transport=transport,host=host,port=port,show_banner=False)
+                    proxy_mcp.run(transport=Transport.STDIO.value, show_banner=False)
+                case Transport.SSE.value | Transport.STREAMABLE_HTTP.value:
+                    proxy_mcp.run(transport=transport, host=host, port=port, show_banner=False)
                 case _:
                     raise ValueError(f"Invalid transport: {transport}")
         case _:
             raise ValueError(f"Invalid mode: {config.mode}")
+
 
 if __name__ == "__main__":
     main()

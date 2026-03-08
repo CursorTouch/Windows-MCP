@@ -278,23 +278,26 @@ class Desktop:
             if ".EXE" not in env.get("PATHEXT", ""):
                 try:
                     import winreg
+
                     with winreg.OpenKey(
                         winreg.HKEY_LOCAL_MACHINE,
                         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
                     ) as key:
                         env["PATHEXT"] = winreg.QueryValueEx(key, "PATHEXT")[0]
                 except Exception:
-                    env["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL;.PY;.PYW"
+                    env["PATHEXT"] = (
+                        ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL;.PY;.PYW"
+                    )
 
             shell = "pwsh" if shutil.which("pwsh") else "powershell"
-                
+
             args = [shell, "-NoProfile"]
-            # Only older Windows PowerShell (5.1) uses -OutputFormat Text successfully here 
+            # Only older Windows PowerShell (5.1) uses -OutputFormat Text successfully here
             shell_name = os.path.basename(shell).lower().replace(".exe", "")
             if shell_name == "powershell":
                 args.extend(["-OutputFormat", "Text"])
             args.extend(["-EncodedCommand", encoded])
-            
+
             result = subprocess.run(
                 args,
                 capture_output=True,  # No errors='ignore' - let subprocess return bytes
@@ -422,10 +425,16 @@ class Desktop:
         else:
             # Validate appid format (allow UWP IDs like Microsoft.WindowsNotepad_...!App)
             # Chars to ignore for validation: \ , _ , . , - , !
-            validation_id = appid.replace("\\", "").replace("_", "").replace(".", "").replace("-", "").replace("!", "")
+            validation_id = (
+                appid.replace("\\", "")
+                .replace("_", "")
+                .replace(".", "")
+                .replace("-", "")
+                .replace("!", "")
+            )
             if not validation_id.isalnum():
                 return (f"Invalid app identifier: {appid}", 1, 0)
-            
+
             safe = ps_quote(f"shell:AppsFolder\\{appid}")
             command = f"Start-Process {safe}"
             response, status = self.execute_command(command)
@@ -532,7 +541,7 @@ class Desktop:
                 raise IndexError(f"Label {label} out of range")
         return element_node.center.x, element_node.center.y
 
-    def click(self, loc: tuple[int, int]|list[int], button: str = "left", clicks: int = 2):
+    def click(self, loc: tuple[int, int] | list[int], button: str = "left", clicks: int = 2):
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
@@ -614,7 +623,7 @@ class Desktop:
                 return 'Invalid type. Use "horizontal" or "vertical".'
         return None
 
-    def drag(self, loc: tuple[int, int]|list[int]):
+    def drag(self, loc: tuple[int, int] | list[int]):
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
@@ -639,7 +648,9 @@ class Desktop:
                 sendkeys_str += "{" + name + "}"
         uia.SendKeys(sendkeys_str, interval=0.01)
 
-    def multi_select(self, press_ctrl: bool | str = False, locs: list[tuple[int, int]] | None = None):
+    def multi_select(
+        self, press_ctrl: bool | str = False, locs: list[tuple[int, int]] | None = None
+    ):
         if locs is None:
             locs = []
         press_ctrl = press_ctrl is True or (
@@ -861,8 +872,6 @@ class Desktop:
         xpath = "/".join(path_parts)
         return xpath
 
-
-
     def get_windows_version(self) -> str:
         response, status = self.execute_command("(Get-CimInstance Win32_OperatingSystem).Caption")
         if status == 0:
@@ -991,7 +1000,7 @@ class Desktop:
         if status == 0:
             return f'Notification sent: "{title}" - {message}'
         else:
-            return f'Notification may have been sent. PowerShell output: {response[:200]}'
+            return f"Notification may have been sent. PowerShell output: {response[:200]}"
 
     def list_processes(
         self,
@@ -1073,20 +1082,16 @@ class Desktop:
             return f'No process matching "{name}" found or access denied.'
         return f"{'Force killed' if force else 'Terminated'}: {', '.join(killed)}"
 
-
-
-
-
     def registry_get(self, path: str, name: str) -> str:
         q_path = ps_quote(path)
         q_name = ps_quote(name)
         command = f"Get-ItemProperty -Path {q_path} -Name {q_name} | Select-Object -ExpandProperty {q_name}"
         response, status = self.execute_command(command)
         if status != 0:
-            return f'Error reading registry: {response.strip()}'
+            return f"Error reading registry: {response.strip()}"
         return f'Registry value [{path}] "{name}" = {response.strip()}'
 
-    def registry_set(self, path: str, name: str, value: str, reg_type: str = 'String') -> str:
+    def registry_set(self, path: str, name: str, value: str, reg_type: str = "String") -> str:
         q_path = ps_quote(path)
         q_name = ps_quote(name)
         q_value = ps_quote(value)
@@ -1099,7 +1104,7 @@ class Desktop:
         )
         response, status = self.execute_command(command)
         if status != 0:
-            return f'Error writing registry: {response.strip()}'
+            return f"Error writing registry: {response.strip()}"
         return f'Registry value [{path}] "{name}" set to "{value}" (type: {reg_type}).'
 
     def registry_delete(self, path: str, name: str | None = None) -> str:
@@ -1109,14 +1114,14 @@ class Desktop:
             command = f"Remove-ItemProperty -Path {q_path} -Name {q_name} -Force"
             response, status = self.execute_command(command)
             if status != 0:
-                return f'Error deleting registry value: {response.strip()}'
+                return f"Error deleting registry value: {response.strip()}"
             return f'Registry value [{path}] "{name}" deleted.'
         else:
             command = f"Remove-Item -Path {q_path} -Recurse -Force"
             response, status = self.execute_command(command)
             if status != 0:
-                return f'Error deleting registry key: {response.strip()}'
-            return f'Registry key [{path}] deleted.'
+                return f"Error deleting registry key: {response.strip()}"
+            return f"Registry key [{path}] deleted."
 
     def registry_list(self, path: str) -> str:
         q_path = ps_quote(path)
@@ -1124,15 +1129,15 @@ class Desktop:
             f"$values = (Get-ItemProperty -Path {q_path} -ErrorAction Stop | "
             f"Select-Object * -ExcludeProperty PS* | Format-List | Out-String).Trim(); "
             f"$subkeys = (Get-ChildItem -Path {q_path} -ErrorAction SilentlyContinue | "
-            f"Select-Object -ExpandProperty PSChildName) -join \"`n\"; "
-            f"if ($values) {{ Write-Output \"Values:`n$values\" }}; "
-            f"if ($subkeys) {{ Write-Output \"`nSub-Keys:`n$subkeys\" }}; "
+            f'Select-Object -ExpandProperty PSChildName) -join "`n"; '
+            f'if ($values) {{ Write-Output "Values:`n$values" }}; '
+            f'if ($subkeys) {{ Write-Output "`nSub-Keys:`n$subkeys" }}; '
             f"if (-not $values -and -not $subkeys) {{ Write-Output 'No values or sub-keys found.' }}"
         )
         response, status = self.execute_command(command)
         if status != 0:
-            return f'Error listing registry: {response.strip()}'
-        return f'Registry key [{path}]:\n{response.strip()}'
+            return f"Error listing registry: {response.strip()}"
+        return f"Registry key [{path}]:\n{response.strip()}"
 
     @contextmanager
     def auto_minimize(self):
@@ -1495,7 +1500,7 @@ class Desktop:
             ps = (
                 "Add-Type -TypeDefinition @'\n"
                 "using System.Runtime.InteropServices;\n"
-                "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IAudioEndpointVolume {\n"
                 "  int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6();\n"
                 "  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
@@ -1503,11 +1508,11 @@ class Desktop:
                 "  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, System.Guid pguidEventContext);\n"
                 "  int GetMute(out bool pbMute);\n"
                 "}\n"
-                "[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }\n"
-                "[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IMMDeviceEnumerator { int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice); }\n"
-                "[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumeratorComObject { }\n"
+                '[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { }\n'
                 "public class Audio {\n"
                 "  static IAudioEndpointVolume GetVol() {\n"
                 "    var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\n"
@@ -1521,7 +1526,7 @@ class Desktop:
                 "}\n"
                 "'@ -ErrorAction SilentlyContinue\n"
             )
-            ps += "Write-Output \"Volume:$([Math]::Round([Audio]::Volume * 100)),Mute:$([Audio]::Mute)\""
+            ps += 'Write-Output "Volume:$([Math]::Round([Audio]::Volume * 100)),Mute:$([Audio]::Mute)"'
             result, status = self.execute_command(ps, timeout=10)
             if status != 0:
                 return f"Error: {result}"
@@ -1537,17 +1542,17 @@ class Desktop:
             ps = (
                 "Add-Type -TypeDefinition @'\n"
                 "using System.Runtime.InteropServices;\n"
-                "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IAudioEndpointVolume {\n"
                 "  int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6();\n"
                 "  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
                 "  int GetMasterVolumeLevelScalar(out float pfLevel);\n"
                 "}\n"
-                "[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }\n"
-                "[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IMMDeviceEnumerator { int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice); }\n"
-                "[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumeratorComObject { }\n"
+                '[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { }\n'
                 "public class Audio {\n"
                 "  static IAudioEndpointVolume GetVol() {\n"
                 "    var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\n"
@@ -1566,11 +1571,17 @@ class Desktop:
             return f"Volume set to {level}%"
 
         if action in ("mute", "unmute", "toggle"):
-            mute_val = "true" if action == "mute" else "false" if action == "unmute" else "(-not [Audio]::Mute)"
+            mute_val = (
+                "true"
+                if action == "mute"
+                else "false"
+                if action == "unmute"
+                else "(-not [Audio]::Mute)"
+            )
             ps = (
                 "Add-Type -TypeDefinition @'\n"
                 "using System.Runtime.InteropServices;\n"
-                "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IAudioEndpointVolume {\n"
                 "  int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6();\n"
                 "  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
@@ -1578,11 +1589,11 @@ class Desktop:
                 "  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, System.Guid pguidEventContext);\n"
                 "  int GetMute(out bool pbMute);\n"
                 "}\n"
-                "[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }\n"
-                "[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                '[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n'
                 "interface IMMDeviceEnumerator { int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice); }\n"
-                "[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumeratorComObject { }\n"
+                '[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { }\n'
                 "public class Audio {\n"
                 "  static IAudioEndpointVolume GetVol() {\n"
                 "    var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\n"
@@ -1707,7 +1718,9 @@ class Desktop:
         if dialog_type == "fileChoose":
             ps = (
                 "Add-Type -AssemblyName System.Windows.Forms\n"
-                "$d = New-Object System.Windows.Forms.OpenFileDialog -Property @{Title=" + safe_title + "}\n"
+                "$d = New-Object System.Windows.Forms.OpenFileDialog -Property @{Title="
+                + safe_title
+                + "}\n"
                 "if ($d.ShowDialog() -eq 'OK') { $d.FileName } else { 'CANCELED' }"
             )
             result, status = self.execute_command(ps, timeout=120)
@@ -1725,15 +1738,15 @@ class Desktop:
         ps = (
             "$info = @()\n"
             "$os = Get-CimInstance Win32_OperatingSystem\n"
-            "$info += \"Windows: $($os.Caption) $($os.Version) (Build $($os.BuildNumber))\"\n"
-            "$info += \"Computer: $($env:COMPUTERNAME)\"\n"
-            "$info += \"User: $($env:USERNAME)\"\n"
+            '$info += "Windows: $($os.Caption) $($os.Version) (Build $($os.BuildNumber))"\n'
+            '$info += "Computer: $($env:COMPUTERNAME)"\n'
+            '$info += "User: $($env:USERNAME)"\n'
             "$uptime = (Get-Date) - $os.LastBootUpTime\n"
-            "$info += \"Uptime: $($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m\"\n"
+            '$info += "Uptime: $($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m"\n'
             "try {\n"
             "  $bat = Get-CimInstance Win32_Battery -ErrorAction Stop\n"
             "  $charging = if ($bat.BatteryStatus -eq 2) { '(charging)' } else { '(battery)' }\n"
-            "  $info += \"Battery: $($bat.EstimatedChargeRemaining)% $charging\"\n"
+            '  $info += "Battery: $($bat.EstimatedChargeRemaining)% $charging"\n'
             "} catch { $info += 'Battery: N/A (desktop)' }\n"
             "try {\n"
             "  $theme = Get-ItemPropertyValue -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name 'AppsUseLightTheme' -ErrorAction Stop\n"
@@ -1743,7 +1756,7 @@ class Desktop:
             "  $wifi = (Get-NetConnectionProfile -ErrorAction Stop | Where-Object { $_.InterfaceAlias -like '*Wi-Fi*' }).Name\n"
             "  if ($wifi) { $info += \"WiFi: $wifi\" } else { $info += 'WiFi: not connected' }\n"
             "} catch { $info += 'WiFi: not available' }\n"
-            "$info -join \"`n\""
+            '$info -join "`n"'
         )
         result, status = self.execute_command(ps, timeout=15)
         if status != 0:
@@ -1886,7 +1899,10 @@ class Desktop:
                 if (
                     current["exists"]
                     and last_state["exists"]
-                    and (current["mtime"] != last_state["mtime"] or current["size"] != last_state["size"])
+                    and (
+                        current["mtime"] != last_state["mtime"]
+                        or current["size"] != last_state["size"]
+                    )
                 ):
                     changed = True
                     change_type = "modified"
@@ -1909,13 +1925,21 @@ class Desktop:
         """Search for files using PowerShell Get-ChildItem or Windows Search."""
         if search_type == "name":
             # Escape filesystem wildcard special chars before wrapping
-            sanitized = query.replace('[', '`[').replace(']', '`]')
+            sanitized = query.replace("[", "`[").replace("]", "`]")
             safe_query = ps_quote(f"*{sanitized}*")
-            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "\"$env:USERPROFILE\""
+            search_dir = (
+                ps_quote(str(pathlib.Path(directory).resolve()))
+                if directory
+                else '"$env:USERPROFILE"'
+            )
             ps = f"Get-ChildItem -Path {search_dir} -Recurse -Filter {safe_query} -ErrorAction SilentlyContinue | Select-Object -First {max_results} -ExpandProperty FullName"
         elif search_type == "content":
             safe_query = ps_quote(query)
-            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "\"$env:USERPROFILE\""
+            search_dir = (
+                ps_quote(str(pathlib.Path(directory).resolve()))
+                if directory
+                else '"$env:USERPROFILE"'
+            )
             ps = f"Get-ChildItem -Path {search_dir} -Recurse -File -ErrorAction SilentlyContinue | Select-String -Pattern {safe_query} -SimpleMatch -List -ErrorAction SilentlyContinue | Select-Object -First {max_results} -ExpandProperty Path"
         else:
             return f"Error: Unknown search_type: {search_type}"
@@ -1964,7 +1988,7 @@ class Desktop:
             safe_url = ps_quote(url)
             ps = (
                 f"$r = Invoke-WebRequest -Uri {safe_url} -UseBasicParsing -TimeoutSec {timeout} -Method GET\n"
-                "\"HTTP $($r.StatusCode) | Content-Length: $($r.RawContentLength) bytes\""
+                '"HTTP $($r.StatusCode) | Content-Length: $($r.RawContentLength) bytes"'
             )
             result, status = self.execute_command(ps, timeout=timeout + 10)
             if status != 0:
@@ -2016,7 +2040,11 @@ class Desktop:
                     role = child.ControlTypeName or ""
                     val = ""
                     try:
-                        val = child.GetValuePattern().Value if hasattr(child, "GetValuePattern") else ""
+                        val = (
+                            child.GetValuePattern().Value
+                            if hasattr(child, "GetValuePattern")
+                            else ""
+                        )
                     except Exception:
                         pass
                     enabled = child.IsEnabled
@@ -2034,3 +2062,728 @@ class Desktop:
         except Exception as e:
             return f"Error: Accessibility inspection failed: {str(e)}"
 
+    # ============== UI ELEMENT OPERATIONS ==============
+
+    def _find_app_window(self, app_name: str) -> "uia.Control | None":
+        """Find a window by exact or partial name match. Returns None if not found."""
+        window = uia.WindowControl(searchDepth=1, Name=app_name)
+        if window.Exists(maxSearchSeconds=2):
+            return window
+        # Partial match fallback
+        all_windows = uia.GetRootControl().GetChildren()
+        for w in all_windows:
+            if app_name.lower() in (w.Name or "").lower():
+                return w
+        return None
+
+    def _navigate_to_element(self, root: "uia.Control", path: str) -> "uia.Control | None":
+        """Navigate to element by path like 'pane 2 > button 3'.
+
+        Path segments: 'role index' where index is 1-based.
+        """
+        import re as _re
+
+        current = root
+        segments = [s.strip() for s in path.split(">")]
+        for seg in segments:
+            match = _re.match(r"^(\w+)\s*(\d+)?$", seg.strip())
+            if not match:
+                return None
+            role_name = match.group(1).lower()
+            index = int(match.group(2) or "1")
+            children = current.GetChildren()
+            count = 0
+            found = False
+            for child in children:
+                child_role = (child.ControlTypeName or "").lower()
+                if child_role == role_name:
+                    count += 1
+                    if count == index:
+                        current = child
+                        found = True
+                        break
+            if not found:
+                return None
+        return current
+
+    def _search_element(
+        self,
+        root: "uia.Control",
+        search: str,
+        role: str | None = None,
+        max_depth: int = 5,
+    ) -> "uia.Control | None":
+        """Search for element by name (fuzzy) and optional role filter."""
+
+        def walk(el, depth):
+            if depth > max_depth:
+                return None
+            try:
+                children = el.GetChildren()
+            except Exception:
+                return None
+            for child in children:
+                name = (child.Name or "").strip()
+                child_role = (child.ControlTypeName or "").lower()
+                if role and child_role != role.lower():
+                    pass
+                elif search.lower() in name.lower():
+                    return child
+                result = walk(child, depth + 1)
+                if result:
+                    return result
+            return None
+
+        return walk(root, 0)
+
+    def ui_element_get(self, app_name: str, depth: int = 1, role: str | None = None) -> str:
+        """Get UI element tree for an application with depth and role filtering."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        lines = [f"Window: {window.Name} [{window.ControlTypeName}]"]
+
+        def walk(element, d, max_d, idx_path):
+            if d >= max_d:
+                return
+            try:
+                children = element.GetChildren()
+            except Exception:
+                return
+            role_counts: dict[str, int] = {}
+            for child in children:
+                child_role = (child.ControlTypeName or "").lower()
+                role_counts[child_role] = role_counts.get(child_role, 0) + 1
+                child_index = role_counts[child_role]
+
+                if role and child_role != role.lower():
+                    continue
+
+                indent = "  " * (d + 1)
+                name = (child.Name or "").replace("\n", " ").replace("\r", "")
+                path_str = (
+                    f"{idx_path} > {child_role} {child_index}"
+                    if idx_path
+                    else f"{child_role} {child_index}"
+                )
+                val = ""
+                try:
+                    val = child.GetValuePattern().Value
+                except Exception:
+                    pass
+                enabled = child.IsEnabled
+                rect = child.BoundingRectangle
+                pos = ""
+                if rect.width() > 0:
+                    pos = f" @({rect.left},{rect.top},{rect.width()},{rect.height()})"
+                line = f"{indent}[{child_role}] {name}"
+                if val and val != name:
+                    line += f" = {val}"
+                if not enabled:
+                    line += " (disabled)"
+                line += pos
+                line += f"  path: {path_str}"
+                lines.append(line)
+                walk(child, d + 1, max_d, path_str)
+
+        walk(window, 0, depth, "")
+        return "\n".join(lines[:500])
+
+    def ui_element_find(self, app_name: str, search: str, role: str | None = None) -> str:
+        """Find a specific UI element by name search."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        element = self._search_element(window, search, role)
+        if not element:
+            return f'No element found matching "{search}"{f" with role {role}" if role else ""}.'
+
+        name = (element.Name or "").replace("\n", " ")
+        el_role = element.ControlTypeName or ""
+        enabled = element.IsEnabled
+        rect = element.BoundingRectangle
+        val = ""
+        try:
+            val = element.GetValuePattern().Value
+        except Exception:
+            pass
+
+        result = f"Found: [{el_role}] {name}"
+        if val:
+            result += f" = {val}"
+        if not enabled:
+            result += " (disabled)"
+        if rect.width() > 0:
+            result += f" @({rect.left},{rect.top},{rect.width()},{rect.height()})"
+        return result
+
+    def ui_element_click(
+        self, app_name: str, path: str | None = None, search: str | None = None
+    ) -> str:
+        """Click a UI element by path or search."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        element = None
+        if path:
+            element = self._navigate_to_element(window, path)
+        elif search:
+            element = self._search_element(window, search)
+
+        if not element:
+            target = path or search
+            return f'Element not found: "{target}".'
+
+        name = (element.Name or "").replace("\n", " ")
+        el_role = element.ControlTypeName or ""
+
+        # Try InvokePattern first
+        try:
+            element.GetInvokePattern().Invoke()
+            return f"Clicked [{el_role}] {name} via InvokePattern."
+        except Exception:
+            pass
+
+        # Try ExpandCollapsePattern
+        try:
+            pattern = element.GetExpandCollapsePattern()
+            state = pattern.ExpandCollapseState
+            if state == 0:  # Collapsed
+                pattern.Expand()
+            else:
+                pattern.Collapse()
+            return f"Toggled [{el_role}] {name} via ExpandCollapsePattern."
+        except Exception:
+            pass
+
+        # Fallback: click at center of bounds
+        try:
+            rect = element.BoundingRectangle
+            if rect.width() > 0:
+                cx = rect.left + rect.width() // 2
+                cy = rect.top + rect.height() // 2
+                self.click((cx, cy), button="left", clicks=1)
+                return f"Clicked [{el_role}] {name} at ({cx}, {cy})."
+        except Exception:
+            pass
+
+        return f"Failed to click [{el_role}] {name}: no supported interaction pattern."
+
+    def ui_element_set_value(
+        self,
+        app_name: str,
+        value: str,
+        path: str | None = None,
+        search: str | None = None,
+    ) -> str:
+        """Set value on a UI element (text field, checkbox, etc.)."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        element = None
+        if path:
+            element = self._navigate_to_element(window, path)
+        elif search:
+            element = self._search_element(window, search)
+
+        if not element:
+            target = path or search
+            return f'Element not found: "{target}".'
+
+        name = (element.Name or "").replace("\n", " ")
+        el_role = element.ControlTypeName or ""
+
+        # Try ValuePattern (text fields, combo boxes)
+        try:
+            element.GetValuePattern().SetValue(value)
+            return f"Set [{el_role}] {name} = {value} via ValuePattern."
+        except Exception:
+            pass
+
+        # Try TogglePattern (checkboxes)
+        try:
+            toggle = element.GetTogglePattern()
+            target_on = value.lower() in ("true", "on", "1", "yes", "checked")
+            current = toggle.ToggleState
+            if (target_on and current != 1) or (not target_on and current == 1):
+                toggle.Toggle()
+            return f"Toggled [{el_role}] {name} to {value} via TogglePattern."
+        except Exception:
+            pass
+
+        # Try SelectionItemPattern (radio buttons, list items)
+        try:
+            element.GetSelectionItemPattern().Select()
+            return f"Selected [{el_role}] {name} via SelectionItemPattern."
+        except Exception:
+            pass
+
+        # Try RangeValuePattern (sliders, spinners)
+        try:
+            rv = element.GetRangeValuePattern()
+            rv.SetValue(float(value))
+            return f"Set [{el_role}] {name} = {value} via RangeValuePattern."
+        except Exception:
+            pass
+
+        return f"Failed to set value on [{el_role}] {name}: no supported value pattern."
+
+    def ui_element_type_into(
+        self,
+        app_name: str,
+        text: str,
+        path: str | None = None,
+        search: str | None = None,
+        clear: bool = False,
+    ) -> str:
+        """Type text into a UI element by focusing it first."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        element = None
+        if path:
+            element = self._navigate_to_element(window, path)
+        elif search:
+            element = self._search_element(window, search)
+
+        if not element:
+            target = path or search
+            return f'Element not found: "{target}".'
+
+        name = (element.Name or "").replace("\n", " ")
+        el_role = element.ControlTypeName or ""
+
+        try:
+            element.SetFocus()
+            sleep(0.1)
+        except Exception:
+            pass
+
+        if clear:
+            # Select all then delete
+            uia.SendKeys("{Ctrl}a", waitTime=0.05)
+            uia.SendKeys("{Delete}", waitTime=0.05)
+
+        escaped = _escape_text_for_sendkeys(text)
+        uia.SendKeys(escaped, waitTime=0.05)
+        return f"Typed {len(text)} chars into [{el_role}] {name}."
+
+    def ui_element_list_windows(self) -> str:
+        """List all visible windows with details."""
+        ps = (
+            "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
+            "ForEach-Object { "
+            "  $h = $_.MainWindowHandle; "
+            "  $r = New-Object 'System.Drawing.Rectangle'; "
+            "  try { "
+            "    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue; "
+            "  } catch {} "
+            '  "$($_.Id)|$($_.ProcessName)|$($_.MainWindowTitle)|$h" '
+            "} | Out-String -Width 500"
+        )
+        result, status = self.execute_command(ps, timeout=10)
+        if status != 0:
+            return f"Error: {result}"
+
+        lines = ["PID | Process | Title | Handle"]
+        lines.append("-" * 60)
+        for line in result.strip().split("\n"):
+            line = line.strip()
+            if line:
+                lines.append(line.replace("|", " | "))
+        return "\n".join(lines)
+
+    def ui_element_overview(self, app_name: str) -> str:
+        """Get element role counts for an application."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        role_counts: dict[str, int] = {}
+        total = 0
+
+        def count_roles(element, depth, max_depth=4):
+            nonlocal total
+            if depth >= max_depth:
+                return
+            try:
+                children = element.GetChildren()
+            except Exception:
+                return
+            for child in children:
+                role = child.ControlTypeName or "Unknown"
+                role_counts[role] = role_counts.get(role, 0) + 1
+                total += 1
+                count_roles(child, depth + 1, max_depth)
+
+        count_roles(window, 0)
+
+        lines = [f"App Overview: {window.Name}", f"Total elements: {total}", ""]
+        for role, count in sorted(role_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"  {role}: {count}")
+        return "\n".join(lines)
+
+    # ============== WINDOW SCREENSHOT ==============
+
+    def capture_window_screenshot(
+        self, app_name: str | None = None, handle: int | None = None
+    ) -> "Image.Image | None":
+        """Capture screenshot of a specific window."""
+        if handle:
+            try:
+                rect_tuple = win32gui.GetWindowRect(handle)
+                # rect_tuple is (left, top, right, bottom)
+                bbox = (rect_tuple[0], rect_tuple[1], rect_tuple[2], rect_tuple[3])
+                img = ImageGrab.grab(bbox=bbox)
+                return img
+            except Exception as e:
+                logger.error(f"Screenshot by handle failed: {e}")
+                return None
+
+        if app_name:
+            window = self._find_app_window(app_name)
+            if not window:
+                return None
+            try:
+                hwnd = window.NativeWindowHandle
+                rect_tuple = win32gui.GetWindowRect(hwnd)
+                bbox = (rect_tuple[0], rect_tuple[1], rect_tuple[2], rect_tuple[3])
+                img = ImageGrab.grab(bbox=bbox)
+                return img
+            except Exception as e:
+                logger.error(f"Screenshot by app name failed: {e}")
+                return None
+
+        return None
+
+    # ============== MULTI MONITOR ==============
+
+    def get_multi_monitor_info(self) -> str:
+        """Get information about all connected monitors."""
+        ps = (
+            "Add-Type -AssemblyName System.Windows.Forms\n"
+            "[System.Windows.Forms.Screen]::AllScreens | ForEach-Object {\n"
+            "  $b = $_.Bounds\n"
+            "  $w = $_.WorkingArea\n"
+            '  "Name: $($_.DeviceName) | Primary: $($_.Primary) | "\n'
+            '  + "Bounds: $($b.X),$($b.Y) $($b.Width)x$($b.Height) | "\n'
+            '  + "WorkArea: $($w.X),$($w.Y) $($w.Width)x$($w.Height) | "\n'
+            '  + "BPP: $($_.BitsPerPixel)"\n'
+            "}"
+        )
+        result, status = self.execute_command(ps, timeout=10)
+        if status != 0:
+            return f"Error: {result}"
+        return f"Monitors:\n{result.strip()}"
+
+    # ============== SCREEN RECORDING ==============
+
+    def screen_record(
+        self,
+        action: str,
+        output_path: str | None = None,
+        duration: int | None = None,
+        fps: int = 15,
+    ) -> str:
+        """Control screen recording using ffmpeg."""
+        if not shutil.which("ffmpeg"):
+            return "Error: ffmpeg not found in PATH. Install ffmpeg first."
+
+        state_file = os.path.join(tempfile.gettempdir(), "wmcp_screen_record.pid")
+
+        if action == "start":
+            if os.path.exists(state_file):
+                return "Error: Recording already in progress. Stop it first."
+            out = output_path or os.path.join(
+                os.path.expanduser("~"), "Desktop", f"recording_{int(time())}.mp4"
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "gdigrab",
+                "-framerate",
+                str(fps),
+                "-i",
+                "desktop",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ]
+            if duration:
+                cmd += ["-t", str(duration)]
+            cmd.append(out)
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            with open(state_file, "w") as f:
+                f.write(f"{proc.pid}\n{out}")
+            return f"Recording started (PID {proc.pid}). Output: {out}"
+
+        if action == "stop":
+            if not os.path.exists(state_file):
+                return "No recording in progress."
+            with open(state_file, "r") as f:
+                lines = f.read().strip().split("\n")
+            pid = int(lines[0])
+            out = lines[1] if len(lines) > 1 else "unknown"
+            try:
+                os.kill(pid, 2)  # SIGINT / Ctrl+C equivalent on Windows
+            except (OSError, ProcessLookupError):
+                pass
+            try:
+                os.remove(state_file)
+            except OSError:
+                pass
+            return f"Recording stopped. Output: {out}"
+
+        if action == "status":
+            if not os.path.exists(state_file):
+                return "No recording in progress."
+            with open(state_file, "r") as f:
+                lines = f.read().strip().split("\n")
+            pid = int(lines[0])
+            out = lines[1] if len(lines) > 1 else "unknown"
+            try:
+                Process(pid)
+                return f"Recording in progress (PID {pid}). Output: {out}"
+            except Exception:
+                try:
+                    os.remove(state_file)
+                except OSError:
+                    pass
+                return "Recording process not found (may have finished)."
+
+        return f"Error: Unknown action: {action}"
+
+    # ============== MENU CLICK ==============
+
+    def menu_click(self, app_name: str, menu_path: str) -> str:
+        """Navigate and click menu items by path (e.g., 'File > Save As')."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        try:
+            window.SetFocus()
+            sleep(0.2)
+        except Exception:
+            pass
+
+        segments = [s.strip() for s in menu_path.split(">")]
+        current = window
+
+        for i, menu_name in enumerate(segments):
+            # Search for menu item
+            found = None
+            try:
+                children = current.GetChildren()
+                for child in children:
+                    child_role = (child.ControlTypeName or "").lower()
+                    child_name = (child.Name or "").strip()
+                    if child_role in ("menubar", "menu", "menuitem"):
+                        if menu_name.lower() in child_name.lower():
+                            found = child
+                            break
+                        # Check children of menu bar
+                        if child_role == "menubar":
+                            bar_children = child.GetChildren()
+                            for bar_child in bar_children:
+                                bar_name = (bar_child.Name or "").strip()
+                                if menu_name.lower() in bar_name.lower():
+                                    found = bar_child
+                                    break
+                            if found:
+                                break
+            except Exception:
+                pass
+
+            if not found:
+                return f'Menu item "{menu_name}" not found at level {i + 1}.'
+
+            # Click/expand the menu item
+            try:
+                found.GetInvokePattern().Invoke()
+                sleep(0.3)
+            except Exception:
+                try:
+                    found.GetExpandCollapsePattern().Expand()
+                    sleep(0.3)
+                except Exception:
+                    try:
+                        rect = found.BoundingRectangle
+                        if rect.width() > 0:
+                            cx = rect.left + rect.width() // 2
+                            cy = rect.top + rect.height() // 2
+                            self.click((cx, cy), button="left", clicks=1)
+                            sleep(0.3)
+                    except Exception:
+                        return f'Failed to activate menu item "{menu_name}".'
+
+            current = found
+
+        return f"Clicked menu path: {menu_path}"
+
+    # ============== QUICK LOOK ==============
+
+    def quick_look(self, path: str) -> str:
+        """Open a file with its default application."""
+        resolved = pathlib.Path(path).resolve()
+        if not resolved.exists():
+            return f"Error: File not found: {resolved}"
+        try:
+            os.startfile(str(resolved))
+            return f"Opened: {resolved}"
+        except Exception as e:
+            return f"Error opening file: {e}"
+
+    # ============== WINDOW TILING ==============
+
+    def window_tiling(self, mode: str, app_name: str | None = None) -> str:
+        """Arrange windows in various tiling layouts."""
+        SWP_SHOWWINDOW = 0x0040
+
+        if mode in ("maximize", "restore", "minimize"):
+            if not app_name:
+                return "Error: app_name is required for maximize/restore/minimize"
+            window = self._find_app_window(app_name)
+            if not window:
+                return f'No window found matching "{app_name}".'
+            hwnd = window.NativeWindowHandle
+            if mode == "maximize":
+                win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            elif mode == "minimize":
+                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            elif mode == "restore":
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            return f"Window {app_name} {mode}d."
+
+        if mode in ("left", "right", "top", "bottom"):
+            if not app_name:
+                return "Error: app_name is required for tiling"
+            window = self._find_app_window(app_name)
+            if not window:
+                return f'No window found matching "{app_name}".'
+            hwnd = window.NativeWindowHandle
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+            # Get work area
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms\n"
+                "$w = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea\n"
+                '"$($w.X),$($w.Y),$($w.Width),$($w.Height)"'
+            )
+            result, status = self.execute_command(ps, timeout=5)
+            if status != 0:
+                return f"Error getting screen info: {result}"
+            parts = result.strip().split(",")
+            sx, sy, sw, sh = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+
+            if mode == "left":
+                x, y, w, h = sx, sy, sw // 2, sh
+            elif mode == "right":
+                x, y, w, h = sx + sw // 2, sy, sw // 2, sh
+            elif mode == "top":
+                x, y, w, h = sx, sy, sw, sh // 2
+            elif mode == "bottom":
+                x, y, w, h = sx, sy + sh // 2, sw, sh // 2
+
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_SHOWWINDOW)
+            return f"Tiled {app_name} to {mode} half."
+
+        if mode == "cascade":
+            ps = (
+                "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
+                "ForEach-Object { $_.MainWindowHandle } | Out-String"
+            )
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: {result}"
+            handles = [int(h.strip()) for h in result.strip().split("\n") if h.strip()]
+            offset = 30
+            for i, hwnd in enumerate(handles):
+                try:
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    ctypes.windll.user32.SetWindowPos(
+                        hwnd, 0, offset * i, offset * i, 800, 600, SWP_SHOWWINDOW
+                    )
+                except Exception:
+                    pass
+            return f"Cascaded {len(handles)} windows."
+
+        return f"Error: Unknown tiling mode: {mode}"
+
+    # ============== CLIPBOARD INFO ==============
+
+    def get_clipboard_info(self) -> str:
+        """Get clipboard format details."""
+        ps = (
+            "Add-Type -AssemblyName System.Windows.Forms\n"
+            "$d = [System.Windows.Forms.Clipboard]::GetDataObject()\n"
+            "if ($d -eq $null) { 'Clipboard is empty' } else {\n"
+            "  $formats = $d.GetFormats()\n"
+            '  $info = @("Clipboard formats (" + $formats.Count + "):")\n'
+            "  foreach ($f in $formats) {\n"
+            "    $hasData = $d.GetDataPresent($f)\n"
+            '    $info += "  $f (present: $hasData)"\n'
+            "  }\n"
+            "  if ($d.ContainsText()) {\n"
+            "    $text = $d.GetText()\n"
+            "    $preview = if ($text.Length -gt 100) { $text.Substring(0, 100) + '...' } else { $text }\n"
+            '    $info += ""\n'
+            '    $info += "Text preview: $preview"\n'
+            '    $info += "Text length: $($text.Length) chars"\n'
+            "  }\n"
+            "  if ($d.ContainsImage()) {\n"
+            "    $img = $d.GetImage()\n"
+            '    $info += "Image: $($img.Width)x$($img.Height)"\n'
+            "  }\n"
+            '  $info -join "`n"\n'
+            "}"
+        )
+        result, status = self.execute_command(ps, timeout=10)
+        if status != 0:
+            return f"Error: {result}"
+        return result.strip()
+
+    # ============== APP CONTROL ENHANCEMENTS ==============
+
+    def window_control(self, app_name: str, action: str) -> str:
+        """Control window state: minimize, maximize, close, fullscreen, restore."""
+        window = self._find_app_window(app_name)
+        if not window:
+            return f'No window found matching "{app_name}".'
+
+        hwnd = window.NativeWindowHandle
+
+        if action == "minimize":
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            return f"Minimized: {app_name}"
+        elif action == "maximize":
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            return f"Maximized: {app_name}"
+        elif action == "restore":
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            return f"Restored: {app_name}"
+        elif action == "close":
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            return f"Sent close to: {app_name}"
+        elif action == "fullscreen":
+            screen_size = self.get_screen_size()
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, -1, 0, 0, screen_size.width, screen_size.height, 0x0040
+            )
+            return f"Fullscreen: {app_name}"
+        else:
+            return f"Error: Unknown action: {action}"
