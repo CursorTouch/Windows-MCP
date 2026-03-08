@@ -31,6 +31,7 @@ import csv
 import re
 import os
 import io
+import tempfile
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -638,17 +639,22 @@ class Desktop:
                 sendkeys_str += "{" + name + "}"
         uia.SendKeys(sendkeys_str, interval=0.01)
 
-    def multi_select(self, press_ctrl: bool | str = False, locs: list[tuple[int, int]] = []):
+    def multi_select(self, press_ctrl: bool | str = False, locs: list[tuple[int, int]] | None = None):
+        if locs is None:
+            locs = []
         press_ctrl = press_ctrl is True or (
             isinstance(press_ctrl, str) and press_ctrl.lower() == "true"
         )
         if press_ctrl:
             uia.PressKey(uia.Keys.VK_CONTROL, waitTime=0.05)
-        for loc in locs:
-            x, y = loc
-            uia.Click(x, y, waitTime=0.2)
-            sleep(0.5)
-        uia.ReleaseKey(uia.Keys.VK_CONTROL, waitTime=0.05)
+        try:
+            for loc in locs:
+                x, y = loc
+                uia.Click(x, y, waitTime=0.2)
+                sleep(0.5)
+        finally:
+            if press_ctrl:
+                uia.ReleaseKey(uia.Keys.VK_CONTROL, waitTime=0.05)
 
     def multi_edit(self, locs: list[tuple[int, int, str]]):
         for loc in locs:
@@ -692,7 +698,7 @@ class Desktop:
     def is_overlay_window(self, element: uia.Control) -> bool:
         no_children = len(element.GetChildren()) == 0
         is_name = "Overlay" in element.Name.strip()
-        return no_children or is_name
+        return no_children and is_name
 
     def get_controls_handles(self, optimized: bool = False):
         handles = set()
@@ -951,9 +957,9 @@ class Desktop:
                 font=font,
             )
 
-        # Draw annotations in parallel
-        with ThreadPoolExecutor() as executor:
-            executor.map(draw_annotation, range(len(nodes)), nodes)
+        # Draw annotations sequentially (ImageDraw is not thread-safe)
+        for i, node in enumerate(nodes):
+            draw_annotation(i, node)
         return padded_screenshot
 
     def send_notification(self, title: str, message: str) -> str:
