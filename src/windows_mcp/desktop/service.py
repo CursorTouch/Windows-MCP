@@ -2126,8 +2126,12 @@ class Desktop:
                 name = (child.Name or "").strip()
                 child_role = (child.ControlTypeName or "").lower()
                 if role and child_role != role.lower():
-                    pass
-                elif search.lower() in name.lower():
+                    # Role mismatch: still recurse deeper but skip name check
+                    result = walk(child, depth + 1)
+                    if result:
+                        return result
+                    continue
+                if search.lower() in name.lower():
                     return child
                 result = walk(child, depth + 1)
                 if result:
@@ -2497,11 +2501,27 @@ class Desktop:
         state_file = os.path.join(tempfile.gettempdir(), "wmcp_screen_record.pid")
 
         if action == "start":
-            if os.path.exists(state_file):
+            # Validate output_path to prevent path traversal / ffmpeg option injection
+            if output_path:
+                resolved_out = pathlib.Path(output_path).resolve()
+                if resolved_out.suffix.lower() not in {".mp4", ".mkv", ".avi"}:
+                    return "Error: output_path must have .mp4, .mkv, or .avi extension"
+                if str(resolved_out).startswith("-"):
+                    return "Error: output_path must not start with '-'"
+                out = str(resolved_out)
+            else:
+                out = os.path.join(
+                    os.path.expanduser("~"),
+                    "Desktop",
+                    f"recording_{int(time())}.mp4",
+                )
+
+            # Atomic check-and-create to prevent TOCTOU race
+            try:
+                fd = os.open(state_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
                 return "Error: Recording already in progress. Stop it first."
-            out = output_path or os.path.join(
-                os.path.expanduser("~"), "Desktop", f"recording_{int(time())}.mp4"
-            )
+
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -2520,14 +2540,19 @@ class Desktop:
                 cmd += ["-t", str(duration)]
             cmd.append(out)
 
+            # Use CREATE_NEW_PROCESS_GROUP so we can send CTRL_BREAK_EVENT
+            # to gracefully stop ffmpeg (allows it to finalize the video file)
+            create_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                creationflags=create_flags,
             )
-            with open(state_file, "w") as f:
-                f.write(f"{proc.pid}\n{out}")
+            os.write(fd, f"{proc.pid}\n{out}".encode())
+            os.close(fd)
             return f"Recording started (PID {proc.pid}). Output: {out}"
 
         if action == "stop":
@@ -2538,7 +2563,26 @@ class Desktop:
             pid = int(lines[0])
             out = lines[1] if len(lines) > 1 else "unknown"
             try:
-                os.kill(pid, 2)  # SIGINT / Ctrl+C equivalent on Windows
+                # Verify the PID is actually ffmpeg before sending signal
+                p = Process(pid)
+                if "ffmpeg" not in p.name().lower():
+                    try:
+                        os.remove(state_file)
+                    except OSError:
+                        pass
+                    return f"PID {pid} is not ffmpeg (is {p.name()}). State file cleaned up."
+            except Exception:
+                try:
+                    os.remove(state_file)
+                except OSError:
+                    pass
+                return "Recording process not found. State file cleaned up."
+            try:
+                import signal
+
+                # Send CTRL_BREAK_EVENT for graceful ffmpeg shutdown
+                # (allows finalization of the MP4 container)
+                os.kill(pid, getattr(signal, "CTRL_BREAK_EVENT", signal.SIGINT))
             except (OSError, ProcessLookupError):
                 pass
             try:
@@ -2555,7 +2599,13 @@ class Desktop:
             pid = int(lines[0])
             out = lines[1] if len(lines) > 1 else "unknown"
             try:
-                Process(pid)
+                p = Process(pid)
+                if "ffmpeg" not in p.name().lower():
+                    try:
+                        os.remove(state_file)
+                    except OSError:
+                        pass
+                    return "Recording process not found (PID recycled). State file cleaned up."
                 return f"Recording in progress (PID {pid}). Output: {out}"
             except Exception:
                 try:
@@ -2709,7 +2759,14 @@ class Desktop:
             result, status = self.execute_command(ps, timeout=10)
             if status != 0:
                 return f"Error: {result}"
-            handles = [int(h.strip()) for h in result.strip().split("\n") if h.strip()]
+            handles = []
+            for h in result.strip().split("\n"):
+                h = h.strip()
+                if h:
+                    try:
+                        handles.append(int(h))
+                    except ValueError:
+                        pass  # skip non-numeric lines (headers, errors)
             offset = 30
             for i, hwnd in enumerate(handles):
                 try:
@@ -2729,8 +2786,12 @@ class Desktop:
         """Get clipboard format details."""
         ps = (
             "Add-Type -AssemblyName System.Windows.Forms\n"
-            "$d = [System.Windows.Forms.Clipboard]::GetDataObject()\n"
-            "if ($d -eq $null) { 'Clipboard is empty' } else {\n"
+            "$d = $null\n"
+            "for ($i = 0; $i -lt 3; $i++) {\n"
+            "  try { $d = [System.Windows.Forms.Clipboard]::GetDataObject(); break }\n"
+            "  catch { Start-Sleep -Milliseconds 100 }\n"
+            "}\n"
+            "if ($d -eq $null) { 'Clipboard is empty or locked' } else {\n"
             "  $formats = $d.GetFormats()\n"
             '  $info = @("Clipboard formats (" + $formats.Count + "):")\n'
             "  foreach ($f in $formats) {\n"

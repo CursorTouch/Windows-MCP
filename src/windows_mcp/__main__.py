@@ -1344,7 +1344,7 @@ def window_screenshot_tool(
     app: str | None = None,
     handle: int | None = None,
     ctx: Context = None,
-) -> list:
+) -> list | str:
     try:
         if not app and not handle:
             return "Error: app or handle is required"
