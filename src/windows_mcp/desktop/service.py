@@ -1,4 +1,5 @@
 from windows_mcp.desktop.utils import ps_quote, ps_quote_for_xml, approximate_color_name
+import pathlib
 from windows_mcp.vdm.core import (
     get_all_desktops,
     get_current_desktop,
@@ -1479,4 +1480,549 @@ class Desktop:
                 )
         except Exception as e:
             return f"Error during image matching: {str(e)}"
+
+    # ============== SYSTEM CONTROL METHODS ==============
+
+    def volume_control(self, action: str, level: int | None = None) -> str:
+        """Control system volume via PowerShell COM AudioEndpointVolume."""
+        if action == "get":
+            ps = (
+                "Add-Type -TypeDefinition @'\n"
+                "using System.Runtime.InteropServices;\n"
+                "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IAudioEndpointVolume {\n"
+                "  int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6();\n"
+                "  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
+                "  int GetMasterVolumeLevelScalar(out float pfLevel);\n"
+                "  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, System.Guid pguidEventContext);\n"
+                "  int GetMute(out bool pbMute);\n"
+                "}\n"
+                "[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }\n"
+                "[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IMMDeviceEnumerator { int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice); }\n"
+                "[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumeratorComObject { }\n"
+                "public class Audio {\n"
+                "  static IAudioEndpointVolume GetVol() {\n"
+                "    var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\n"
+                "    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 1, out dev);\n"
+                "    var iid = typeof(IAudioEndpointVolume).GUID; object o;\n"
+                "    dev.Activate(ref iid, 1, IntPtr.Zero, out o);\n"
+                "    return (IAudioEndpointVolume)o;\n"
+                "  }\n"
+                "  public static float Volume { get { float v; GetVol().GetMasterVolumeLevelScalar(out v); return v; } set { GetVol().SetMasterVolumeLevelScalar(value, System.Guid.Empty); } }\n"
+                "  public static bool Mute { get { bool m; GetVol().GetMute(out m); return m; } set { GetVol().SetMute(value, System.Guid.Empty); } }\n"
+                "}\n"
+                "'@ -ErrorAction SilentlyContinue\n"
+            )
+            ps += "Write-Output \"Volume:$([Math]::Round([Audio]::Volume * 100)),Mute:$([Audio]::Mute)\""
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: {result}"
+            return f"System volume: {result.strip()}"
+
+        if action == "set":
+            if level is None:
+                return "Error: level is required for 'set' action"
+            if level < 0 or level > 100:
+                return "Error: level must be 0-100"
+            # COM interop for volume set — intentionally omits SetMute/GetMute
+            # since they are unused (vtable position of SetMasterVolumeLevelScalar is stable)
+            ps = (
+                "Add-Type -TypeDefinition @'\n"
+                "using System.Runtime.InteropServices;\n"
+                "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IAudioEndpointVolume {\n"
+                "  int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6();\n"
+                "  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
+                "  int GetMasterVolumeLevelScalar(out float pfLevel);\n"
+                "}\n"
+                "[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }\n"
+                "[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IMMDeviceEnumerator { int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice); }\n"
+                "[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumeratorComObject { }\n"
+                "public class Audio {\n"
+                "  static IAudioEndpointVolume GetVol() {\n"
+                "    var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\n"
+                "    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 1, out dev);\n"
+                "    var iid = typeof(IAudioEndpointVolume).GUID; object o;\n"
+                "    dev.Activate(ref iid, 1, IntPtr.Zero, out o);\n"
+                "    return (IAudioEndpointVolume)o;\n"
+                "  }\n"
+                "  public static void SetVol(float v) { GetVol().SetMasterVolumeLevelScalar(v, System.Guid.Empty); }\n"
+                "}\n"
+                f"'@ -ErrorAction SilentlyContinue\n[Audio]::SetVol({level / 100.0})"
+            )
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: {result}"
+            return f"Volume set to {level}%"
+
+        if action in ("mute", "unmute", "toggle"):
+            mute_val = "true" if action == "mute" else "false" if action == "unmute" else "(-not [Audio]::Mute)"
+            ps = (
+                "Add-Type -TypeDefinition @'\n"
+                "using System.Runtime.InteropServices;\n"
+                "[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IAudioEndpointVolume {\n"
+                "  int _0(); int _1(); int _2(); int _3(); int _4(); int _5(); int _6();\n"
+                "  int SetMasterVolumeLevelScalar(float fLevel, System.Guid pguidEventContext);\n"
+                "  int GetMasterVolumeLevelScalar(out float pfLevel);\n"
+                "  int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, System.Guid pguidEventContext);\n"
+                "  int GetMute(out bool pbMute);\n"
+                "}\n"
+                "[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IMMDevice { int Activate(ref System.Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface); }\n"
+                "[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n"
+                "interface IMMDeviceEnumerator { int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppDevice); }\n"
+                "[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumeratorComObject { }\n"
+                "public class Audio {\n"
+                "  static IAudioEndpointVolume GetVol() {\n"
+                "    var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;\n"
+                "    IMMDevice dev; enumerator.GetDefaultAudioEndpoint(0, 1, out dev);\n"
+                "    var iid = typeof(IAudioEndpointVolume).GUID; object o;\n"
+                "    dev.Activate(ref iid, 1, IntPtr.Zero, out o);\n"
+                "    return (IAudioEndpointVolume)o;\n"
+                "  }\n"
+                "  public static bool Mute { get { bool m; GetVol().GetMute(out m); return m; } set { GetVol().SetMute(value, System.Guid.Empty); } }\n"
+                "}\n"
+                f"'@ -ErrorAction SilentlyContinue\n[Audio]::Mute = {mute_val}"
+            )
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: {result}"
+            return f"Volume {action}d."
+
+        return f"Error: Unknown action: {action}"
+
+    def brightness_control(self, action: str, level: int | None = None) -> str:
+        """Control display brightness via WMI."""
+        if action == "get":
+            ps = "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness"
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return "Error: Cannot read brightness (may not be supported on desktop monitors)."
+            return f"Display brightness: {result.strip()}%"
+
+        if action == "set":
+            if level is None:
+                return "Error: level is required for 'set' action"
+            if level < 0 or level > 100:
+                return "Error: level must be 0-100"
+            ps = f"(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods).WmiSetBrightness(1, {level})"
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: Cannot set brightness (may not be supported on desktop monitors). {result}"
+            return f"Brightness set to {level}%"
+
+        return f"Error: Unknown action: {action}"
+
+    def app_list(self) -> str:
+        """List all running GUI applications with window titles."""
+        ps = "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object Id, ProcessName, MainWindowTitle | Format-Table -AutoSize | Out-String -Width 200"
+        result, status = self.execute_command(ps, timeout=10)
+        if status != 0:
+            return f"Error: {result}"
+        return f"Running applications:\n{result.strip()}"
+
+    def app_is_running(self, name: str) -> str:
+        """Check if an application is running by process name."""
+        safe_name = ps_quote(name)
+        ps = f"if (Get-Process -Name {safe_name} -ErrorAction SilentlyContinue) {{ 'Running' }} else {{ 'Not running' }}"
+        result, status = self.execute_command(ps, timeout=5)
+        if status != 0:
+            return f"Error: {result}"
+        return f'"{name}" is {result.strip().lower()}.'
+
+    def show_dialog(
+        self,
+        dialog_type: str,
+        message: str | None = None,
+        title: str | None = None,
+        default_answer: str | None = None,
+        choices: list[str] | None = None,
+    ) -> str:
+        """Show a Windows dialog via PowerShell."""
+        safe_msg = ps_quote(message or "Please respond")
+        safe_title = ps_quote(title or "Dialog")
+
+        if dialog_type == "alert":
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms\n"
+                f"[System.Windows.Forms.MessageBox]::Show({safe_msg}, {safe_title}, "
+                "'OKCancel', 'Information')"
+            )
+            result, status = self.execute_command(ps, timeout=120)
+            if status != 0:
+                return f"Error: {result}"
+            return f"Dialog result: {result.strip()}"
+
+        if dialog_type == "prompt":
+            safe_default = ps_quote(default_answer or "")
+            ps = (
+                "Add-Type -AssemblyName Microsoft.VisualBasic\n"
+                f"[Microsoft.VisualBasic.Interaction]::InputBox({safe_msg}, {safe_title}, {safe_default})"
+            )
+            result, status = self.execute_command(ps, timeout=120)
+            if status != 0:
+                return f"Error: {result}"
+            text = result.strip()
+            if not text:
+                return "User canceled the prompt (or submitted empty text)."
+            return f"User entered: {text}"
+
+        if dialog_type == "choose":
+            if not choices:
+                return "Error: choices list is required for 'choose' type"
+            items_str = ", ".join(ps_quote(c) for c in choices)
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms\n"
+                f"$form = New-Object System.Windows.Forms.Form -Property @{{Text={safe_title}; Width=350; Height=200; StartPosition='CenterScreen'}}\n"
+                f"$combo = New-Object System.Windows.Forms.ComboBox -Property @{{Left=10; Top=50; Width=310; DropDownStyle='DropDownList'}}\n"
+                f"@({items_str}) | ForEach-Object {{ $combo.Items.Add($_) | Out-Null }}\n"
+                "$combo.SelectedIndex = 0\n"
+                f"$label = New-Object System.Windows.Forms.Label -Property @{{Text={safe_msg}; Left=10; Top=10; Width=310; Height=30}}\n"
+                "$ok = New-Object System.Windows.Forms.Button -Property @{Text='OK'; Left=120; Top=120; Width=80; DialogResult='OK'}\n"
+                "$form.Controls.AddRange(@($label, $combo, $ok))\n"
+                "$form.AcceptButton = $ok\n"
+                "if ($form.ShowDialog() -eq 'OK') { $combo.SelectedItem } else { 'CANCELED' }"
+            )
+            result, status = self.execute_command(ps, timeout=120)
+            if status != 0:
+                return f"Error: {result}"
+            text = result.strip()
+            if text == "CANCELED":
+                return "User canceled the selection."
+            return f"Selected: {text}"
+
+        if dialog_type == "fileChoose":
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms\n"
+                "$d = New-Object System.Windows.Forms.OpenFileDialog -Property @{Title=" + safe_title + "}\n"
+                "if ($d.ShowDialog() -eq 'OK') { $d.FileName } else { 'CANCELED' }"
+            )
+            result, status = self.execute_command(ps, timeout=120)
+            if status != 0:
+                return f"Error: {result}"
+            text = result.strip()
+            if text == "CANCELED":
+                return "User canceled file selection."
+            return f"Selected file: {text}"
+
+        return f"Error: Unknown dialog type: {dialog_type}"
+
+    def system_info_extended(self) -> str:
+        """Get extended system information via PowerShell and WMI."""
+        ps = (
+            "$info = @()\n"
+            "$os = Get-CimInstance Win32_OperatingSystem\n"
+            "$info += \"Windows: $($os.Caption) $($os.Version) (Build $($os.BuildNumber))\"\n"
+            "$info += \"Computer: $($env:COMPUTERNAME)\"\n"
+            "$info += \"User: $($env:USERNAME)\"\n"
+            "$uptime = (Get-Date) - $os.LastBootUpTime\n"
+            "$info += \"Uptime: $($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m\"\n"
+            "try {\n"
+            "  $bat = Get-CimInstance Win32_Battery -ErrorAction Stop\n"
+            "  $charging = if ($bat.BatteryStatus -eq 2) { '(charging)' } else { '(battery)' }\n"
+            "  $info += \"Battery: $($bat.EstimatedChargeRemaining)% $charging\"\n"
+            "} catch { $info += 'Battery: N/A (desktop)' }\n"
+            "try {\n"
+            "  $theme = Get-ItemPropertyValue -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name 'AppsUseLightTheme' -ErrorAction Stop\n"
+            "  $info += \"Dark mode: $(if ($theme -eq 0) { 'on' } else { 'off' })\"\n"
+            "} catch { $info += 'Dark mode: unknown' }\n"
+            "try {\n"
+            "  $wifi = (Get-NetConnectionProfile -ErrorAction Stop | Where-Object { $_.InterfaceAlias -like '*Wi-Fi*' }).Name\n"
+            "  if ($wifi) { $info += \"WiFi: $wifi\" } else { $info += 'WiFi: not connected' }\n"
+            "} catch { $info += 'WiFi: not available' }\n"
+            "$info -join \"`n\""
+        )
+        result, status = self.execute_command(ps, timeout=15)
+        if status != 0:
+            return f"Error: {result}"
+        return f"System Information:\n{result.strip()}"
+
+    def dark_mode_control(self, action: str) -> str:
+        """Control Windows dark/light mode via registry."""
+        reg_path = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+
+        if action == "get":
+            ps = f"Get-ItemPropertyValue -Path '{reg_path}' -Name 'AppsUseLightTheme'"
+            result, status = self.execute_command(ps, timeout=5)
+            if status != 0:
+                return f"Error: {result}"
+            is_dark = result.strip() == "0"
+            return f"Dark mode is {'enabled' if is_dark else 'disabled'}."
+
+        if action in ("enable", "disable", "toggle"):
+            if action == "toggle":
+                ps_get = f"Get-ItemPropertyValue -Path '{reg_path}' -Name 'AppsUseLightTheme'"
+                result, status = self.execute_command(ps_get, timeout=5)
+                if status != 0:
+                    return f"Error: {result}"
+                new_val = 1 if result.strip() == "0" else 0
+            else:
+                new_val = 0 if action == "enable" else 1
+
+            ps = (
+                f"Set-ItemProperty -Path '{reg_path}' -Name 'AppsUseLightTheme' -Value {new_val} -Type DWord\n"
+                f"Set-ItemProperty -Path '{reg_path}' -Name 'SystemUsesLightTheme' -Value {new_val} -Type DWord"
+            )
+            result, status = self.execute_command(ps, timeout=5)
+            if status != 0:
+                return f"Error: {result}"
+            mode = "enabled" if new_val == 0 else "disabled"
+            return f"Dark mode {mode}."
+
+        return f"Error: Unknown action: {action}"
+
+    def say_text(self, text: str, voice: str | None = None, rate: int | None = None) -> str:
+        """Text-to-speech via PowerShell SAPI."""
+        safe_text = ps_quote(text)
+        ps = "Add-Type -AssemblyName System.Speech\n$s = New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
+        if voice:
+            safe_voice = ps_quote(voice)
+            ps += f"try {{ $s.SelectVoice({safe_voice}) }} catch {{ Write-Error ('Voice not found: ' + {safe_voice}) }}\n"
+        if rate is not None:
+            clamped = max(-10, min(10, rate))
+            ps += f"$s.Rate = {clamped}\n"
+        ps += f"$s.Speak({safe_text})\nWrite-Output 'OK'"
+        result, status = self.execute_command(ps, timeout=60)
+        if status != 0:
+            return f"Error: {result}"
+        return f"Spoke {len(text)} characters{f' with voice {voice}' if voice else ''}{f' at rate {rate}' if rate else ''}."
+
+    def port_check(self, action: str, port: int | None = None, protocol: str = "tcp") -> str:
+        """Check port usage via PowerShell Get-NetTCPConnection."""
+        if action == "check":
+            if port is None:
+                return "Error: port is required for 'check' action"
+            if protocol in ("tcp", "both"):
+                ps = f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | Select-Object LocalPort, RemoteAddress, State, OwningProcess | Format-Table -AutoSize | Out-String"
+                result, status = self.execute_command(ps, timeout=10)
+                tcp_info = result.strip() if status == 0 and result.strip() else ""
+            else:
+                tcp_info = ""
+
+            if protocol in ("udp", "both"):
+                ps = f"Get-NetUDPEndpoint -LocalPort {port} -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess | Format-Table -AutoSize | Out-String"
+                result, status = self.execute_command(ps, timeout=10)
+                udp_info = result.strip() if status == 0 and result.strip() else ""
+            else:
+                udp_info = ""
+
+            if tcp_info or udp_info:
+                parts = []
+                if tcp_info:
+                    parts.append(f"TCP:\n{tcp_info}")
+                if udp_info:
+                    parts.append(f"UDP:\n{udp_info}")
+                return f"Port {port} is IN USE:\n" + "\n".join(parts)
+            return f"Port {port} is free (not in use)."
+
+        if action == "list":
+            ps = "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess | Sort-Object LocalPort | Format-Table -AutoSize | Out-String -Width 200"
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: {result}"
+            return f"Listening ports:\n{result.strip()}"
+
+        return f"Error: Unknown action: {action}"
+
+    def file_watcher(
+        self,
+        path: str,
+        timeout_seconds: int = 30,
+        event: str = "any",
+    ) -> str:
+        """Watch a file for changes by polling stat."""
+        resolved = pathlib.Path(path).resolve()
+        watch_target = resolved.parent if event == "create" and not resolved.exists() else resolved
+
+        if not watch_target.exists():
+            return f"Error: Path does not exist: {watch_target}"
+
+        def get_state(p: pathlib.Path):
+            try:
+                stat = p.stat()
+                return {"exists": True, "mtime": stat.st_mtime, "size": stat.st_size}
+            except (FileNotFoundError, OSError):
+                return {"exists": False, "mtime": 0, "size": 0}
+
+        last_state = get_state(resolved)
+        start = time()
+        saw_delete = False
+
+        while (time() - start) < timeout_seconds:
+            sleep(0.25)
+            current = get_state(resolved)
+
+            if not current["exists"] and last_state["exists"]:
+                saw_delete = True
+
+            changed = False
+            change_type = ""
+
+            if event in ("create", "any"):
+                if (not last_state["exists"] or saw_delete) and current["exists"]:
+                    changed = True
+                    change_type = "created"
+                    saw_delete = False
+
+            if event in ("delete", "any") and not changed:
+                if last_state["exists"] and not current["exists"]:
+                    changed = True
+                    change_type = "deleted"
+
+            if event in ("modify", "any") and not changed:
+                if (
+                    current["exists"]
+                    and last_state["exists"]
+                    and (current["mtime"] != last_state["mtime"] or current["size"] != last_state["size"])
+                ):
+                    changed = True
+                    change_type = "modified"
+
+            if changed:
+                elapsed = round(time() - start, 1)
+                return f"File {change_type}: {resolved} (detected in {elapsed}s). Size: {current['size']} bytes."
+
+            last_state = current
+
+        return f"Timeout after {timeout_seconds}s — no {event} changes detected on: {resolved}"
+
+    def search_files(
+        self,
+        query: str,
+        search_type: str = "name",
+        directory: str | None = None,
+        max_results: int = 20,
+    ) -> str:
+        """Search for files using PowerShell Get-ChildItem or Windows Search."""
+        if search_type == "name":
+            # Escape filesystem wildcard special chars before wrapping
+            sanitized = query.replace('[', '`[').replace(']', '`]')
+            safe_query = ps_quote(f"*{sanitized}*")
+            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "'C:\\'"
+            ps = f"Get-ChildItem -Path {search_dir} -Recurse -Filter {safe_query} -ErrorAction SilentlyContinue | Select-Object -First {max_results} -ExpandProperty FullName"
+        elif search_type == "content":
+            safe_query = ps_quote(query)
+            search_dir = ps_quote(str(pathlib.Path(directory).resolve())) if directory else "'C:\\'"
+            ps = f"Get-ChildItem -Path {search_dir} -Recurse -File -ErrorAction SilentlyContinue | Select-String -Pattern {safe_query} -SimpleMatch -List -ErrorAction SilentlyContinue | Select-Object -First {max_results} -ExpandProperty Path"
+        else:
+            return f"Error: Unknown search_type: {search_type}"
+
+        result, status = self.execute_command(ps, timeout=30)
+        if status != 0:
+            return f"Error: {result}"
+        results = result.strip()
+        if not results:
+            return f'No results found for "{query}".'
+        lines = results.split("\n")
+        return f"Found {len(lines)} result(s):\n{results}"
+
+    def network_diagnostics(
+        self,
+        action: str,
+        host: str | None = None,
+        count: int = 3,
+        timeout: int = 5,
+    ) -> str:
+        """Network diagnostic utilities via PowerShell."""
+        if action == "ping":
+            if not host:
+                return "Error: host is required for ping"
+            safe_host = ps_quote(host)
+            ps = f"Test-Connection -ComputerName {safe_host} -Count {count} -TimeoutSeconds {timeout} | Format-Table -AutoSize | Out-String -Width 200"
+            result, status = self.execute_command(ps, timeout=timeout + 10)
+            if status != 0:
+                return f"Ping {host} failed: {result}"
+            return f"Ping {host}:\n{result.strip()}"
+
+        if action == "dns":
+            if not host:
+                return "Error: host is required for dns"
+            safe_host = ps_quote(host)
+            ps = f"Resolve-DnsName {safe_host} -ErrorAction Stop | Format-Table -AutoSize | Out-String -Width 200"
+            result, status = self.execute_command(ps, timeout=timeout + 5)
+            if status != 0:
+                return f"DNS lookup failed for {host}: {result}"
+            return f"DNS lookup {host}:\n{result.strip()}"
+
+        if action == "http":
+            if not host:
+                return "Error: host is required for http"
+            url = host if host.startswith("http") else f"https://{host}"
+            safe_url = ps_quote(url)
+            ps = (
+                f"$r = Invoke-WebRequest -Uri {safe_url} -UseBasicParsing -TimeoutSec {timeout} -Method GET\n"
+                "\"HTTP $($r.StatusCode) | Content-Length: $($r.RawContentLength) bytes\""
+            )
+            result, status = self.execute_command(ps, timeout=timeout + 10)
+            if status != 0:
+                return f"HTTP check {url} failed: {result}"
+            return f"HTTP check {url}:\n{result.strip()}"
+
+        if action == "interfaces":
+            ps = "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' } | Select-Object InterfaceAlias, IPAddress | Format-Table -AutoSize | Out-String"
+            result, status = self.execute_command(ps, timeout=10)
+            if status != 0:
+                return f"Error: {result}"
+            return f"Network interfaces:\n{result.strip()}"
+
+        return f"Error: Unknown action: {action}"
+
+    def accessibility_inspector(
+        self,
+        app_name: str,
+        max_depth: int = 3,
+    ) -> str:
+        """Read UI element tree using UIAutomation library."""
+        try:
+            # Find the app window
+            windows = uia.WindowControl(searchDepth=1, Name=app_name)
+            if not windows.Exists(maxSearchSeconds=3):
+                # Try partial match
+                all_windows = uia.GetRootControl().GetChildren()
+                target = None
+                for w in all_windows:
+                    if app_name.lower() in (w.Name or "").lower():
+                        target = w
+                        break
+                if not target:
+                    return f'No window found matching "{app_name}".'
+                windows = target
+
+            lines = [f"Window: {windows.Name} [{windows.ControlTypeName}]"]
+
+            def walk(element, depth, max_d):
+                if depth >= max_d:
+                    return
+                try:
+                    children = element.GetChildren()
+                except Exception:
+                    return
+                for child in children:
+                    indent = "  " * (depth + 1)
+                    name = child.Name or ""
+                    role = child.ControlTypeName or ""
+                    val = ""
+                    try:
+                        val = child.GetValuePattern().Value if hasattr(child, "GetValuePattern") else ""
+                    except Exception:
+                        pass
+                    enabled = child.IsEnabled
+                    line = f"{indent}[{role}] {name}"
+                    if val and val != name:
+                        line += f" = {val}"
+                    if not enabled:
+                        line += " (disabled)"
+                    lines.append(line)
+                    walk(child, depth + 1, max_d)
+
+            walk(windows, 0, max_depth)
+            return "\n".join(lines[:500])  # Cap at 500 lines
+
+        except Exception as e:
+            return f"Error: Accessibility inspection failed: {str(e)}"
 

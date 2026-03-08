@@ -975,6 +975,225 @@ def find_image_tool(
         return f"Error: {str(e)}"
 
 
+# ============== SYSTEM CONTROL TOOLS ==============
+
+
+@mcp.tool(
+    name="VolumeControl",
+    description="Control Windows system volume: get current level, set to specific value (0-100), mute, unmute, or toggle.",
+    annotations=ToolAnnotations(title="VolumeControl", readOnlyHint=False, destructiveHint=False),
+)
+@with_analytics(analytics, "VolumeControl-Tool")
+def volume_control_tool(
+    action: Literal["get", "set", "mute", "unmute", "toggle"],
+    level: int | None = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.volume_control(action, level)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="BrightnessControl",
+    description="Control display brightness: get current level or set to specific value (0-100). Works on laptops; may not be supported on desktop monitors.",
+    annotations=ToolAnnotations(title="BrightnessControl", readOnlyHint=False, destructiveHint=False),
+)
+@with_analytics(analytics, "BrightnessControl-Tool")
+def brightness_control_tool(
+    action: Literal["get", "set"],
+    level: int | None = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.brightness_control(action, level)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="AppList",
+    description="List all running GUI applications with their PID and window title, or check if a specific application is running.",
+    annotations=ToolAnnotations(title="AppList", readOnlyHint=True, destructiveHint=False),
+)
+@with_analytics(analytics, "AppList-Tool")
+def app_list_tool(
+    action: Literal["list", "isRunning"] = "list",
+    name: str | None = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        if action == "isRunning":
+            if not name:
+                return "Error: name is required for isRunning action"
+            return desktop.app_is_running(name)
+        return desktop.app_list()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="Dialog",
+    description="Show a Windows dialog: alert (OK/Cancel), prompt (text input), choose (dropdown selection), or fileChoose (file picker). Returns the user's response.",
+    annotations=ToolAnnotations(title="Dialog", readOnlyHint=True, destructiveHint=False),
+)
+@with_analytics(analytics, "Dialog-Tool")
+def dialog_tool(
+    dialog_type: Literal["alert", "prompt", "choose", "fileChoose"],
+    message: str | None = None,
+    title: str | None = None,
+    default_answer: str | None = None,
+    choices: list[str] | None = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.show_dialog(dialog_type, message, title, default_answer, choices)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="SystemInfoExtended",
+    description="Get extended Windows system information: OS version, computer name, user, uptime, battery, dark mode, WiFi network.",
+    annotations=ToolAnnotations(title="SystemInfoExtended", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+)
+@with_analytics(analytics, "SystemInfoExtended-Tool")
+def system_info_extended_tool(ctx: Context = None) -> str:
+    try:
+        return desktop.system_info_extended()
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="DarkMode",
+    description="Control Windows dark/light mode: get current state, enable, disable, or toggle. Applies to both apps and system theme.",
+    annotations=ToolAnnotations(title="DarkMode", readOnlyHint=False, destructiveHint=False),
+)
+@with_analytics(analytics, "DarkMode-Tool")
+def dark_mode_tool(
+    action: Literal["get", "enable", "disable", "toggle"],
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.dark_mode_control(action)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="SayText",
+    description="Speak text aloud using Windows text-to-speech (SAPI). Optionally specify a voice name and speaking rate (-10 to 10).",
+    annotations=ToolAnnotations(title="SayText", readOnlyHint=True, destructiveHint=False),
+)
+@with_analytics(analytics, "SayText-Tool")
+def say_text_tool(
+    text: str,
+    voice: str | None = None,
+    rate: int | None = None,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.say_text(text, voice, rate)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+# ============== DEV WORKFLOW TOOLS ==============
+
+
+@mcp.tool(
+    name="PortCheck",
+    description="Check if a network port is in use and what process owns it, or list all listening ports. Useful for dev server verification.",
+    annotations=ToolAnnotations(title="PortCheck", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+)
+@with_analytics(analytics, "PortCheck-Tool")
+def port_check_tool(
+    action: Literal["check", "list"],
+    port: int | None = None,
+    protocol: Literal["tcp", "udp", "both"] = "tcp",
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.port_check(action, port, protocol)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="FileWatcher",
+    description="Watch a file or directory for changes (create, modify, delete). Blocks until a change is detected or timeout expires.",
+    annotations=ToolAnnotations(title="FileWatcher", readOnlyHint=True, destructiveHint=False),
+)
+@with_analytics(analytics, "FileWatcher-Tool")
+def file_watcher_tool(
+    path: str,
+    timeout_seconds: int = 30,
+    event: Literal["any", "create", "modify", "delete"] = "any",
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.file_watcher(path, min(timeout_seconds, 300), event)
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="SearchFiles",
+    description="Search for files by name or content using PowerShell. Optionally limit search to a specific directory.",
+    annotations=ToolAnnotations(title="SearchFiles", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+)
+@with_analytics(analytics, "SearchFiles-Tool")
+def search_files_tool(
+    query: str,
+    search_type: Literal["name", "content"] = "name",
+    directory: str | None = None,
+    max_results: int = 20,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.search_files(query, search_type, directory, min(max_results, 100))
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="NetworkDiagnostics",
+    description="Network diagnostics: ping a host, DNS lookup, HTTP endpoint check, or list network interfaces.",
+    annotations=ToolAnnotations(title="NetworkDiagnostics", readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+)
+@with_analytics(analytics, "NetworkDiagnostics-Tool")
+def network_diagnostics_tool(
+    action: Literal["ping", "dns", "http", "interfaces"],
+    host: str | None = None,
+    count: int = 3,
+    timeout: int = 5,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.network_diagnostics(action, host, min(count, 10), min(timeout, 30))
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+@mcp.tool(
+    name="AccessibilityInspector",
+    description="Read the UI element tree of a Windows application window. Returns element hierarchy with control types, names, values, and enabled states.",
+    annotations=ToolAnnotations(title="AccessibilityInspector", readOnlyHint=True, destructiveHint=False),
+)
+@with_analytics(analytics, "AccessibilityInspector-Tool")
+def accessibility_inspector_tool(
+    app_name: str,
+    max_depth: int = 3,
+    ctx: Context = None,
+) -> str:
+    try:
+        return desktop.accessibility_inspector(app_name, min(max_depth, 5))
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 class Transport(Enum):
     STDIO = "stdio"
     SSE = "sse"
