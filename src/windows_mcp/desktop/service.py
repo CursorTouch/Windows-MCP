@@ -1628,7 +1628,9 @@ class Desktop:
 
     def app_is_running(self, name: str) -> str:
         """Check if an application is running by process name."""
-        safe_name = ps_quote(name)
+        # Strip .exe extension if provided — Get-Process expects name without extension
+        clean_name = name.removesuffix(".exe").removesuffix(".EXE")
+        safe_name = ps_quote(clean_name)
         ps = f"if (Get-Process -Name {safe_name} -ErrorAction SilentlyContinue) {{ 'Running' }} else {{ 'Not running' }}"
         result, status = self.execute_command(ps, timeout=5)
         if status != 0:
@@ -1786,7 +1788,7 @@ class Desktop:
         if rate is not None:
             clamped = max(-10, min(10, rate))
             ps += f"$s.Rate = {clamped}\n"
-        ps += f"$s.Speak({safe_text})\nWrite-Output 'OK'"
+        ps += f"$s.SpeakAsync({safe_text}) | Out-Null\nwhile ($s.State -ne 'Ready') {{ Start-Sleep -Milliseconds 100 }}\nWrite-Output 'OK'"
         result, status = self.execute_command(ps, timeout=60)
         if status != 0:
             return f"Error: {result}"
