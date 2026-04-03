@@ -25,7 +25,7 @@ dependencies = [
     # wheels (Windows 11 ARM64 / Snapdragon). Newer releases dropped them again.
     # This pin must stay in `dependencies` (not just [tool.uv]) so it is respected
     # when installing from PyPI via pip or uvx, not only during local uv sync.
-    "cryptography>=46.0.0,<=46.0.3",
+    "cryptography>=46.0.0,<=46.0.6",
     "dxcam>=0.3.0",
     "fastmcp>=3.0",
     "fuzzywuzzy>=0.18.0",
