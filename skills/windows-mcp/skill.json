@@ -1,0 +1,7 @@
+{
+  "name": "windows-mcp",
+  "version": "1.0.0",
+  "description": "Windows computer use from Codex via MCP.",
+  "license": "MIT",
+  "repository": "https://github.com/CursorTouch/Windows-MCP"
+}
