@@ -13,4 +13,4 @@ jobs:
       - name: Validate skill package
         uses: hashgraph-online/skill-publish@ee40f6501dee6e687a04c285b5b94343cbf64c42 # v1.0.9
         with:
-          skill-dir: .
+          skill-dir: skills/windows-mcp
