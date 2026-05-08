@@ -50,6 +50,7 @@ The codebase follows a layered service architecture under `src/windows_mcp/`:
 - Screenshots are capped to 1920x1080 for token efficiency
 - Mouse/keyboard input uses UIA (same coordinate space as BoundingRectangle; no DPI mismatch)
 - Screenshot is the preferred fast visual-context tool; Snapshot is the heavier path for UI element ids and DOM extraction
+- Both Screenshot and Snapshot accept `window_name` (fuzzy title) or `window_pid` (exact pid) to capture a single window via `desktop/window_resolver.py`; the rect is read with `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` falling back to `GetWindowRect`
 - Browser detection (Chrome, Edge, Firefox) triggers special DOM extraction mode in Snapshot
 - Fuzzy string matching (`thefuzz`) is used for element name matching
 - UI element fetching has retry logic (`THREAD_MAX_RETRIES=3` in tree service)

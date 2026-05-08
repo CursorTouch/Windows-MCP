@@ -21,9 +21,10 @@ screenshot_tool = None
 
 def register(mcp, *, get_desktop, get_analytics):
     global state_tool, screenshot_tool
+
     @mcp.tool(
-        name='Snapshot',
-        description="Take a screenshot and inspect the screen. Keywords: screenshot, screen capture, see screen, observe, look, inspect, UI elements, what's on screen. Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with cursor highlight. Set use_annotation=False to get a clean screenshot without bounding box overlays on UI elements (default: True, draws colored rectangles around detected elements). Set use_ui_tree=False for a faster screenshot-only snapshot when you do not need interactive or scrollable element extraction. Set width_reference_lines/height_reference_lines to overlay a grid for better spatial reasoning (make sure vision is enabled to use it). Set use_dom=True for browser content to get web page elements instead of browser UI. Set display=[0] or display=[0,1] to limit all returned Snapshot information to specific screens; omit it to keep the default full-desktop behavior. Always call this first to understand the current desktop state before taking actions.",
+        name="Snapshot",
+        description="Take a screenshot and inspect the screen. Keywords: screenshot, screen capture, see screen, observe, look, inspect, UI elements, what's on screen. Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with cursor highlight. Set use_annotation=False to get a clean screenshot without bounding box overlays on UI elements (default: True, draws colored rectangles around detected elements). Set use_ui_tree=False for a faster screenshot-only snapshot when you do not need interactive or scrollable element extraction. Set width_reference_lines/height_reference_lines to overlay a grid for better spatial reasoning (make sure vision is enabled to use it). Set use_dom=True for browser content to get web page elements instead of browser UI. Set display=[0] or display=[0,1] to limit all returned Snapshot information to specific screens; omit it to keep the default full-desktop behavior. Set window_name (fuzzy title match) or window_pid (exact process id) to capture only that window's bounding rectangle; the window is brought to the foreground first unless focus_window=False. window_name/window_pid and display are mutually exclusive. Always call this first to understand the current desktop state before taking actions.",
         annotations=ToolAnnotations(
             title="Snapshot",
             readOnlyHint=True,
@@ -41,6 +42,9 @@ def register(mcp, *, get_desktop, get_analytics):
         width_reference_line: int | None = None,
         height_reference_line: int | None = None,
         display: list[int] | None = None,
+        window_name: str | None = None,
+        window_pid: int | None = None,
+        focus_window: bool | str = True,
         ctx: Context = None,
     ):
         try:
@@ -54,22 +58,25 @@ def register(mcp, *, get_desktop, get_analytics):
                 height_reference_line=height_reference_line,
                 display=display,
                 tool_name="Snapshot tool",
+                window_name=window_name,
+                window_pid=window_pid,
+                focus_window=_as_bool(focus_window),
             )
         except Exception as e:
             logger.warning(
                 "Snapshot failed with display=%s use_vision=%s use_dom=%s",
                 display,
-                use_vision if 'use_vision' in locals() else None,
-                use_dom if 'use_dom' in locals() else None,
+                use_vision if "use_vision" in locals() else None,
+                use_dom if "use_dom" in locals() else None,
                 exc_info=True,
             )
-            return [f'Error capturing desktop state: {str(e)}. Please try again.']
+            return [f"Error capturing desktop state: {str(e)}. Please try again."]
 
         return build_snapshot_response(capture_result, include_ui_details=True)
 
     @mcp.tool(
-        name='Screenshot',
-        description="Captures a fast screenshot-first desktop snapshot with cursor position, desktop/window summaries, and an image. This path skips UI tree extraction for speed. Use Snapshot when you need interactive element ids, scrollable regions, or browser DOM extraction. Note: the returned image may be downscaled for efficiency; when it is, multiply image coordinates by the ratio of original size to displayed size to get the actual screen coordinates for mouse actions (Click, Move, etc.).",
+        name="Screenshot",
+        description="Captures a fast screenshot-first desktop snapshot with cursor position, desktop/window summaries, and an image. This path skips UI tree extraction for speed. Use Snapshot when you need interactive element ids, scrollable regions, or browser DOM extraction. Set window_name (fuzzy title match) or window_pid (exact process id) to capture just that window's bounding rectangle; the window is brought to the foreground first unless focus_window=False. window_name/window_pid and display are mutually exclusive. Note: the returned image may be downscaled for efficiency; when it is, multiply image coordinates by the ratio of original size to displayed size to get the actual screen coordinates for mouse actions (Click, Move, etc.).",
         annotations=ToolAnnotations(
             title="Screenshot",
             readOnlyHint=True,
@@ -84,6 +91,9 @@ def register(mcp, *, get_desktop, get_analytics):
         width_reference_line: int | None = None,
         height_reference_line: int | None = None,
         display: list[int] | None = None,
+        window_name: str | None = None,
+        window_pid: int | None = None,
+        focus_window: bool | str = True,
         ctx: Context = None,
     ):
         try:
@@ -97,6 +107,9 @@ def register(mcp, *, get_desktop, get_analytics):
                 height_reference_line=height_reference_line,
                 display=display,
                 tool_name="Screenshot tool",
+                window_name=window_name,
+                window_pid=window_pid,
+                focus_window=_as_bool(focus_window),
             )
         except Exception as e:
             logger.warning(
@@ -104,7 +117,7 @@ def register(mcp, *, get_desktop, get_analytics):
                 display,
                 exc_info=True,
             )
-            return [f'Error capturing screenshot: {str(e)}. Please try again.']
+            return [f"Error capturing screenshot: {str(e)}. Please try again."]
 
         return build_snapshot_response(
             capture_result,

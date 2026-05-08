@@ -16,6 +16,7 @@ from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
 from windows_mcp.desktop import flash_overlay
+from windows_mcp.desktop import window_resolver
 from locale import getpreferredencoding
 from contextlib import contextmanager
 from typing import Literal
@@ -92,6 +93,7 @@ class Desktop:
         grid_lines: tuple[int, int] | None = None,
         display_indices: list[int] | None = None,
         max_image_size: Size | None = None,
+        capture_rect: "uia.Rect | None" = None,
     ) -> DesktopState:
         use_annotation = use_annotation is True or (
             isinstance(use_annotation, str) and use_annotation.lower() == "true"
@@ -118,7 +120,10 @@ class Desktop:
         screenshot_capture_ms = 0.0
         screenshot_resize_ms = 0.0
         state_build_ms = 0.0
-        capture_rect = self.get_display_union_rect(display_indices) if display_indices else None
+        if capture_rect is None and display_indices:
+            capture_rect = self.get_display_union_rect(display_indices)
+        elif capture_rect is not None and display_indices:
+            raise ValueError("capture_rect and display_indices are mutually exclusive")
         screenshot_region = self._rect_to_bounding_box(capture_rect) if capture_rect else None
 
         # Fast path for Screenshot tool (use_ui_tree=False): skip window enumeration.
@@ -1051,6 +1056,38 @@ class Desktop:
             right=max(rect.right for rect in selected_rects),
             bottom=max(rect.bottom for rect in selected_rects),
         )
+
+    def resolve_window_capture_rect(
+        self,
+        *,
+        name: str | None = None,
+        pid: int | None = None,
+        focus: bool = True,
+    ) -> tuple[uia.Rect, str]:
+        """Resolve a top-level window to a capture rectangle.
+
+        Returns ``(rect, title)``. If ``focus`` is True, the window is brought
+        to the foreground and unminimized before its rect is read so the
+        screenshot will show the actual on-screen content.
+        """
+        hwnd, title = window_resolver.resolve_window(name=name, pid=pid)
+        if focus:
+            try:
+                self.bring_window_to_top(hwnd)
+            except Exception:
+                logger.debug("bring_window_to_top failed for %s", title, exc_info=True)
+                window_resolver.restore_if_minimized(hwnd)
+            sleep(0.05)
+        elif window_resolver.is_iconic(hwnd):
+            raise window_resolver.WindowNotFoundError(
+                f"Window {title!r} is minimized; pass focus_window=True to restore it"
+            )
+        rect = window_resolver.get_window_rect(hwnd)
+        if rect.isempty():
+            raise window_resolver.WindowNotFoundError(
+                f"Window {title!r} has an empty bounding rectangle"
+            )
+        return rect, title
 
     def get_screenshot(self, capture_rect: uia.Rect | None = None) -> Image.Image:
         flash_overlay.cancel_active_flash()

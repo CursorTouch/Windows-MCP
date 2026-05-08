@@ -53,6 +53,9 @@ def capture_desktop_state(
     height_reference_line: int | None,
     display: list[int] | None,
     tool_name: str,
+    window_name: str | None = None,
+    window_pid: int | None = None,
+    focus_window: bool = True,
 ):
     profile_enabled = _snapshot_profile_enabled()
     profile_started_at = time.perf_counter()
@@ -65,6 +68,17 @@ def capture_desktop_state(
         raise ValueError("use_dom=True requires use_ui_tree=True")
 
     display_indices = Desktop.parse_display_selection(display)
+
+    capture_rect = None
+    target_window_title = None
+    if window_name or window_pid is not None:
+        if display_indices:
+            raise ValueError("window_name/window_pid and display are mutually exclusive")
+        capture_rect, target_window_title = desktop.resolve_window_capture_rect(
+            name=window_name,
+            pid=window_pid,
+            focus=focus_window,
+        )
 
     grid_lines = None
     if width_reference_line and height_reference_line:
@@ -80,6 +94,7 @@ def capture_desktop_state(
         grid_lines=grid_lines,
         display_indices=display_indices,
         max_image_size=Size(width=MAX_IMAGE_WIDTH, height=MAX_IMAGE_HEIGHT),
+        capture_rect=capture_rect,
     )
     if profile_enabled:
         desktop_state_ms = (time.perf_counter() - stage_started_at) * 1000
@@ -128,6 +143,7 @@ def capture_desktop_state(
         "active_desktop": active_desktop,
         "all_desktops": all_desktops,
         "screenshot_bytes": screenshot_bytes,
+        "target_window_title": target_window_title,
     }
 
 
@@ -163,18 +179,21 @@ def build_snapshot_response(
             " for click, move and other mouse actions)\n"
         )
     if desktop_state.screenshot_region:
-        metadata_text += (
-            f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
-        )
+        metadata_text += f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
     if desktop_state.screenshot_displays:
-        metadata_text += f"Displays: {','.join(str(index) for index in desktop_state.screenshot_displays)}\n"
+        metadata_text += (
+            f"Displays: {','.join(str(index) for index in desktop_state.screenshot_displays)}\n"
+        )
         metadata_text += "Coordinate Space: Virtual desktop coordinates\n"
     if desktop_state.screenshot_backend:
         metadata_text += f"Screenshot Backend: {desktop_state.screenshot_backend}\n"
+    target_window_title = capture_result.get("target_window_title")
+    if target_window_title:
+        metadata_text += f"Target Window: {target_window_title}\n"
     if ui_detail_note:
         metadata_text += f"{ui_detail_note}\n"
 
-    response_text = dedent(f'''
+    response_text = dedent(f"""
     {metadata_text}
     Active Desktop:
     {active_desktop}
@@ -187,14 +206,14 @@ def build_snapshot_response(
 
     Opened Windows:
     {windows}
-    ''')
+    """)
     if include_ui_details:
-        response_text += dedent(f'''
+        response_text += dedent(f"""
 
     UI Tree:
-    {semantic_tree or "No elements found."}''')
+    {semantic_tree or "No elements found."}""")
 
     response = [response_text]
     if screenshot_bytes:
-        response.append(Image(data=screenshot_bytes, format='png'))
+        response.append(Image(data=screenshot_bytes, format="png"))
     return response
