@@ -121,3 +121,20 @@ def is_foreground(hwnd: int) -> bool:
 def restore_if_minimized(hwnd: int) -> None:
     if is_iconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+
+def force_foreground(hwnd: int) -> None:
+    """Last-resort focus attempt via SwitchToThisWindow.
+
+    ``SetForegroundWindow`` is silently rejected when the calling process
+    didn't receive the last input event (Windows foreground lock), even
+    after the AttachThreadInput dance. ``SwitchToThisWindow`` is the
+    undocumented Win32 API the shell uses for Alt-Tab; it works around the
+    lock without injecting keyboard input.
+    """
+    try:
+        ctypes.windll.user32.SwitchToThisWindow(
+            ctypes.wintypes.HWND(hwnd), ctypes.wintypes.BOOL(True)
+        )
+    except Exception:
+        logger.debug("SwitchToThisWindow failed for hwnd %s", hwnd, exc_info=True)

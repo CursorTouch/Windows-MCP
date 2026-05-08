@@ -118,6 +118,24 @@ class TestIsForeground:
         assert window_resolver.is_foreground(1) is False
 
 
+class TestForceForeground:
+    def test_invokes_switch_to_this_window(self, monkeypatch):
+        calls: list[tuple] = []
+        fake_user32 = MagicMock()
+        fake_user32.SwitchToThisWindow.side_effect = lambda hwnd, fAlt: calls.append(
+            (hwnd.value, fAlt.value)
+        )
+        monkeypatch.setattr(ctypes, "windll", MagicMock(user32=fake_user32))
+        window_resolver.force_foreground(7777)
+        assert calls and calls[0] == (7777, True)
+
+    def test_swallows_exception(self, monkeypatch):
+        fake_user32 = MagicMock()
+        fake_user32.SwitchToThisWindow.side_effect = OSError("nope")
+        monkeypatch.setattr(ctypes, "windll", MagicMock(user32=fake_user32))
+        window_resolver.force_foreground(1)
+
+
 class TestGetWindowRect:
     def test_uses_dwm_when_call_succeeds(self, monkeypatch):
         captured = {}

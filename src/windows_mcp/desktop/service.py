@@ -1079,6 +1079,9 @@ class Desktop:
                 window_resolver.restore_if_minimized(hwnd)
             sleep(0.1)
             if not window_resolver.is_foreground(hwnd):
+                window_resolver.force_foreground(hwnd)
+                sleep(0.1)
+            if not window_resolver.is_foreground(hwnd):
                 logger.warning(
                     "Window %r did not become foreground after focus attempt; "
                     "screenshot may be obscured by another window",
