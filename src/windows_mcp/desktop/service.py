@@ -1077,11 +1077,25 @@ class Desktop:
             except Exception:
                 logger.debug("bring_window_to_top failed for %s", title, exc_info=True)
                 window_resolver.restore_if_minimized(hwnd)
-            sleep(0.05)
-        elif window_resolver.is_iconic(hwnd):
-            raise window_resolver.WindowNotFoundError(
-                f"Window {title!r} is minimized; pass focus_window=True to restore it"
-            )
+            sleep(0.1)
+            if not window_resolver.is_foreground(hwnd):
+                logger.warning(
+                    "Window %r did not become foreground after focus attempt; "
+                    "screenshot may be obscured by another window",
+                    title,
+                )
+        else:
+            if window_resolver.is_iconic(hwnd):
+                raise window_resolver.WindowNotFoundError(
+                    f"Window {title!r} is minimized; pass focus_window=True to restore it"
+                )
+            if not window_resolver.is_foreground(hwnd):
+                raise window_resolver.WindowNotFoundError(
+                    f"Window {title!r} is not the foreground window; "
+                    "screenshot would capture whatever is on top instead. "
+                    "Pass focus_window=True (default) to bring it forward, "
+                    "or focus the window manually first."
+                )
         rect = window_resolver.get_window_rect(hwnd)
         if rect.isempty():
             raise window_resolver.WindowNotFoundError(

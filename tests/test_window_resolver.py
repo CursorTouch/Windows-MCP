@@ -101,6 +101,23 @@ class TestResolveWindow:
         assert hwnd == 202
 
 
+class TestIsForeground:
+    def test_true_when_foreground_handle_matches(self, monkeypatch):
+        monkeypatch.setattr(window_resolver.win32gui, "GetForegroundWindow", lambda: 4242)
+        assert window_resolver.is_foreground(4242) is True
+
+    def test_false_when_foreground_handle_differs(self, monkeypatch):
+        monkeypatch.setattr(window_resolver.win32gui, "GetForegroundWindow", lambda: 999)
+        assert window_resolver.is_foreground(4242) is False
+
+    def test_false_when_call_raises(self, monkeypatch):
+        def boom():
+            raise OSError("denied")
+
+        monkeypatch.setattr(window_resolver.win32gui, "GetForegroundWindow", boom)
+        assert window_resolver.is_foreground(1) is False
+
+
 class TestGetWindowRect:
     def test_uses_dwm_when_call_succeeds(self, monkeypatch):
         captured = {}

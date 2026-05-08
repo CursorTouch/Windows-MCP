@@ -110,6 +110,14 @@ def is_iconic(hwnd: int) -> bool:
     return bool(win32gui.IsIconic(hwnd))
 
 
+def is_foreground(hwnd: int) -> bool:
+    """True if ``hwnd`` is currently the system foreground window."""
+    try:
+        return win32gui.GetForegroundWindow() == hwnd
+    except Exception:
+        return False
+
+
 def restore_if_minimized(hwnd: int) -> None:
     if is_iconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
