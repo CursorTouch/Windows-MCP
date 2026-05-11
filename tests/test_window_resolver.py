@@ -181,3 +181,66 @@ class TestGetWindowRect:
 
         rect = get_window_rect(1)
         assert (rect.left, rect.top, rect.right, rect.bottom) == (1, 2, 3, 4)
+
+
+class TestResolveWindowCaptureRectFocusFailure:
+    """Regression test for PR #233 review feedback: when focus=True and the
+    post-condition foreground check fails for both bring_window_to_top and
+    force_foreground, the method must raise instead of capturing wrong content.
+    bring_window_to_top swallows its own exceptions, so the try/except path is
+    not a reliable failure signal — only the explicit ``is_foreground`` check is.
+    """
+
+    def test_raises_when_window_never_becomes_foreground(self, monkeypatch):
+        from windows_mcp.desktop.service import Desktop
+
+        # Stand up a Desktop without running its full __init__ (Tree/UIA setup
+        # would otherwise pull in heavy Windows COM state in a unit test).
+        desktop = Desktop.__new__(Desktop)
+
+        # Stub Desktop.bring_window_to_top so it neither raises nor focuses
+        # — same as real-world failure (it logs and returns).
+        monkeypatch.setattr(Desktop, "bring_window_to_top", lambda self, hwnd: None)
+
+        # Resolver returns a fake (hwnd, title).
+        monkeypatch.setattr(
+            window_resolver, "resolve_window", lambda name=None, pid=None: (12345, "Stub Title")
+        )
+        # is_foreground always returns False — focus attempt "fails".
+        monkeypatch.setattr(window_resolver, "is_foreground", lambda hwnd: False)
+        # force_foreground does nothing (also a no-op).
+        monkeypatch.setattr(window_resolver, "force_foreground", lambda hwnd: None)
+        # Make sleep a no-op so the test is fast.
+        monkeypatch.setattr("windows_mcp.desktop.service.sleep", lambda s: None)
+
+        with pytest.raises(WindowNotFoundError) as excinfo:
+            desktop.resolve_window_capture_rect(name="Stub")
+        assert "foreground" in str(excinfo.value).lower()
+        assert "focus_window=False" in str(excinfo.value)
+
+    def test_returns_rect_when_force_foreground_succeeds(self, monkeypatch):
+        from windows_mcp.desktop.service import Desktop
+
+        desktop = Desktop.__new__(Desktop)
+
+        monkeypatch.setattr(Desktop, "bring_window_to_top", lambda self, hwnd: None)
+        monkeypatch.setattr(
+            window_resolver, "resolve_window", lambda name=None, pid=None: (12345, "Stub Title")
+        )
+        # First check fails, second (after force_foreground) succeeds.
+        calls = {"is_foreground": 0}
+
+        def fake_is_foreground(hwnd):
+            calls["is_foreground"] += 1
+            return calls["is_foreground"] >= 2
+
+        monkeypatch.setattr(window_resolver, "is_foreground", fake_is_foreground)
+        monkeypatch.setattr(window_resolver, "force_foreground", lambda hwnd: None)
+        monkeypatch.setattr("windows_mcp.desktop.service.sleep", lambda s: None)
+        monkeypatch.setattr(
+            window_resolver, "get_window_rect", lambda hwnd: Rect(10, 20, 110, 120)
+        )
+
+        rect, title = desktop.resolve_window_capture_rect(name="Stub")
+        assert title == "Stub Title"
+        assert (rect.left, rect.top, rect.right, rect.bottom) == (10, 20, 110, 120)

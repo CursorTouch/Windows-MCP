@@ -1082,10 +1082,16 @@ class Desktop:
                 window_resolver.force_foreground(hwnd)
                 sleep(0.1)
             if not window_resolver.is_foreground(hwnd):
-                logger.warning(
-                    "Window %r did not become foreground after focus attempt; "
-                    "screenshot may be obscured by another window",
-                    title,
+                # bring_window_to_top swallows its own exceptions, so we can't rely on
+                # them as a failure signal. The explicit foreground check above is the
+                # only reliable signal — refuse the capture rather than silently shoot
+                # whatever happens to be on top. The user can pass focus_window=False
+                # to accept that risk explicitly.
+                raise window_resolver.WindowNotFoundError(
+                    f"Could not bring window {title!r} to the foreground after multiple "
+                    "attempts (likely blocked by elevation or another foreground-locking "
+                    "process). Focus it manually and retry, or pass focus_window=False to "
+                    "capture its current rect even though it may be obscured."
                 )
         else:
             if window_resolver.is_iconic(hwnd):
