@@ -688,6 +688,22 @@ class Desktop:
         press_enter: bool | str = False,
     ):
         x, y = loc
+
+        # When UAC is on screen, the broker's SendKeys goes to its own desktop,
+        # not Winlogon. Route through the LocalSystem service which can call
+        # IUIAutomationValuePattern.SetValue on the Secure Desktop element.
+        # SetValue is a single atomic write, so caret_position / clear /
+        # press_enter are ignored on the secure-desktop path — the agent
+        # should re-screenshot afterward if it needs to verify state.
+        from windows_mcp.desktop.screenshot import is_secure_desktop_active
+        if is_secure_desktop_active():
+            from windows_mcp.service import get_host_client
+            try:
+                get_host_client().uia_type_at(x, y, text)
+            except Exception as exc:
+                logger.warning("UAC type via service failed: %s", exc)
+            return
+
         uia.Click(x, y)
         if caret_position == "start":
             uia.SendKeys("{Home}", waitTime=0.05)
@@ -738,11 +754,25 @@ class Desktop:
                 return 'Invalid type. Use "horizontal" or "vertical".'
         return None
 
-    def drag(self, loc: tuple[int, int]|list[int]):
+    def drag(self, loc: tuple[int, int] | list[int]):
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
             x, y = loc
+
+        # On the Secure Desktop, mouse_event-style drag is dropped by UIPI.
+        # Route through the service, which uses IUIAutomationTransformPattern.Move
+        # — best-effort and only works if the source element supports it.
+        from windows_mcp.desktop.screenshot import is_secure_desktop_active
+        if is_secure_desktop_active():
+            from windows_mcp.service import get_host_client
+            try:
+                cx, cy = uia.GetCursorPos()
+                get_host_client().uia_drag_from_to(cx, cy, x, y)
+            except Exception as exc:
+                logger.warning("UAC drag via service failed: %s", exc)
+            return
+
         sleep(0.5)
         cx, cy = uia.GetCursorPos()
         uia.DragDrop(cx, cy, x, y, moveSpeed=1)
