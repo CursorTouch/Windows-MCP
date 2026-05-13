@@ -12,6 +12,7 @@ from windows_mcp.tools import (
     scrape,
     shell,
     snapshot,
+    uac,
 )
 
 _MODULES = [
@@ -26,6 +27,7 @@ _MODULES = [
     process,
     notification,
     registry,
+    uac,
 ]
 
 
