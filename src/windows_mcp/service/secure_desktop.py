@@ -26,7 +26,9 @@ import ctypes
 import ctypes.wintypes
 import io
 import logging
+import re
 import threading
+import time
 from contextlib import contextmanager
 from typing import Any
 
@@ -315,15 +317,16 @@ def uia_invoke_element(name: str) -> bool:
         return False
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 def uia_click_at(x: int, y: int) -> bool:
     """Invoke the element at (x, y) on the input desktop via UIA ElementFromPoint.
 
     Callers can pass coordinates straight from the screenshot.  Runs on a fresh
     thread so COM binds to the correct (Winlogon) desktop.
     """
-    class _POINT(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
     def _work() -> bool:
         with _input_desktop():
             iuia, uia_core = _create_uia()
@@ -345,3 +348,165 @@ def uia_click_at(x: int, y: int) -> bool:
     except Exception as exc:
         logger.error("uia_click_at(%d,%d) failed: %s", x, y, exc)
         return False
+
+
+# Additional UIA constants (for ValuePattern, used by Type)
+_UIA_ValuePatternId = 10002
+
+
+def uia_type_at(x: int, y: int, text: str) -> bool:
+    """Set the value of the editable element at (x, y) on the input desktop.
+
+    Uses the IUIAutomationValuePattern.SetValue method — works from Session 0
+    without any input injection, so it crosses the Winlogon boundary safely.
+    """
+    def _work() -> bool:
+        with _input_desktop():
+            iuia, uia_core = _create_uia()
+            element = iuia.ElementFromPoint(_POINT(x, y))
+            if element is None:
+                logger.warning("uia_type_at(%d,%d): no element found", x, y)
+                return False
+            pattern = element.GetCurrentPattern(_UIA_ValuePatternId)
+            if pattern is None:
+                logger.warning("uia_type_at(%d,%d): no ValuePattern", x, y)
+                return False
+            value = pattern.QueryInterface(uia_core.IUIAutomationValuePattern)
+            value.SetValue(text)
+            logger.info("uia_type_at(%d,%d): set value on %r", x, y, element.CurrentName)
+            return True
+
+    try:
+        return _run_on_fresh_thread(_work) or False
+    except Exception as exc:
+        logger.error("uia_type_at(%d,%d) failed: %s", x, y, exc)
+        return False
+
+
+def uia_drag_from_to(x1: int, y1: int, x2: int, y2: int) -> bool:
+    """Drag the element at (x1, y1) onto (x2, y2) using UIA DragPattern when present.
+
+    Cross-desktop drag with native Win32 input is unreliable because mouse_event
+    cannot be retargeted across Session 0's desktop boundary.  This implementation
+    relies on the source element supporting the legacy IAccessible "DoDefaultAction"
+    drag or a UIA Transform/Move pattern; it is best-effort and intentionally
+    narrower than the in-process drag the broker performs on the Default desktop.
+    Most UAC consent dialogs do not need drag, so this is here for completeness.
+    """
+    _UIA_TransformPatternId = 10016
+    def _work() -> bool:
+        with _input_desktop():
+            iuia, uia_core = _create_uia()
+            src = iuia.ElementFromPoint(_POINT(x1, y1))
+            if src is None:
+                return False
+            try:
+                pattern = src.GetCurrentPattern(_UIA_TransformPatternId)
+                if pattern is None:
+                    return False
+                transform = pattern.QueryInterface(uia_core.IUIAutomationTransformPattern)
+                transform.Move(x2, y2)
+                logger.info("uia_drag_from_to: moved %r to (%d,%d)", src.CurrentName, x2, y2)
+                return True
+            except Exception:
+                return False
+
+    try:
+        return _run_on_fresh_thread(_work) or False
+    except Exception as exc:
+        logger.error("uia_drag_from_to(%d,%d->%d,%d) failed: %s", x1, y1, x2, y2, exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# UAC dialog inspection
+# ---------------------------------------------------------------------------
+
+# Patterns the Windows UAC dialog uses for its "verified publisher" line.
+# These are localised on non-English Windows; if no pattern matches we return None
+# and the allow_with_match policy refuses on caller side.
+_PUBLISHER_PATTERNS = [
+    re.compile(r"Verified publisher:\s*(.+)", re.IGNORECASE),
+    re.compile(r"Program name:\s*(.+)", re.IGNORECASE),
+    re.compile(r"Publisher:\s*(.+)", re.IGNORECASE),
+]
+
+
+def get_uac_publisher() -> str | None:
+    """Inspect the active UAC consent dialog and return its publisher string.
+
+    Returns ``None`` if no UAC dialog is currently displayed, if its layout does
+    not match the expected English pattern, or if reading the UIA tree fails.
+    """
+    def _work() -> str | None:
+        with _input_desktop():
+            iuia, _ = _create_uia()
+            root = iuia.GetRootElement()
+            walker = iuia.RawViewWalker
+            collected: list[str] = []
+
+            def _collect(elem: Any, depth: int = 0) -> None:
+                if depth > 8:
+                    return
+                try:
+                    name = elem.CurrentName or ""
+                    if name:
+                        collected.append(name)
+                except Exception:
+                    return
+                try:
+                    child = walker.GetFirstChildElement(elem)
+                    while child:
+                        _collect(child, depth + 1)
+                        try:
+                            child = walker.GetNextSiblingElement(child)
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+
+            child = walker.GetFirstChildElement(root)
+            while child:
+                _collect(child)
+                try:
+                    child = walker.GetNextSiblingElement(child)
+                except Exception:
+                    break
+
+            text = "\n".join(collected)
+            for pat in _PUBLISHER_PATTERNS:
+                match = pat.search(text)
+                if match:
+                    return match.group(1).strip()
+            return None
+
+    try:
+        return _run_on_fresh_thread(_work)
+    except Exception as exc:
+        logger.warning("get_uac_publisher failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# WaitForUACPrompt
+# ---------------------------------------------------------------------------
+
+
+def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | None:
+    """Block until the Secure Desktop becomes the input desktop, then return the dialog.
+
+    Returns a dict with the UIA tree of the consent dialog plus the extracted
+    publisher, or ``None`` if the timeout expires without UAC firing.
+    """
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while time.monotonic() < deadline:
+        if get_input_desktop_name().lower() == "winlogon":
+            tree = uia_get_tree()
+            publisher = get_uac_publisher()
+            return {
+                "desktop": "Winlogon",
+                "publisher": publisher,
+                "tree": tree,
+            }
+        time.sleep(poll_ms / 1000.0)
+    return None

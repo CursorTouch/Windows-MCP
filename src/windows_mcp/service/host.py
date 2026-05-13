@@ -30,7 +30,7 @@ import threading
 from typing import Any
 
 from .protocol import PIPE_NAME, PIPE_BUFFER_SIZE, Request, Response
-from . import secure_desktop
+from . import policy, secure_desktop
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,28 @@ def _build_pipe_sa() -> Any:
 # Request dispatcher
 # ---------------------------------------------------------------------------
 
+def _enforce_policy(operation: str) -> tuple[bool, str]:
+    """Return (allowed, reason) for an auto-input op on the current input desktop.
+
+    Read-only ops (screenshot, tree walks) are not gated — agents always need
+    visibility into UAC. Only auto-clicks/types/drags on the Secure Desktop are
+    policy-gated, because those are the actions that bypass the human.
+
+    Read-only ops on Default desktop are not gated either. We only enforce on
+    Winlogon because that is where consent prompts live.
+    """
+    if secure_desktop.get_input_desktop_name().lower() != "winlogon":
+        return True, "input desktop is not Winlogon"
+    pol = policy.read_from_registry()
+    publisher = secure_desktop.get_uac_publisher()
+    allowed, reason = pol.allows_auto_click(publisher)
+    logger.info(
+        "policy check: op=%s desktop=Winlogon policy=%s publisher=%r → %s (%s)",
+        operation, pol.policy, publisher, allowed, reason,
+    )
+    return allowed, reason
+
+
 def _dispatch(req: Request) -> Response:
     """Execute a single request and return a response."""
     try:
@@ -115,12 +137,53 @@ def _dispatch(req: Request) -> Response:
                 tree = secure_desktop.uia_get_tree()
                 return Response(id=req.id, result=tree)
 
+            case "get_uac_publisher":
+                pub = secure_desktop.get_uac_publisher()
+                return Response(id=req.id, result=pub)
+
+            case "wait_for_uac_prompt":
+                timeout_ms = int(req.params.get("timeout_ms", 60_000))
+                result = secure_desktop.wait_for_uac_prompt(timeout_ms=timeout_ms)
+                return Response(id=req.id, result=result)
+
+            case "policy_state":
+                pol = policy.read_from_registry()
+                return Response(id=req.id, result={
+                    "policy": pol.policy,
+                    "publishers_allowlist": pol.publishers_allowlist,
+                })
+
             case "uia_invoke":
+                allowed, reason = _enforce_policy("uia_invoke")
+                if not allowed:
+                    return Response(id=req.id, error=f"policy denied: {reason}")
                 ok = secure_desktop.uia_invoke_element(req.params["name"])
                 return Response(id=req.id, result=ok)
 
             case "uia_click_at":
+                allowed, reason = _enforce_policy("uia_click_at")
+                if not allowed:
+                    return Response(id=req.id, error=f"policy denied: {reason}")
                 ok = secure_desktop.uia_click_at(req.params["x"], req.params["y"])
+                return Response(id=req.id, result=ok)
+
+            case "uia_type_at":
+                allowed, reason = _enforce_policy("uia_type_at")
+                if not allowed:
+                    return Response(id=req.id, error=f"policy denied: {reason}")
+                ok = secure_desktop.uia_type_at(
+                    req.params["x"], req.params["y"], req.params["text"]
+                )
+                return Response(id=req.id, result=ok)
+
+            case "uia_drag_from_to":
+                allowed, reason = _enforce_policy("uia_drag_from_to")
+                if not allowed:
+                    return Response(id=req.id, error=f"policy denied: {reason}")
+                ok = secure_desktop.uia_drag_from_to(
+                    req.params["x1"], req.params["y1"],
+                    req.params["x2"], req.params["y2"],
+                )
                 return Response(id=req.id, result=ok)
 
             case _:

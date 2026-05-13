@@ -811,13 +811,45 @@ def service_secure_desktop():
 
 @service_secure_desktop.command("install")
 @click.option("--force", is_flag=True, help="Uninstall then reinstall if already present.")
-def service_secure_desktop_install(force: bool):
+@click.option(
+    "--policy",
+    type=click.Choice(["block", "allow_with_match", "allow_all"]),
+    default=None,
+    help=(
+        "Persist a Secure Desktop consent policy on install. "
+        "If omitted, falls back to WINDOWS_MCP_SECURE_DESKTOP_POLICY, "
+        "then config.toml, then 'block'."
+    ),
+)
+@click.option(
+    "--allow-publisher",
+    "allow_publisher",
+    multiple=True,
+    help=(
+        "Publisher substring to allow under --policy=allow_with_match. "
+        "Repeat to add multiple. Comma-separated also works."
+    ),
+)
+def service_secure_desktop_install(force: bool, policy: str | None, allow_publisher: tuple[str, ...]):
     """Install and start the Secure Desktop host service (requires elevation)."""
     _require_win32()
     import win32serviceutil
     import win32service
     import pywintypes
     from windows_mcp.service.host import WindowsMCPHostService
+    from windows_mcp.service import policy as policy_mod
+
+    # Resolve effective policy: CLI flag > env var > config.toml > default ("block").
+    cfg = load_config(discover_config_path(None))
+    cli_allowlist: list[str] = []
+    for raw in allow_publisher:
+        cli_allowlist.extend(s.strip() for s in raw.split(",") if s.strip())
+    effective_policy = policy_mod.resolve_install_time_policy(
+        cli_policy=policy,
+        cli_allowlist=cli_allowlist or None,
+        config_policy=cfg.secure_desktop.policy,
+        config_allowlist=cfg.secure_desktop.publishers_allowlist,
+    )
 
     # Check whether the service already exists.
     already_installed = False
@@ -896,12 +928,18 @@ def service_secure_desktop_install(force: bool):
         else:
             raise click.ClickException(f"Failed to start service: {exc}")
 
+    try:
+        policy_mod.write_to_registry(effective_policy)
+        click.echo(f"UAC consent policy : {effective_policy.policy}")
+        if effective_policy.publishers_allowlist:
+            click.echo(f"  publishers allowlist: {effective_policy.publishers_allowlist}")
+    except Exception as exc:
+        click.echo(f"Warning: could not persist UAC policy: {exc}")
+        click.echo("         Service will refuse auto-clicks until policy is set.")
+
     click.echo("\nThe host service is now running as NT AUTHORITY\\SYSTEM.")
     click.echo("It will restart automatically at each boot.")
-    click.echo(
-        "UAC consent policy : WINDOWS_MCP_SECURE_DESKTOP_POLICY="
-        f"{os.environ.get('WINDOWS_MCP_SECURE_DESKTOP_POLICY', 'block')} (default: block)"
-    )
+    click.echo("Run `windows-mcp service secure-desktop set-policy <policy>` to change without reinstalling.")
     click.echo("Run `windows-mcp service secure-desktop uninstall` to remove it.")
 
 
@@ -923,6 +961,45 @@ def service_secure_desktop_uninstall():
         click.echo(f"Service '{_SERVICE_NAME}' removed.")
     except pywintypes.error as exc:
         raise click.ClickException(f"Failed to remove service: {exc}")
+
+    try:
+        from windows_mcp.service import policy as policy_mod
+        policy_mod.delete_from_registry()
+        click.echo("UAC consent policy : cleared from registry.")
+    except Exception as exc:
+        click.echo(f"Warning: could not clear UAC policy registry key: {exc}")
+
+
+@service_secure_desktop.command("set-policy")
+@click.argument("policy_name", type=click.Choice(["block", "allow_with_match", "allow_all"]))
+@click.option(
+    "--allow-publisher",
+    "allow_publisher",
+    multiple=True,
+    help="Publisher substring(s) for allow_with_match. Repeat or comma-separate.",
+)
+def service_secure_desktop_set_policy(policy_name: str, allow_publisher: tuple[str, ...]):
+    """Update the persisted Secure Desktop consent policy without reinstalling."""
+    _require_win32()
+    from windows_mcp.service import policy as policy_mod
+
+    allowlist: list[str] = []
+    for raw in allow_publisher:
+        allowlist.extend(s.strip() for s in raw.split(",") if s.strip())
+    new_policy = policy_mod.SecureDesktopPolicy(
+        policy=policy_name, publishers_allowlist=allowlist
+    )
+    try:
+        policy_mod.write_to_registry(new_policy)
+    except PermissionError as exc:
+        raise click.ClickException(
+            f"Permission denied writing policy to HKLM: {exc}.  Run as Administrator."
+        )
+    except Exception as exc:
+        raise click.ClickException(f"Failed to write policy: {exc}")
+    click.echo(f"Policy updated → {policy_name}")
+    if allowlist:
+        click.echo(f"  publishers allowlist: {allowlist}")
 
 
 @service_secure_desktop.command("start")
