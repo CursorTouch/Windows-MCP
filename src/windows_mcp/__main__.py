@@ -746,7 +746,7 @@ def auth(transport: str, host: str, port: int, with_tls: bool, force: bool) -> N
 
 
 # ---------------------------------------------------------------------------
-# `windows-mcp service` command group
+# `windows-mcp service secure-desktop` command group
 # ---------------------------------------------------------------------------
 
 _SERVICE_NAME = "WindowsMCPHost"
@@ -798,25 +798,43 @@ def _sc_state_name(state: int) -> str:
 
 @main.group()
 def service():
-    """Manage the Windows MCP host service (LocalSystem, required for UAC access).
+    """Manage Windows MCP optional privileged services.
 
-    The host service runs as NT AUTHORITY\\SYSTEM and exposes a local named pipe
-    so the MCP broker can capture screenshots even while a UAC prompt is on screen.
+    Privileged services run as NT AUTHORITY\\SYSTEM and expose a local named
+    pipe to the user-mode broker.  They are opt-in because they require
+    elevation to install.
 
-    Installing the service also disables the "Switch to secure desktop" UAC policy
-    (PromptOnSecureDesktop=0) so that UAC prompts appear on the normal Default
-    desktop.  This allows user-mode UIA and SendInput to reach the Yes/No buttons
-    directly, without needing cross-session tricks.  The policy is restored when
-    the service is uninstalled.
+    Sub-groups:
 
-    Must be installed once from an elevated (Administrator) prompt.
+      secure-desktop   Host service that lets the agent see and click UAC
+                       consent prompts (Secure Desktop / Winlogon).
     """
 
 
-@service.command("install")
+@service.group("secure-desktop")
+def service_secure_desktop():
+    """Manage the Secure Desktop host service (handles UAC consent prompts).
+
+    The host service runs as NT AUTHORITY\\SYSTEM and exposes a local named pipe
+    so the MCP broker can capture screenshots even while a UAC prompt is on
+    screen.
+
+    Installing the service also disables the "Switch to secure desktop" UAC
+    policy (PromptOnSecureDesktop=0) so that UAC prompts appear on the normal
+    Default desktop.  This allows user-mode UIA and SendInput to reach the
+    Yes/No buttons directly, without needing cross-session tricks.  The policy
+    is restored when the service is uninstalled.
+
+    Must be installed once from an elevated (Administrator) prompt:
+
+        uv run windows-mcp service secure-desktop install
+    """
+
+
+@service_secure_desktop.command("install")
 @click.option("--force", is_flag=True, help="Uninstall then reinstall if already present.")
-def service_install(force: bool):
-    """Install and start the Windows MCP host service (requires elevation)."""
+def service_secure_desktop_install(force: bool):
+    """Install and start the Secure Desktop host service (requires elevation)."""
     _require_win32()
     import win32serviceutil
     import win32service
@@ -853,11 +871,6 @@ def service_install(force: bool):
     # against the system Python and cannot import windows_mcp, causing 1053.
     # Using sys.executable guarantees the exact interpreter that has the
     # package is what the SCM launches.
-    #
-    # Binary path format: "<python.exe>" -m windows_mcp.service.host
-    # When the SCM starts this with no extra args, host.py calls
-    # servicemanager.StartServiceCtrlDispatcher() to enter the service loop.
-    from windows_mcp.service.host import WindowsMCPHostService
     binary_path = f'"{sys.executable}" -m windows_mcp.service.host'
 
     hscm = None
@@ -916,15 +929,14 @@ def service_install(force: bool):
 
     click.echo("\nThe host service is now running as NT AUTHORITY\\SYSTEM.")
     click.echo("It will restart automatically at each boot.")
-    click.echo("Run `windows-mcp service uninstall` to remove it.")
+    click.echo("Run `windows-mcp service secure-desktop uninstall` to remove it.")
 
 
-@service.command("uninstall")
-def service_uninstall():
-    """Stop and remove the Windows MCP host service (requires elevation)."""
+@service_secure_desktop.command("uninstall")
+def service_secure_desktop_uninstall():
+    """Stop and remove the Secure Desktop host service (requires elevation)."""
     _require_win32()
     import win32serviceutil
-    import win32service
     import pywintypes
 
     try:
@@ -947,9 +959,9 @@ def service_uninstall():
         click.echo(f"Warning: could not restore UAC policy: {exc}")
 
 
-@service.command("start")
-def service_start():
-    """Start the Windows MCP host service."""
+@service_secure_desktop.command("start")
+def service_secure_desktop_start():
+    """Start the Secure Desktop host service."""
     _require_win32()
     import win32serviceutil
     try:
@@ -959,9 +971,9 @@ def service_start():
         raise click.ClickException(f"Failed to start service: {exc}")
 
 
-@service.command("stop")
-def service_stop():
-    """Stop the Windows MCP host service."""
+@service_secure_desktop.command("stop")
+def service_secure_desktop_stop():
+    """Stop the Secure Desktop host service."""
     _require_win32()
     import win32serviceutil
     try:
@@ -971,9 +983,9 @@ def service_stop():
         raise click.ClickException(f"Failed to stop service: {exc}")
 
 
-@service.command("status")
-def service_status():
-    """Show the current status of the Windows MCP host service."""
+@service_secure_desktop.command("status")
+def service_secure_desktop_status():
+    """Show the current status of the Secure Desktop host service."""
     _require_win32()
     import win32serviceutil
     import win32service
@@ -993,7 +1005,7 @@ def service_status():
                 client.invalidate_cache()
                 if client.is_available():
                     desktop = client.desktop_name()
-                    click.echo(f"Pipe    : reachable")
+                    click.echo("Pipe    : reachable")
                     click.echo(f"Desktop : {desktop}")
                 else:
                     click.echo("Pipe    : not reachable (service may still be starting)")
