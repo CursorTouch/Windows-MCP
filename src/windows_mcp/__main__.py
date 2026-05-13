@@ -763,6 +763,70 @@ def _require_win32():
         )
 
 
+def _admin_only_prefixes() -> list[str]:
+    """Paths under which Windows defaults to admin-only write access."""
+    return [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        os.environ.get("SystemRoot", r"C:\Windows"),
+    ]
+
+
+def _path_is_admin_only(path: str) -> bool:
+    """Return True if *path* lives under a default admin-only prefix.
+
+    This is a *heuristic*, not a permission check — but it covers 99% of
+    real installs.  Users on truly custom layouts can override with
+    --allow-user-binary-path.
+    """
+    norm = os.path.normcase(os.path.normpath(path))
+    for prefix in _admin_only_prefixes():
+        if not prefix:
+            continue
+        prefix_norm = os.path.normcase(os.path.normpath(prefix))
+        if norm.startswith(prefix_norm + os.sep) or norm == prefix_norm:
+            return True
+    return False
+
+
+def _verify_install_paths_are_admin_only() -> None:
+    """Raise ClickException if the Python interpreter or windows_mcp package live
+    in a user-writable location.
+
+    The Windows SCM will launch the binary path as SYSTEM.  If any component
+    of that path is under user-writable storage (a uv tool cache, a venv in
+    %LOCALAPPDATA%, a per-user pip install), then any process running as the
+    user can replace files there and gain SYSTEM the next time the service
+    starts.  Refuse the install rather than register an unsafe service.
+    """
+    import windows_mcp
+
+    py_exe = sys.executable
+    pkg_path = os.path.dirname(os.path.abspath(windows_mcp.__file__))
+
+    unsafe: list[str] = []
+    if not _path_is_admin_only(py_exe):
+        unsafe.append(f"  Python interpreter : {py_exe}")
+    if not _path_is_admin_only(pkg_path):
+        unsafe.append(f"  windows_mcp package: {pkg_path}")
+
+    if not unsafe:
+        return
+
+    raise click.ClickException(
+        "Refusing to install the LocalSystem service: the binary path lives in a\n"
+        "user-writable location.  Anyone who can write to that path will obtain\n"
+        "SYSTEM the next time the service starts.\n\n"
+        + "\n".join(unsafe)
+        + "\n\n"
+        "Install Python system-wide (e.g. `winget install Python.Python.3.13`,\n"
+        "which lands under %ProgramFiles%) and then `pip install windows-mcp`\n"
+        "into that system Python.  Re-run this command.\n\n"
+        "If you accept the risk (e.g. testing inside a disposable VM), pass\n"
+        "--allow-user-binary-path."
+    )
+
+
 def _sc_state_name(state: int) -> str:
     import win32service
     return {
@@ -830,7 +894,22 @@ def service_secure_desktop():
         "Repeat to add multiple. Comma-separated also works."
     ),
 )
-def service_secure_desktop_install(force: bool, policy: str | None, allow_publisher: tuple[str, ...]):
+@click.option(
+    "--allow-user-binary-path",
+    is_flag=True,
+    default=False,
+    help=(
+        "Allow installing even if Python or windows_mcp live in a user-writable "
+        "location. Unsafe outside a disposable VM — any local process running as "
+        "the user can replace the binary and gain SYSTEM at next service start."
+    ),
+)
+def service_secure_desktop_install(
+    force: bool,
+    policy: str | None,
+    allow_publisher: tuple[str, ...],
+    allow_user_binary_path: bool,
+):
     """Install and start the Secure Desktop host service (requires elevation)."""
     _require_win32()
     import win32serviceutil
@@ -838,6 +917,15 @@ def service_secure_desktop_install(force: bool, policy: str | None, allow_publis
     import pywintypes
     from windows_mcp.service.host import WindowsMCPHostService
     from windows_mcp.service import policy as policy_mod
+
+    if not allow_user_binary_path:
+        _verify_install_paths_are_admin_only()
+    else:
+        click.echo(
+            "WARNING: --allow-user-binary-path was passed. The service binary "
+            "path may be user-writable, which is a privilege-escalation risk. "
+            "Use only in disposable VMs."
+        )
 
     # Resolve effective policy: CLI flag > env var > config.toml > default ("block").
     cfg = load_config(discover_config_path(None))
