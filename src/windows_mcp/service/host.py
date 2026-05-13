@@ -64,28 +64,122 @@ except ImportError:
 # Pipe security
 # ---------------------------------------------------------------------------
 
-def _build_pipe_sa() -> Any:
-    """Return a SECURITY_ATTRIBUTES with a NULL DACL (allows all local access).
+# Pipe-specific access flags. FILE_ALL_ACCESS = 0x1F01FF — full read/write on
+# the pipe handle. We grant this to the two principals we trust:
+#   - SYSTEM:                    the service itself
+#   - Active console user SID:   the broker process running in their session
+_FILE_ALL_ACCESS = 0x1F01FF
 
-    A NULL DACL is intentional here: the pipe is local-only (no network
-    listener), so allowing any local process to connect is fine.  The tighter
-    SYSTEM+user DACL can be added later once the basic pipe works; for now,
-    complexity in the DACL was causing CreateNamedPipe to fail silently.
+# Identifiers for the well-known SIDs we need.
+# win32security.WinLocalSystemSid → S-1-5-18 (NT AUTHORITY\SYSTEM)
+# win32security.WinBuiltinAdministratorsSid → S-1-5-32-544 (BUILTIN\Administrators)
+_SID_TYPE_SYSTEM = "WinLocalSystemSid"
+_SID_TYPE_ADMINS = "WinBuiltinAdministratorsSid"
 
-    Note: SECURITY_ATTRIBUTES lives in pywintypes, not win32security.
+
+def _console_user_sid() -> Any | None:
+    """Return the SID of the user logged on to the physical console, or None.
+
+    Pattern:
+        WTSGetActiveConsoleSessionId → WTSQueryUserToken → GetTokenInformation
+        with TokenUser → SID.
+
+    Returns None on services like CI where no interactive session exists yet.
     """
     if not _WIN32_AVAILABLE:
         return None
     try:
-        import pywintypes
+        import win32ts
+        import win32api
+        session_id = win32ts.WTSGetActiveConsoleSessionId()
+        # 0xFFFFFFFF (~0) means no active session.
+        if session_id is None or session_id == 0xFFFFFFFF:
+            logger.info("No active console session yet")
+            return None
+        token = win32ts.WTSQueryUserToken(session_id)
+        try:
+            token_user = win32security.GetTokenInformation(
+                token, win32security.TokenUser
+            )
+            # GetTokenInformation(TokenUser) returns a tuple (SID, attrs).
+            sid = token_user[0]
+            logger.info(
+                "Console user SID for session %d: %s",
+                session_id, win32security.ConvertSidToStringSid(sid),
+            )
+            return sid
+        finally:
+            win32api.CloseHandle(token)
+    except Exception as exc:
+        logger.warning("Could not resolve console user SID: %s", exc)
+        return None
+
+
+def _build_pipe_sa() -> Any:
+    """Return a SECURITY_ATTRIBUTES that allows only SYSTEM + the console user.
+
+    Falls back to SYSTEM + BUILTIN\\Administrators if no console user is
+    logged in yet (typical at boot, before any login).  Never falls back to
+    a NULL DACL — that was the previous attempt's mistake.
+
+    Raising would prevent the service from starting; instead, on failure we
+    return a SECURITY_ATTRIBUTES with a *deny-all* DACL so the pipe is created
+    but unreachable, making the failure obvious in logs rather than silent.
+    """
+    if not _WIN32_AVAILABLE:
+        return None
+
+    import pywintypes
+
+    try:
+        # SYSTEM SID — always allowed; the service runs as SYSTEM.
+        sid_system = win32security.CreateWellKnownSid(
+            getattr(win32security, _SID_TYPE_SYSTEM), None
+        )
+
+        # Console user SID (if anyone is logged in); else fall back to Admins.
+        sid_user = _console_user_sid()
+        if sid_user is None:
+            sid_user = win32security.CreateWellKnownSid(
+                getattr(win32security, _SID_TYPE_ADMINS), None
+            )
+            logger.info("Pipe DACL fallback: SYSTEM + BUILTIN\\Administrators")
+        else:
+            logger.info(
+                "Pipe DACL: SYSTEM + console user %s",
+                win32security.ConvertSidToStringSid(sid_user),
+            )
+
+        dacl = win32security.ACL()
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, _FILE_ALL_ACCESS, sid_system
+        )
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, _FILE_ALL_ACCESS, sid_user
+        )
+
         sd = win32security.SECURITY_DESCRIPTOR()
-        sd.SetSecurityDescriptorDacl(True, None, False)  # NULL DACL = everyone
+        sd.SetSecurityDescriptorDacl(True, dacl, False)
+        sd.SetSecurityDescriptorOwner(sid_system, False)
+
         sa = pywintypes.SECURITY_ATTRIBUTES()
         sa.SECURITY_DESCRIPTOR = sd
         return sa
+
     except Exception as exc:
-        logger.warning("Could not build pipe SA, falling back to None: %s", exc)
-        return None
+        # Defensive: empty DACL = deny everyone except the SD owner. The pipe
+        # will still be created, but clients won't be able to connect — and
+        # the exception is logged loudly so the failure mode is discoverable.
+        logger.exception("Failed to build restrictive pipe DACL: %s", exc)
+        try:
+            empty_dacl = win32security.ACL()
+            sd = win32security.SECURITY_DESCRIPTOR()
+            sd.SetSecurityDescriptorDacl(True, empty_dacl, False)
+            sa = pywintypes.SECURITY_ATTRIBUTES()
+            sa.SECURITY_DESCRIPTOR = sd
+            return sa
+        except Exception:
+            return None
 
 
 # ---------------------------------------------------------------------------
