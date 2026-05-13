@@ -647,11 +647,11 @@ class Desktop:
         else:
             x, y = loc
 
-        # With PromptOnSecureDesktop disabled (set by `windows-mcp service secure-desktop install`),
-        # UAC prompts appear on the Default desktop and uia.Click() reaches them via
-        # SendInput — hardware-level input that bypasses UIPI.
-        # The service route below is a fallback for the rare case where the policy
-        # wasn't applied (secure desktop still active).
+        # UAC fires on the Winlogon (Secure Desktop) object, which the broker
+        # cannot reach.  If the host service is installed, route the click
+        # through it — the service does the SetThreadDesktop dance and invokes
+        # the element via UIA on the input desktop.  Policy enforcement (block /
+        # allow_with_match / allow_all) lives in the service, not here.
         from windows_mcp.desktop.screenshot import is_secure_desktop_active
         if button == "left" and is_secure_desktop_active():
             from windows_mcp.service import get_host_client

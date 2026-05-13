@@ -763,26 +763,6 @@ def _require_win32():
         )
 
 
-_UAC_POLICY_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-_UAC_POLICY_VALUE = "PromptOnSecureDesktop"
-
-
-def _set_prompt_on_secure_desktop(enabled: bool) -> None:
-    """Set or clear the 'Switch to secure desktop' UAC policy.
-
-    When disabled (enabled=False) UAC prompts appear on the normal Default
-    desktop where user-mode UIA and SendInput can reach them, instead of the
-    isolated Winlogon desktop.  Requires elevation.
-    """
-    import winreg
-    with winreg.OpenKey(
-        winreg.HKEY_LOCAL_MACHINE,
-        _UAC_POLICY_KEY,
-        access=winreg.KEY_SET_VALUE,
-    ) as key:
-        winreg.SetValueEx(key, _UAC_POLICY_VALUE, 0, winreg.REG_DWORD, 1 if enabled else 0)
-
-
 def _sc_state_name(state: int) -> str:
     import win32service
     return {
@@ -816,14 +796,12 @@ def service_secure_desktop():
     """Manage the Secure Desktop host service (handles UAC consent prompts).
 
     The host service runs as NT AUTHORITY\\SYSTEM and exposes a local named pipe
-    so the MCP broker can capture screenshots even while a UAC prompt is on
-    screen.
+    so the MCP broker can capture screenshots and route input across the
+    Winlogon (Secure Desktop) boundary that fires during UAC consent prompts.
 
-    Installing the service also disables the "Switch to secure desktop" UAC
-    policy (PromptOnSecureDesktop=0) so that UAC prompts appear on the normal
-    Default desktop.  This allows user-mode UIA and SendInput to reach the
-    Yes/No buttons directly, without needing cross-session tricks.  The policy
-    is restored when the service is uninstalled.
+    UAC remains fully enabled — the service does NOT weaken the Secure Desktop
+    policy.  Whether the broker may auto-click a UAC prompt is governed by the
+    ``WINDOWS_MCP_SECURE_DESKTOP_POLICY`` env var (``block`` by default).
 
     Must be installed once from an elevated (Administrator) prompt:
 
@@ -918,17 +896,12 @@ def service_secure_desktop_install(force: bool):
         else:
             raise click.ClickException(f"Failed to start service: {exc}")
 
-    # Disable "Switch to secure desktop" so UAC prompts appear on the normal
-    # Default desktop, where user-mode UIA and SendInput can reach them.
-    try:
-        _set_prompt_on_secure_desktop(False)
-        click.echo("UAC policy  : PromptOnSecureDesktop disabled (UAC on Default desktop).")
-    except Exception as exc:
-        click.echo(f"Warning: could not update UAC policy: {exc}")
-        click.echo("         UAC dialogs may not be accessible to the agent.")
-
     click.echo("\nThe host service is now running as NT AUTHORITY\\SYSTEM.")
     click.echo("It will restart automatically at each boot.")
+    click.echo(
+        "UAC consent policy : WINDOWS_MCP_SECURE_DESKTOP_POLICY="
+        f"{os.environ.get('WINDOWS_MCP_SECURE_DESKTOP_POLICY', 'block')} (default: block)"
+    )
     click.echo("Run `windows-mcp service secure-desktop uninstall` to remove it.")
 
 
@@ -950,13 +923,6 @@ def service_secure_desktop_uninstall():
         click.echo(f"Service '{_SERVICE_NAME}' removed.")
     except pywintypes.error as exc:
         raise click.ClickException(f"Failed to remove service: {exc}")
-
-    # Restore the secure desktop UAC policy.
-    try:
-        _set_prompt_on_secure_desktop(True)
-        click.echo("UAC policy  : PromptOnSecureDesktop restored.")
-    except Exception as exc:
-        click.echo(f"Warning: could not restore UAC policy: {exc}")
 
 
 @service_secure_desktop.command("start")
