@@ -647,7 +647,7 @@ class Desktop:
         else:
             x, y = loc
 
-        # With PromptOnSecureDesktop disabled (set by `windows-mcp service install`),
+        # With PromptOnSecureDesktop disabled (set by `windows-mcp service secure-desktop install`),
         # UAC prompts appear on the Default desktop and uia.Click() reaches them via
         # SendInput — hardware-level input that bypasses UIPI.
         # The service route below is a fallback for the rare case where the policy

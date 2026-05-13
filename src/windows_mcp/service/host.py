@@ -3,7 +3,7 @@
 This module serves two purposes:
 
 1. **Service class** (``WindowsMCPHostService``) — a ``pywin32``
-   ``ServiceFramework`` subclass installed via ``windows-mcp service install``.
+   ``ServiceFramework`` subclass installed via ``windows-mcp service secure-desktop install``.
    It starts a named pipe server that handles privileged desktop operations
    requested by the user-mode broker.
 
