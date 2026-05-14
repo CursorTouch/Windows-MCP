@@ -122,22 +122,7 @@ class HostServiceClient:
             raise RuntimeError("pywin32 is not available")
 
         req = Request(method=method, params=params)
-
-        try:
-            # Block until the pipe is available (or timeout).
-            win32pipe.WaitNamedPipe(PIPE_NAME, CALL_TIMEOUT_MS)
-
-            handle = win32file.CreateFile(
-                PIPE_NAME,
-                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                0,
-                None,
-                win32file.OPEN_EXISTING,
-                0,
-                None,
-            )
-        except pywintypes.error as exc:
-            raise RuntimeError(f"Cannot connect to host service pipe: {exc}") from exc
+        handle = self._open_with_retry()
 
         try:
             # Switch to message read mode so we get whole messages back.
@@ -161,6 +146,40 @@ class HostServiceClient:
         if resp.error:
             raise RuntimeError(f"Host service error ({method}): {resp.error}")
         return resp.result
+
+    def _open_with_retry(self, *, attempts: int = 30, gap_ms: int = 100) -> Any:
+        """Open the named pipe, retrying on the brief race window where the
+        server has connected one instance but not yet recreated the next.
+
+        WaitNamedPipe returns ERROR_FILE_NOT_FOUND (not ERROR_SEM_TIMEOUT)
+        when no instance of the pipe is currently in WAITING_FOR_CONNECT
+        state. The host service spends ~20-50 ms between accepting one
+        connection and creating the next instance; back-to-back broker
+        calls (e.g. is_available() ping immediately followed by an actual
+        operation) often land inside that window. Retry with a short gap.
+        """
+        last_exc: Any = None
+        for _ in range(attempts):
+            try:
+                win32pipe.WaitNamedPipe(PIPE_NAME, CALL_TIMEOUT_MS)
+                return win32file.CreateFile(
+                    PIPE_NAME,
+                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    0,
+                    None,
+                    win32file.OPEN_EXISTING,
+                    0,
+                    None,
+                )
+            except pywintypes.error as exc:
+                last_exc = exc
+                if exc.winerror in (2, 231):  # FILE_NOT_FOUND, PIPE_BUSY
+                    time.sleep(gap_ms / 1000.0)
+                    continue
+                raise RuntimeError(f"Cannot connect to host service pipe: {exc}") from exc
+        raise RuntimeError(
+            f"Cannot connect to host service pipe after {attempts} retries: {last_exc}"
+        )
 
 
 _client: HostServiceClient | None = None
