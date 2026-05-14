@@ -251,22 +251,29 @@ def _dispatch(req: Request) -> Response:
                 allowed, reason = _enforce_policy("uia_invoke")
                 if not allowed:
                     return Response(id=req.id, error=f"policy denied: {reason}")
-                ok = secure_desktop.uia_invoke_element(req.params["name"])
+                # uia_invoke_element matches by name on the input desktop —
+                # session 0 isolation makes that empty for user-session windows,
+                # so route the actual UIA call through a user-session worker.
+                ok = secure_desktop._spawn_in_user_session("invoke", req.params["name"])
                 return Response(id=req.id, result=ok)
 
             case "uia_click_at":
                 allowed, reason = _enforce_policy("uia_click_at")
                 if not allowed:
                     return Response(id=req.id, error=f"policy denied: {reason}")
-                ok = secure_desktop.uia_click_at(req.params["x"], req.params["y"])
+                ok = secure_desktop._spawn_in_user_session(
+                    "click_at", str(req.params["x"]), str(req.params["y"])
+                )
                 return Response(id=req.id, result=ok)
 
             case "uia_type_at":
                 allowed, reason = _enforce_policy("uia_type_at")
                 if not allowed:
                     return Response(id=req.id, error=f"policy denied: {reason}")
-                ok = secure_desktop.uia_type_at(
-                    req.params["x"], req.params["y"], req.params["text"]
+                ok = secure_desktop._spawn_in_user_session(
+                    "type_at",
+                    str(req.params["x"]), str(req.params["y"]),
+                    req.params["text"],
                 )
                 return Response(id=req.id, result=ok)
 
@@ -274,9 +281,10 @@ def _dispatch(req: Request) -> Response:
                 allowed, reason = _enforce_policy("uia_drag_from_to")
                 if not allowed:
                     return Response(id=req.id, error=f"policy denied: {reason}")
-                ok = secure_desktop.uia_drag_from_to(
-                    req.params["x1"], req.params["y1"],
-                    req.params["x2"], req.params["y2"],
+                ok = secure_desktop._spawn_in_user_session(
+                    "drag_from_to",
+                    str(req.params["x1"]), str(req.params["y1"]),
+                    str(req.params["x2"]), str(req.params["y2"]),
                 )
                 return Response(id=req.id, result=ok)
 

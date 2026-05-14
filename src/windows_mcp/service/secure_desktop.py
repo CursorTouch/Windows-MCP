@@ -25,8 +25,11 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import io
+import json
 import logging
 import re
+import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -512,6 +515,176 @@ def get_uac_publisher() -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# User-session worker spawn
+# ---------------------------------------------------------------------------
+
+
+def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
+    """Run one ``user_session_worker`` op inside the active console user's session.
+
+    Session 0 isolation blocks the LocalSystem service from walking UIA trees
+    owned by user-session processes (consent.exe is the case that matters for
+    UAC). We side-step that by ``CreateProcessAsUser``-ing a one-shot helper
+    into the interactive session — UIA from inside the user's session sees
+    Winlogon normally — and parse the JSON it writes to stdout.
+
+    Uses the user's *linked* elevated token when available so the helper has
+    enough access to enumerate consent.exe; falls back to the standard user
+    token otherwise.
+    """
+    import pywintypes
+    import win32api
+    import win32con
+    import win32event
+    import win32file
+    import win32pipe
+    import win32process
+    import win32security
+    import win32ts
+
+    session_id = win32ts.WTSGetActiveConsoleSessionId()
+    if session_id in (0xFFFFFFFF, 0):
+        raise RuntimeError(
+            "no interactive console session is active "
+            "(WTSGetActiveConsoleSessionId returned no user session)"
+        )
+
+    user_token = win32ts.WTSQueryUserToken(session_id)
+    elevated_token = None
+    try:
+        elevated_token = win32security.GetTokenInformation(
+            user_token, win32security.TokenLinkedToken
+        )
+    except Exception:
+        elevated_token = None
+    spawn_token = elevated_token or user_token
+    using_elevated = bool(elevated_token)
+
+    sa = win32security.SECURITY_ATTRIBUTES()
+    sa.bInheritHandle = True
+    stdout_r, stdout_w = win32pipe.CreatePipe(sa, 0)
+    stderr_r, stderr_w = win32pipe.CreatePipe(sa, 0)
+    # Read ends stay in the service; do not let them leak into the child.
+    win32api.SetHandleInformation(stdout_r, win32con.HANDLE_FLAG_INHERIT, 0)
+    win32api.SetHandleInformation(stderr_r, win32con.HANDLE_FLAG_INHERIT, 0)
+
+    cmd_line = subprocess.list2cmdline([
+        sys.executable,
+        "-m",
+        "windows_mcp.service.user_session_worker",
+        *op_args,
+    ])
+
+    startup = win32process.STARTUPINFO()
+    startup.dwFlags = win32con.STARTF_USESTDHANDLES
+    startup.hStdInput = None
+    startup.hStdOutput = stdout_w
+    startup.hStdError = stderr_w
+    # Spawn on the interactive Default desktop; the worker re-binds its own
+    # thread to whichever desktop is currently the input desktop via
+    # _input_desktop() before touching UIA.
+    startup.lpDesktop = r"winsta0\default"
+
+    user_env = win32process.CreateEnvironmentBlock(spawn_token, False)
+
+    creation_flags = (
+        win32con.CREATE_NO_WINDOW
+        | win32process.CREATE_UNICODE_ENVIRONMENT
+        | win32con.CREATE_NEW_CONSOLE
+    )
+
+    proc_handle = thread_handle = None
+    try:
+        proc_info = win32process.CreateProcessAsUser(
+            spawn_token,
+            None,
+            cmd_line,
+            None,
+            None,
+            True,
+            creation_flags,
+            user_env,
+            None,
+            startup,
+        )
+        proc_handle, thread_handle, _pid, _tid = proc_info
+    finally:
+        # Now that the child has inherited the write ends we can drop ours.
+        try: win32file.CloseHandle(stdout_w)
+        except Exception: pass
+        try: win32file.CloseHandle(stderr_w)
+        except Exception: pass
+        try: win32api.CloseHandle(user_token)
+        except Exception: pass
+        if elevated_token:
+            try: win32api.CloseHandle(elevated_token)
+            except Exception: pass
+
+    logger.info(
+        "spawned user-session worker pid=? session=%d elevated=%s op=%s",
+        session_id, using_elevated, " ".join(op_args),
+    )
+
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+
+    def _drain(handle: Any, sink: list[bytes]) -> None:
+        while True:
+            try:
+                _, chunk = win32file.ReadFile(handle, 4096)
+            except pywintypes.error as exc:
+                if exc.winerror in (109, 233):  # BROKEN_PIPE, NO_DATA
+                    return
+                raise
+            if not chunk:
+                return
+            sink.append(bytes(chunk))
+
+    import threading as _threading
+    err_thread = _threading.Thread(target=_drain, args=(stderr_r, stderr_chunks), daemon=True)
+    err_thread.start()
+    try:
+        _drain(stdout_r, stdout_chunks)
+    finally:
+        err_thread.join(timeout=1.0)
+
+    try:
+        win32event.WaitForSingleObject(proc_handle, int(timeout * 1000))
+        exit_code = win32process.GetExitCodeProcess(proc_handle)
+    finally:
+        try: win32file.CloseHandle(stdout_r)
+        except Exception: pass
+        try: win32file.CloseHandle(stderr_r)
+        except Exception: pass
+        try: win32api.CloseHandle(proc_handle)
+        except Exception: pass
+        try: win32api.CloseHandle(thread_handle)
+        except Exception: pass
+
+    stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
+    stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
+    if stderr_text:
+        logger.info("user-session worker stderr: %s", stderr_text)
+
+    if not stdout_text:
+        raise RuntimeError(
+            f"user-session worker produced no stdout "
+            f"(exit={exit_code}, stderr={stderr_text!r})"
+        )
+    try:
+        payload = json.loads(stdout_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"user-session worker stdout not JSON (exit={exit_code}): {stdout_text!r}"
+        ) from exc
+    if not payload.get("ok"):
+        raise RuntimeError(
+            f"user-session worker error: {payload.get('error', 'unknown')}"
+        )
+    return payload.get("result")
+
+
+# ---------------------------------------------------------------------------
 # WaitForUACPrompt
 # ---------------------------------------------------------------------------
 
@@ -550,21 +723,36 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
             seen[name] = seen.get(name, 0) + 1
             if name.lower() == "winlogon":
                 logger.info("wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values()))
-                # consent.exe paints its window a few hundred ms after the input
-                # desktop flips to Winlogon. Retry the UIA walk until it sees at
-                # least one child, or 1.5 s elapses — beyond that the tree is
-                # really empty.
+                # consent.exe is a user-session process — Session 0 isolation
+                # blocks the LocalSystem service from walking its UIA tree even
+                # though we're attached to the right desktop. Route the walk
+                # through a user-session helper instead (CreateProcessAsUser
+                # into the active console session), retrying briefly to absorb
+                # consent.exe's paint delay.
                 tree: list[dict] = []
                 publisher = None
                 for attempt in range(8):
-                    tree = uia_get_tree() or []
-                    publisher = get_uac_publisher()
+                    try:
+                        tree = _spawn_in_user_session("tree", timeout=20.0) or []
+                    except Exception as exc:
+                        logger.warning("user-session tree spawn failed: %s", exc)
+                        tree = []
+                    try:
+                        publisher = _spawn_in_user_session("publisher", timeout=15.0)
+                    except Exception as exc:
+                        logger.warning("user-session publisher spawn failed: %s", exc)
+                        publisher = None
                     if tree:
-                        logger.info("wait_for_uac_prompt: tree captured after %d retries (%d top windows)", attempt, len(tree))
+                        logger.info(
+                            "wait_for_uac_prompt: tree captured after %d retries (%d top windows)",
+                            attempt, len(tree),
+                        )
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.3)
                 else:
-                    logger.warning("wait_for_uac_prompt: Winlogon active but UIA tree stayed empty after 8 retries")
+                    logger.warning(
+                        "wait_for_uac_prompt: Winlogon active but user-session UIA tree stayed empty after 8 retries"
+                    )
                 return {
                     "desktop": "Winlogon",
                     "publisher": publisher,
