@@ -13,24 +13,17 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RESULTS="$REPO_ROOT/tests/manual/vm_e2e/results.json"
-LOG_DIR="$REPO_ROOT/tests/manual/vm_e2e"
+VNC="127.0.0.1::5900"
 
-vnc_send_keys() {
-    local text="$1"
-    # vncdotool's typetext expects spaces to be literal; doublequotes inside
-    # the text need escaping. We're sending a single PowerShell one-liner so
-    # let's just pass it through carefully.
-    vncdotool -s 127.0.0.1::5900 typewrite "$text"
-}
+vnc() { vncdotool --delay=80 -s "$VNC" "$@"; }
 
-echo "==> waiting for Windows desktop to be available on VNC :5900"
-# Heuristic: when the desktop is up, the VNC frame size jumps past ~50 KB
-# (Windows desktop has more visual content than the install/OOBE pages).
+echo "==> waiting for Windows desktop on VNC :5900"
+# Heuristic: when the desktop is up, the VNC frame jumps past ~150 KB
+# (Windows desktop background renders far more than the install splash).
 for _ in $(seq 1 90); do
-    out="/tmp/vnc-bringup.png"
-    if vncdotool -s 127.0.0.1::5900 capture "$out" >/dev/null 2>&1; then
-        sz=$(stat -c %s "$out" 2>/dev/null || echo 0)
-        if [ "$sz" -gt 60000 ]; then
+    if vnc capture /tmp/vnc-bringup.png >/dev/null 2>&1; then
+        sz=$(stat -c %s /tmp/vnc-bringup.png 2>/dev/null || echo 0)
+        if [ "$sz" -gt 150000 ]; then
             echo "    desktop visible ($sz bytes)"
             break
         fi
@@ -38,20 +31,27 @@ for _ in $(seq 1 90); do
     sleep 10
 done
 
-echo "==> opening PowerShell via Win+R"
-vncdotool -s 127.0.0.1::5900 key win-r
+echo "==> opening Start menu and searching for powershell"
+# Win+R is fragile when no app has focus (it can autocomplete to other exes).
+# The Start-menu search is far more deterministic: tap Win, type, Enter.
+vnc key super
 sleep 1
-vncdotool -s 127.0.0.1::5900 typewrite "powershell"
-vncdotool -s 127.0.0.1::5900 key enter
-sleep 3
+vnc type "powershell"
+sleep 2          # let the search index resolve
+vnc key enter
+sleep 5          # PowerShell takes a beat to materialise
 
 echo "==> launching run_all.ps1 from the share"
+# Single-line PowerShell launcher. ExecutionPolicy Bypass for the child only.
 PS_CMD='powershell -ExecutionPolicy Bypass -File \\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\run_all.ps1'
-vncdotool -s 127.0.0.1::5900 typewrite "$PS_CMD"
-vncdotool -s 127.0.0.1::5900 key enter
+vnc type "$PS_CMD"
+sleep 1
+vnc key enter
 
 echo "==> waiting for $RESULTS to appear"
 rm -f "$RESULTS"
+# 60 iterations * 30 s = 30 min wait. Windows install of Python+uv inside
+# the VM takes ~10 min by itself under TCG.
 for _ in $(seq 1 60); do
     if [ -f "$RESULTS" ]; then
         echo "    results.json received"
@@ -62,5 +62,5 @@ for _ in $(seq 1 60); do
 done
 
 echo "ERROR: results.json never appeared after 30 minutes" >&2
-echo "Check tests/manual/vm_e2e/run_all.log on the share for details" >&2
+echo "Check $REPO_ROOT/tests/manual/vm_e2e/run_all.log on the share for details" >&2
 exit 1
