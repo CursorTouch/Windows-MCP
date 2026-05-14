@@ -178,22 +178,40 @@ function Verify-Service {
 function Run-MCP-Tests {
     Push-Location $LocalRepo
     try {
+        # Build a tiny batch wrapper for each phase so we can invoke them
+        # under `runas /trustlevel:0x20000` without nested-quote pain.
+        $allowJson = Join-Path $ResultsDir "results-allow_all.json"
+        $blockJson = Join-Path $ResultsDir "results-block.json"
+        $allowBat  = "$env:TEMP\wmcp-test-allow_all.bat"
+        $blockBat  = "$env:TEMP\wmcp-test-block.bat"
+        # The batch needs to cd to the project so uv finds the venv.
+        Set-Content -Path $allowBat -Value "@echo off`r`ncd /d $LocalRepo`r`nuv run python tests\manual\vm_e2e\mcp_client.py --results `"$allowJson`" --mode allow_all > `"$env:TEMP\wmcp-allow_all.out`" 2>&1`r`n"
+        Set-Content -Path $blockBat -Value "@echo off`r`ncd /d $LocalRepo`r`nuv run python tests\manual\vm_e2e\mcp_client.py --results `"$blockJson`" --mode block > `"$env:TEMP\wmcp-block.out`" 2>&1`r`n"
+
+        function Wait-For-File($path, $timeoutSec) {
+            $deadline = (Get-Date).AddSeconds($timeoutSec)
+            while ((Get-Date) -lt $deadline) {
+                if (Test-Path $path) { return $true }
+                Start-Sleep -Seconds 2
+            }
+            return $false
+        }
+
         # ----- phase 1: allow_all (clicks Yes, asserts UAC dismissed) -----
         Log "Setting policy=allow_all"
         Invoke-Native "set-policy-allow_all.log" {
             & uv run windows-mcp service secure-desktop set-policy allow_all
         }
         Log "Running mcp_client.py --mode allow_all (basic-user token via runas /trustlevel)"
-        $allowJson = Join-Path $ResultsDir "results-allow_all.json"
-        Invoke-Native "mcp_client-allow_all.log" {
-            # Run the broker (and its child MCP server) at medium integrity so
-            # Start-Process -Verb RunAs from inside the test actually fires UAC
-            # rather than auto-elevating. runas /trustlevel:0x20000 strips the
-            # admin token from the same user — no password required.
-            & cmd.exe /c ("runas /trustlevel:0x20000 " +
-                "`"uv run python tests\manual\vm_e2e\mcp_client.py " +
-                "--results `"$allowJson`" --mode allow_all`"")
+        Remove-Item -Force $allowJson -ErrorAction SilentlyContinue
+        # runas spawns the program detached; we wait for the result file
+        # rather than relying on runas's exit code (which fires on launch,
+        # not completion).
+        & runas /trustlevel:0x20000 $allowBat | Out-Null
+        if (-not (Wait-For-File $allowJson 180)) {
+            throw "Phase allow_all: results-allow_all.json never appeared. See $env:TEMP\wmcp-allow_all.out"
         }
+        Copy-Item -Force "$env:TEMP\wmcp-allow_all.out" (Join-Path $ResultsDir "mcp_client-allow_all.log")
 
         # ----- phase 2: block (asserts click is refused) -----
         Log "Setting policy=block"
@@ -201,12 +219,12 @@ function Run-MCP-Tests {
             & uv run windows-mcp service secure-desktop set-policy block
         }
         Log "Running mcp_client.py --mode block (basic-user token via runas /trustlevel)"
-        $blockJson = Join-Path $ResultsDir "results-block.json"
-        Invoke-Native "mcp_client-block.log" {
-            & cmd.exe /c ("runas /trustlevel:0x20000 " +
-                "`"uv run python tests\manual\vm_e2e\mcp_client.py " +
-                "--results `"$blockJson`" --mode block`"")
+        Remove-Item -Force $blockJson -ErrorAction SilentlyContinue
+        & runas /trustlevel:0x20000 $blockBat | Out-Null
+        if (-not (Wait-For-File $blockJson 180)) {
+            throw "Phase block: results-block.json never appeared. See $env:TEMP\wmcp-block.out"
         }
+        Copy-Item -Force "$env:TEMP\wmcp-block.out" (Join-Path $ResultsDir "mcp_client-block.log")
 
         # ----- combined report ------------------------------------------------
         $allow = Get-Content $allowJson -Raw | ConvertFrom-Json
