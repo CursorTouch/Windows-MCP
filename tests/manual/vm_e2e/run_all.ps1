@@ -267,10 +267,16 @@ try {
     # will resume here with UAC active.
     $luaKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
     $lua    = (Get-ItemProperty -Path $luaKey -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA
-    if ($lua -ne 1) {
-        Log "EnableLUA=$lua. Enabling UAC, scheduling re-run on next login, and rebooting…"
+    $consentBehavior = (Get-ItemProperty -Path $luaKey -Name ConsentPromptBehaviorAdmin -ErrorAction SilentlyContinue).ConsentPromptBehaviorAdmin
+    if ($lua -ne 1 -or $consentBehavior -ne 2) {
+        Log "UAC config (EnableLUA=$lua, ConsentPromptBehaviorAdmin=$consentBehavior). Setting to test-correct values + rebooting…"
         Set-ItemProperty -Path $luaKey -Name EnableLUA -Type DWord -Value 1
-        Set-ItemProperty -Path $luaKey -Name ConsentPromptBehaviorAdmin -Type DWord -Value 5
+        # ConsentPromptBehaviorAdmin=2 = "Prompt for consent on the Secure Desktop"
+        # for ALL elevations, including MS-signed binaries. The Win11 default
+        # is 5, which auto-elevates Windows binaries (cmd.exe, regedit) silently
+        # — that's the wrong shape to test the secure-desktop flow.
+        Set-ItemProperty -Path $luaKey -Name ConsentPromptBehaviorAdmin -Type DWord -Value 2
+        Set-ItemProperty -Path $luaKey -Name PromptOnSecureDesktop -Type DWord -Value 1
         $task = "windows-mcp-test-resume"
         # Use cmd to swallow schtasks's stderr-on-not-found that would otherwise
         # be promoted to a fatal error by $ErrorActionPreference=Stop.
