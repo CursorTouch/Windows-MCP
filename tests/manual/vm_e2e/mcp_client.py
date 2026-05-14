@@ -108,31 +108,18 @@ def _find_named_invokable(tree: list[dict], name: str) -> dict | None:
 def _trigger_uac() -> subprocess.Popen:
     """Fire a real UAC prompt asynchronously. Returns the Popen handle.
 
-    Subtlety: if this Python process is itself elevated (which it usually is
-    inside the test harness, because run_all.ps1 runs in an elevated cmd),
-    `Start-Process -Verb RunAs` from a child process AUTO-ELEVATES with no
-    UAC prompt — defeating the entire point of the test.
-
-    Use `runas /trustlevel:0x20000` to spawn the trigger powershell with
-    the user's *basic* (non-elevated) token. trustlevel 0x20000 is the
-    "Basic User" / standard-user trust level, which doesn't require a
-    password — it's just the same user with admin privileges stripped.
-    From that medium-integrity child, Start-Process -Verb RunAs trips UAC
-    properly and consent.exe shows on the Secure Desktop.
+    Assumes this Python process is medium-integrity (run_all.ps1 launches
+    mcp_client.py via `runas /trustlevel:0x20000` for that reason). From
+    medium-integrity, Start-Process -Verb RunAs trips UAC and consent.exe
+    fires on the Secure Desktop.
     """
-    inner = (
-        "Start-Sleep -Milliseconds 1500; "
-        "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden"
+    return subprocess.Popen(
+        [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-Command",
+            "Start-Sleep -Milliseconds 1500; "
+            "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden",
+        ],
     )
-    # runas /trustlevel:0x20000 expects the program path (not a quoted arg
-    # string), but with a /trustlevel that's the only way to fork a fresh
-    # token without password prompting.
-    cmd = (
-        "runas /trustlevel:0x20000 \""
-        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass "
-        f"-Command \\\"{inner}\\\"\""
-    )
-    return subprocess.Popen(["cmd.exe", "/c", cmd])
 
 
 def _record(report: Report, name: str, ok: bool, detail: str, t0: float) -> None:

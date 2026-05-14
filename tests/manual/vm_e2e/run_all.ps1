@@ -183,11 +183,16 @@ function Run-MCP-Tests {
         Invoke-Native "set-policy-allow_all.log" {
             & uv run windows-mcp service secure-desktop set-policy allow_all
         }
-        Log "Running mcp_client.py --mode allow_all"
+        Log "Running mcp_client.py --mode allow_all (basic-user token via runas /trustlevel)"
         $allowJson = Join-Path $ResultsDir "results-allow_all.json"
         Invoke-Native "mcp_client-allow_all.log" {
-            & uv run python tests\manual\vm_e2e\mcp_client.py `
-                --results $allowJson --mode allow_all
+            # Run the broker (and its child MCP server) at medium integrity so
+            # Start-Process -Verb RunAs from inside the test actually fires UAC
+            # rather than auto-elevating. runas /trustlevel:0x20000 strips the
+            # admin token from the same user — no password required.
+            & cmd.exe /c ("runas /trustlevel:0x20000 " +
+                "`"uv run python tests\manual\vm_e2e\mcp_client.py " +
+                "--results `"$allowJson`" --mode allow_all`"")
         }
 
         # ----- phase 2: block (asserts click is refused) -----
@@ -195,11 +200,12 @@ function Run-MCP-Tests {
         Invoke-Native "set-policy-block.log" {
             & uv run windows-mcp service secure-desktop set-policy block
         }
-        Log "Running mcp_client.py --mode block"
+        Log "Running mcp_client.py --mode block (basic-user token via runas /trustlevel)"
         $blockJson = Join-Path $ResultsDir "results-block.json"
         Invoke-Native "mcp_client-block.log" {
-            & uv run python tests\manual\vm_e2e\mcp_client.py `
-                --results $blockJson --mode block
+            & cmd.exe /c ("runas /trustlevel:0x20000 " +
+                "`"uv run python tests\manual\vm_e2e\mcp_client.py " +
+                "--results `"$blockJson`" --mode block`"")
         }
 
         # ----- combined report ------------------------------------------------
