@@ -197,14 +197,38 @@ def get_input_desktop_name() -> str:
     Returns ``"Default"`` during normal desktop use and ``"Winlogon"`` while a
     UAC prompt is active.  Works from user-mode too (used for detection in the
     broker via :func:`~windows_mcp.desktop.screenshot.is_secure_desktop_active`).
+
+    When called from a LocalSystem service the process window station is
+    ``Service-0x0-3e7$``, not ``WinSta0`` — and ``OpenInputDesktop`` on the
+    service winstation never returns the user's input desktop. We first try a
+    plain ``OpenInputDesktop`` (cheap, works from user mode) and fall back to
+    momentarily attaching to ``WinSta0`` when that returns nothing useful.
     """
     hdesk = _open_input_desktop(_DESKTOP_READOBJECTS)
-    if not hdesk:
+    if hdesk:
+        try:
+            name = _get_desktop_name(hdesk)
+        finally:
+            _user32.CloseDesktop(hdesk)
+        if name:
+            return name
+
+    hwinsta_prev = _user32.GetProcessWindowStation()
+    hwinsta = _open_winsta0()
+    if not hwinsta:
         return "Default"
     try:
-        return _get_desktop_name(hdesk)
+        _user32.SetProcessWindowStation(hwinsta)
+        hdesk = _open_input_desktop(_DESKTOP_READOBJECTS)
+        if not hdesk:
+            return "Default"
+        try:
+            return _get_desktop_name(hdesk) or "Default"
+        finally:
+            _user32.CloseDesktop(hdesk)
     finally:
-        _user32.CloseDesktop(hdesk)
+        _user32.SetProcessWindowStation(hwinsta_prev)
+        _user32.CloseWindowStation(hwinsta)
 
 
 def capture_screenshot() -> bytes:
@@ -497,16 +521,46 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
 
     Returns a dict with the UIA tree of the consent dialog plus the extracted
     publisher, or ``None`` if the timeout expires without UAC firing.
+
+    Attaches the calling process to ``WinSta0`` once for the duration of the
+    poll loop — the LocalSystem host service starts on ``Service-0x0-3e7$``,
+    and ``OpenInputDesktop`` on that station never returns the interactive
+    user's input desktop.  Restoring the original window station on exit
+    keeps subsequent pipe handlers on their original station.
     """
     deadline = time.monotonic() + (timeout_ms / 1000.0)
-    while time.monotonic() < deadline:
-        if get_input_desktop_name().lower() == "winlogon":
-            tree = uia_get_tree()
-            publisher = get_uac_publisher()
-            return {
-                "desktop": "Winlogon",
-                "publisher": publisher,
-                "tree": tree,
-            }
-        time.sleep(poll_ms / 1000.0)
-    return None
+    hwinsta_prev = _user32.GetProcessWindowStation()
+    hwinsta = _open_winsta0()
+    if hwinsta:
+        _user32.SetProcessWindowStation(hwinsta)
+    logger.info(
+        "wait_for_uac_prompt: polling winsta=%s for up to %dms (hwinsta=%s)",
+        "WinSta0" if hwinsta else "(failed-open)", timeout_ms, hwinsta,
+    )
+    seen: dict[str, int] = {}
+    try:
+        while time.monotonic() < deadline:
+            name = ""
+            hdesk = _open_input_desktop(_DESKTOP_READOBJECTS)
+            if hdesk:
+                try:
+                    name = _get_desktop_name(hdesk) or ""
+                finally:
+                    _user32.CloseDesktop(hdesk)
+            seen[name] = seen.get(name, 0) + 1
+            if name.lower() == "winlogon":
+                logger.info("wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values()))
+                tree = uia_get_tree()
+                publisher = get_uac_publisher()
+                return {
+                    "desktop": "Winlogon",
+                    "publisher": publisher,
+                    "tree": tree,
+                }
+            time.sleep(poll_ms / 1000.0)
+        logger.warning("wait_for_uac_prompt: timed out; saw desktops: %s", seen)
+        return None
+    finally:
+        if hwinsta:
+            _user32.SetProcessWindowStation(hwinsta_prev)
+            _user32.CloseWindowStation(hwinsta)
