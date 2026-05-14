@@ -27,48 +27,14 @@ function Log($msg) {
 }
 
 # -----------------------------------------------------------------------------
-# 1) Bootstrap Python + uv. Don't trust `Get-Command python` — Win11 ships a
-#    Microsoft Store *stub* of that name that opens the Store and does nothing.
-#    Always check for a real interpreter (or install one) before proceeding.
+# 1) Bootstrap. Skip Windows-managed Python entirely — winget on a fresh
+#    dockur Win11 has a broken source ("Data required by the source is
+#    missing") and the python on PATH is an MS Store stub.
+#
+#    Instead, install uv (self-contained binary, ~15 MB) directly from
+#    Astral's CDN, then let uv install and manage its own Python via
+#    `uv python install 3.13`. Zero Windows-side Python machinery needed.
 # -----------------------------------------------------------------------------
-function Test-RealPython {
-    # The Store stub returns immediately with no output. A real interpreter
-    # prints its version. Capture stdout/stderr explicitly.
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -eq $cmd) { return $null }
-    try {
-        $ver = (& python --version 2>&1) | Out-String
-        if ($ver -match 'Python (\d+\.\d+)') { return $cmd.Source }
-    } catch { }
-    return $null
-}
-
-function Ensure-Python {
-    $real = Test-RealPython
-    if ($real) {
-        Log "python present: $real"
-        return
-    }
-    Log "Installing Python via winget…"
-    winget install --id Python.Python.3.13 --source winget --silent `
-        --accept-source-agreements --accept-package-agreements 2>&1 |
-        Out-File -FilePath (Join-Path $ResultsDir "winget-python.log") -Append
-
-    # winget puts user-scope Python under %LOCALAPPDATA%\Programs\Python\…
-    foreach ($candidate in @(
-        "$env:LOCALAPPDATA\Programs\Python\Python313",
-        "$env:ProgramFiles\Python313",
-        "$env:LOCALAPPDATA\Programs\Python\Python312"
-    )) {
-        if (Test-Path "$candidate\python.exe") {
-            $env:Path = "$candidate;$candidate\Scripts;$env:Path"
-            Log "python after install: $candidate\python.exe"
-            return
-        }
-    }
-    throw "Python installed via winget but python.exe not found in any expected path."
-}
-
 function Ensure-Uv {
     if (Get-Command uv -ErrorAction SilentlyContinue) {
         Log "uv present: $(uv --version)"
@@ -97,6 +63,18 @@ function Ensure-Uv {
         }
     }
     throw "uv install ran but uv.exe was not found in any expected path."
+}
+
+function Ensure-Python {
+    # uv ships a Python distribution manager. `uv python install 3.13` downloads
+    # and pins a real CPython under uv's own cache — no Microsoft Store, no
+    # winget, no PATH editing in Windows.
+    Log "Installing Python 3.13 via uv (uv-managed)…"
+    & uv python install 3.13 2>&1 | Out-File -FilePath (Join-Path $ResultsDir "uv-python.log") -Append
+    if ($LASTEXITCODE -ne 0) {
+        throw "uv python install 3.13 failed (exit $LASTEXITCODE)."
+    }
+    Log "uv-managed Python ready."
 }
 
 # -----------------------------------------------------------------------------
@@ -202,8 +180,9 @@ Set-Content -Path $LocalLog -Value "run_all.ps1 started $(Get-Date -Format o)"
 try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 
 try {
-    Ensure-Python
+    # uv first — Ensure-Python now uses uv to install Python.
     Ensure-Uv
+    Ensure-Python
     Stage-Repo
     Setup-Project
     Verify-Service
