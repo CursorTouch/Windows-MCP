@@ -113,50 +113,26 @@ def _trigger_uac() -> subprocess.Popen:
     `Start-Process -Verb RunAs` from a child process AUTO-ELEVATES with no
     UAC prompt — defeating the entire point of the test.
 
-    To force UAC to actually fire, spin up the trigger via a scheduled task
-    that runs as the Docker user *without* /RL HIGHEST. schtasks runs the
-    task with the user's standard (non-elevated) token, so Start-Process
-    -Verb RunAs from that child *does* trip UAC.
+    Use `runas /trustlevel:0x20000` to spawn the trigger powershell with
+    the user's *basic* (non-elevated) token. trustlevel 0x20000 is the
+    "Basic User" / standard-user trust level, which doesn't require a
+    password — it's just the same user with admin privileges stripped.
+    From that medium-integrity child, Start-Process -Verb RunAs trips UAC
+    properly and consent.exe shows on the Secure Desktop.
     """
-    task_name = "wmcp-test-trigger"
-    trigger_ps = (
+    inner = (
         "Start-Sleep -Milliseconds 1500; "
         "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden"
     )
-    # Wrap the script so cmd's quoting survives schtasks's parser.
-    tr = (
+    # runas /trustlevel:0x20000 expects the program path (not a quoted arg
+    # string), but with a /trustlevel that's the only way to fork a fresh
+    # token without password prompting.
+    cmd = (
+        "runas /trustlevel:0x20000 \""
         "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass "
-        f"-Command \"{trigger_ps}\""
+        f"-Command \\\"{inner}\\\"\""
     )
-    # Best-effort cleanup of any prior task.
-    subprocess.run(
-        ["schtasks.exe", "/Delete", "/TN", task_name, "/F"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    # Register a one-shot task that runs as the interactive Docker user
-    # *without* highest privileges (i.e. the standard user split token).
-    create = subprocess.run(
-        [
-            "schtasks.exe", "/Create",
-            "/TN", task_name,
-            "/SC", "ONCE", "/ST", "23:59",
-            "/RU", "Docker",
-            "/TR", tr,
-            "/IT",  # interactive — get the user's standard token, not the elevated one
-            "/F",
-        ],
-        capture_output=True, text=True,
-    )
-    if create.returncode != 0:
-        raise RuntimeError(
-            f"failed to register UAC trigger task: {create.returncode} "
-            f"{create.stdout} {create.stderr}"
-        )
-    # Fire the task now. Task runs in the background as Docker (non-elevated).
-    return subprocess.Popen(
-        ["schtasks.exe", "/Run", "/TN", task_name],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    return subprocess.Popen(["cmd.exe", "/c", cmd])
 
 
 def _record(report: Report, name: str, ok: bool, detail: str, t0: float) -> None:
