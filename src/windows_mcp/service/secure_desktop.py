@@ -550,8 +550,21 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
             seen[name] = seen.get(name, 0) + 1
             if name.lower() == "winlogon":
                 logger.info("wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values()))
-                tree = uia_get_tree()
-                publisher = get_uac_publisher()
+                # consent.exe paints its window a few hundred ms after the input
+                # desktop flips to Winlogon. Retry the UIA walk until it sees at
+                # least one child, or 1.5 s elapses — beyond that the tree is
+                # really empty.
+                tree: list[dict] = []
+                publisher = None
+                for attempt in range(8):
+                    tree = uia_get_tree() or []
+                    publisher = get_uac_publisher()
+                    if tree:
+                        logger.info("wait_for_uac_prompt: tree captured after %d retries (%d top windows)", attempt, len(tree))
+                        break
+                    time.sleep(0.2)
+                else:
+                    logger.warning("wait_for_uac_prompt: Winlogon active but UIA tree stayed empty after 8 retries")
                 return {
                     "desktop": "Winlogon",
                     "publisher": publisher,

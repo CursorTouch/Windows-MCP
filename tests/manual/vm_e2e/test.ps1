@@ -33,19 +33,22 @@ function Log($msg) {
 }
 
 function Wait-For-Url($url, $timeoutSec) {
+    # Probe at the TCP layer. We don't care that the streamable-http MCP server
+    # answers 406 on plain GET ("Client must accept text/event-stream") — we
+    # just need it bound and accepting connections so the real MCP client can
+    # negotiate. Invoke-WebRequest's WebException path interacts badly with
+    # -ErrorAction SilentlyContinue (the catch block never sees the response
+    # in Windows PowerShell 5.1, which is what test.ps1 runs under).
+    $uri = [Uri]$url
     $deadline = (Get-Date).AddSeconds($timeoutSec)
     while ((Get-Date) -lt $deadline) {
+        $client = New-Object System.Net.Sockets.TcpClient
         try {
-            $res = Invoke-WebRequest -Uri $url -Method Get -TimeoutSec 5 -UseBasicParsing -ErrorAction SilentlyContinue
-            # Anything that returns a status code (even 4xx) means the server is up
-            # and answering on this endpoint. MCP servers commonly answer 404/406 on
-            # plain GET because they expect the initialization handshake.
-            if ($res) { return $true }
-        } catch [System.Net.WebException] {
-            # WebException for HTTP responses (4xx/5xx) still means the server
-            # exists and responded — that's good enough to proceed.
-            if ($_.Exception.Response) { return $true }
-        } catch { }
+            $task = $client.ConnectAsync($uri.Host, $uri.Port)
+            if ($task.Wait(2000) -and $client.Connected) { return $true }
+        } catch { } finally {
+            try { $client.Close() } catch { }
+        }
         Start-Sleep -Seconds 2
     }
     return $false
