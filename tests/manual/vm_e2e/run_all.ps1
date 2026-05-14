@@ -120,6 +120,16 @@ function Ensure-Python {
 #    (uv refuses to write into UNC shares).
 # -----------------------------------------------------------------------------
 function Stage-Repo {
+    # If a previous run left the service installed and running, its
+    # python.exe is locked by the service process — Remove-Item would skip
+    # those files, leaving a stale .venv that uv mistakes for a fresh one.
+    # Stop and remove the service first so we can wipe cleanly.
+    if (Get-Service WindowsMCPHost -ErrorAction SilentlyContinue) {
+        Log "Stopping/removing prior WindowsMCPHost service before re-staging…"
+        try { Stop-Service WindowsMCPHost -Force -ErrorAction SilentlyContinue } catch { }
+        try { sc.exe delete WindowsMCPHost | Out-Null } catch { }
+        Start-Sleep -Seconds 2  # let SCM finish + file handles release
+    }
     if (Test-Path $LocalRepo) {
         Log "Refreshing $LocalRepo"
         Remove-Item -Recurse -Force "$LocalRepo\*" -ErrorAction SilentlyContinue
