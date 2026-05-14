@@ -11,6 +11,17 @@ Usage (run from inside the Windows VM):
 When --http is given, talks to a remote server over streamable-http instead
 of spawning the local stdio server. That mode is for the Linux-side driver
 in path B.
+
+The suite asserts, **per assertion** (no "all green if any pass"):
+
+  1. list_tools includes WaitForUACPrompt.
+  2. WaitForUACPrompt blocks then returns a non-empty UIA tree after we
+     trigger UAC via `Start-Process -Verb RunAs`.
+  3. The returned tree contains a "Yes" button with valid coordinates.
+  4. Click(loc=[Yes.x, Yes.y]) under policy=allow_all dismisses UAC
+     (a follow-up WaitForUACPrompt with a short timeout returns fired=False).
+  5. Under policy=block, Click is REFUSED with a "policy denied" error,
+     and the dialog stays on screen.
 """
 
 from __future__ import annotations
@@ -53,71 +64,15 @@ class Report:
     summary: dict[str, int] = field(default_factory=dict)
 
 
-async def run_tool(session: ClientSession, name: str, args: dict | None = None) -> Any:
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+async def call(session: ClientSession, name: str, args: dict | None = None) -> dict:
+    """Call an MCP tool and return the parsed JSON payload."""
     args = args or {}
-    result = await session.call_tool(name, args)
-    return result
-
-
-async def assert_service_running(session: ClientSession, report: Report) -> None:
-    start = time.monotonic()
-    # We assert via a tool that exists in the broker — the broker is what
-    # owns the pipe client. The Snapshot tool will pull a screenshot through
-    # the service when secure desktop is active; here we just hit any tool
-    # so we know MCP plumbing works.
-    try:
-        tools = await session.list_tools()
-        names = [t.name for t in tools.tools]
-        ok = "WaitForUACPrompt" in names
-        detail = f"tools: {sorted(names)[:10]}…"
-    except Exception as exc:
-        ok, detail = False, f"list_tools failed: {exc}"
-    report.results.append(TestResult(
-        "list_tools includes WaitForUACPrompt", ok, detail, time.monotonic() - start,
-    ))
-
-
-async def assert_wait_for_uac_returns_dialog(
-    session: ClientSession, report: Report
-) -> None:
-    """Trigger UAC, expect WaitForUACPrompt to return the dialog."""
-    start = time.monotonic()
-    # Spawn an elevation prompt asynchronously so it arrives while we wait.
-    trigger = subprocess.Popen(
-        [
-            "powershell.exe", "-NoLogo", "-NoProfile", "-Command",
-            "Start-Sleep -Milliseconds 1500; "
-            "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden",
-        ],
-    )
-    try:
-        result = await run_tool(
-            session, "WaitForUACPrompt", {"timeout_ms": 30_000}
-        )
-        # FastMCP returns a structured response; pull the first text content
-        payload = _extract_payload(result)
-        ok = bool(payload.get("ok")) and payload.get("fired") is True
-        if ok:
-            tree = payload.get("tree") or []
-            ok = bool(tree)
-            detail = (
-                f"publisher={payload.get('publisher')!r} "
-                f"top_windows={len(tree)} "
-                f"policy={payload.get('policy')}"
-            )
-        else:
-            detail = f"payload: {json.dumps(payload)[:300]}"
-    except Exception as exc:
-        ok, detail = False, f"call failed: {exc}"
-    finally:
-        try:
-            trigger.wait(timeout=5)
-        except Exception:
-            trigger.kill()
-    report.results.append(TestResult(
-        "WaitForUACPrompt returns dialog after UAC fires", ok, detail,
-        time.monotonic() - start,
-    ))
+    raw = await session.call_tool(name, args)
+    return _extract_payload(raw)
 
 
 def _extract_payload(call_result: Any) -> dict:
@@ -134,6 +89,199 @@ def _extract_payload(call_result: Any) -> dict:
     return {}
 
 
+def _find_named_invokable(tree: list[dict], name: str) -> dict | None:
+    """DFS through a WaitForUACPrompt tree looking for `name` with can_invoke=True."""
+    target = name.strip().lower()
+    stack = list(tree)
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        nname = (node.get("name") or "").strip().lower()
+        if nname == target and node.get("can_invoke"):
+            return node
+        for child in node.get("children") or []:
+            stack.append(child)
+    return None
+
+
+def _trigger_uac() -> subprocess.Popen:
+    """Fire a real UAC prompt asynchronously. Returns the Popen handle."""
+    return subprocess.Popen(
+        [
+            "powershell.exe", "-NoLogo", "-NoProfile", "-Command",
+            "Start-Sleep -Milliseconds 1500; "
+            "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden",
+        ],
+    )
+
+
+def _record(report: Report, name: str, ok: bool, detail: str, t0: float) -> None:
+    report.results.append(TestResult(
+        name=name, passed=ok, detail=detail, duration_s=time.monotonic() - t0,
+    ))
+
+
+# ---------------------------------------------------------------------------
+# assertions
+# ---------------------------------------------------------------------------
+
+async def assert_list_tools(session: ClientSession, report: Report) -> None:
+    t0 = time.monotonic()
+    try:
+        tools = await session.list_tools()
+        names = sorted(t.name for t in tools.tools)
+        ok = "WaitForUACPrompt" in names
+        detail = f"{len(names)} tools registered; first: {names[:8]}…"
+    except Exception as exc:
+        ok, detail = False, f"list_tools failed: {exc}"
+    _record(report, "list_tools includes WaitForUACPrompt", ok, detail, t0)
+
+
+async def assert_wait_for_uac_returns_dialog(
+    session: ClientSession, report: Report, *, expect_policy: str
+) -> dict | None:
+    """Trigger UAC, expect WaitForUACPrompt to return a non-empty tree.
+
+    Returns the payload so the next assertion can find the Yes button.
+    """
+    t0 = time.monotonic()
+    trigger = _trigger_uac()
+    payload: dict = {}
+    try:
+        payload = await call(session, "WaitForUACPrompt", {"timeout_ms": 30_000})
+    except Exception as exc:
+        _record(report, "WaitForUACPrompt returns dialog", False, f"call failed: {exc}", t0)
+        return None
+    finally:
+        try:
+            trigger.wait(timeout=10)
+        except Exception:
+            trigger.kill()
+
+    fired = bool(payload.get("ok")) and payload.get("fired") is True
+    tree = payload.get("tree") or []
+    ok = fired and bool(tree)
+    detail = (
+        f"fired={fired} top_windows={len(tree)} "
+        f"publisher={payload.get('publisher')!r} policy={payload.get('policy')}"
+    )
+    _record(report, "WaitForUACPrompt returns dialog", ok, detail, t0)
+
+    # Bonus assertion: policy reported matches what we set up.
+    pol = (payload.get("policy") or {}).get("policy")
+    _record(
+        report,
+        f"policy is {expect_policy}",
+        pol == expect_policy,
+        f"got {pol!r}",
+        t0,
+    )
+
+    return payload if ok else None
+
+
+async def assert_yes_button_present(
+    payload: dict, report: Report
+) -> dict | None:
+    t0 = time.monotonic()
+    yes = _find_named_invokable(payload.get("tree") or [], "Yes")
+    if yes is None:
+        _record(report, "UAC tree contains invokable Yes button", False,
+                "no element named 'Yes' with can_invoke=True", t0)
+        return None
+    cx, cy = yes.get("center", {}).get("x"), yes.get("center", {}).get("y")
+    ok = isinstance(cx, int) and isinstance(cy, int)
+    _record(
+        report, "UAC tree contains invokable Yes button",
+        ok, f"Yes at ({cx},{cy}) bbox={yes.get('bbox')}", t0,
+    )
+    return yes if ok else None
+
+
+async def assert_click_dismisses_uac(
+    session: ClientSession, report: Report, yes_node: dict
+) -> None:
+    """policy=allow_all branch: click Yes, verify UAC is gone."""
+    t0 = time.monotonic()
+    cx = yes_node["center"]["x"]
+    cy = yes_node["center"]["y"]
+    try:
+        click_result = await call(session, "Click", {"loc": [cx, cy]})
+    except Exception as exc:
+        _record(report, "Click(Yes) under allow_all dismisses UAC",
+                False, f"Click call failed: {exc}", t0)
+        return
+
+    # Now verify UAC is no longer the input desktop. Issue a short-timeout
+    # WaitForUACPrompt — if it times out, secure desktop is no longer active.
+    await asyncio.sleep(2)
+    follow = await call(session, "WaitForUACPrompt", {"timeout_ms": 2_000})
+    dismissed = follow.get("ok") is True and follow.get("fired") is False
+    _record(
+        report, "Click(Yes) under allow_all dismisses UAC",
+        dismissed,
+        f"click_result={json.dumps(click_result)[:200]} follow={json.dumps(follow)[:200]}",
+        t0,
+    )
+
+
+async def assert_block_policy_refuses_click(
+    session: ClientSession, report: Report, yes_node: dict
+) -> None:
+    """policy=block branch: clicking should be refused by the service."""
+    t0 = time.monotonic()
+    cx = yes_node["center"]["x"]
+    cy = yes_node["center"]["y"]
+    try:
+        result = await call(session, "Click", {"loc": [cx, cy]})
+    except Exception as exc:
+        # MCP errors surface as exceptions; that's also a valid "refused" signal.
+        _record(report, "Click(Yes) under block is refused",
+                "policy" in str(exc).lower() or "denied" in str(exc).lower(),
+                f"exc={exc}", t0)
+        return
+
+    raw = json.dumps(result).lower()
+    refused = "policy" in raw and ("denied" in raw or "block" in raw or "refus" in raw)
+    _record(
+        report, "Click(Yes) under block is refused",
+        refused,
+        f"result={json.dumps(result)[:300]}",
+        t0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# orchestration
+# ---------------------------------------------------------------------------
+
+async def _run_suite(session: ClientSession, report: Report, mode: str) -> None:
+    """`mode` is the policy phase the run_all script set up before invoking us."""
+    await assert_list_tools(session, report)
+
+    payload = await assert_wait_for_uac_returns_dialog(
+        session, report, expect_policy=mode,
+    )
+    if payload is None:
+        return
+
+    yes_node = await assert_yes_button_present(payload, report)
+    if yes_node is None:
+        return
+
+    if mode == "allow_all":
+        await assert_click_dismisses_uac(session, report, yes_node)
+    elif mode == "block":
+        await assert_block_policy_refuses_click(session, report, yes_node)
+        # Make sure UAC is dismissed for the next phase (Cancel = right-arrow + Enter? simpler:
+        # send Esc via the broker's Shortcut tool, which goes through the service path).
+        try:
+            await call(session, "Shortcut", {"shortcut": "Escape"})
+        except Exception:
+            pass
+
+
 async def run_async(args: argparse.Namespace) -> Report:
     report = Report(
         started_at=_now(),
@@ -143,7 +291,7 @@ async def run_async(args: argparse.Namespace) -> Report:
         async with streamablehttp_client(args.http) as (read, write, _info):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                await _run_suite(session, report)
+                await _run_suite(session, report, args.mode)
     else:
         params = StdioServerParameters(
             command=args.python or sys.executable,
@@ -153,7 +301,7 @@ async def run_async(args: argparse.Namespace) -> Report:
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                await _run_suite(session, report)
+                await _run_suite(session, report, args.mode)
     report.finished_at = _now()
     report.summary = {
         "total": len(report.results),
@@ -161,11 +309,6 @@ async def run_async(args: argparse.Namespace) -> Report:
         "failed": sum(1 for r in report.results if not r.passed),
     }
     return report
-
-
-async def _run_suite(session: ClientSession, report: Report) -> None:
-    await assert_service_running(session, report)
-    await assert_wait_for_uac_returns_dialog(session, report)
 
 
 def _now() -> str:
@@ -177,6 +320,10 @@ def main() -> int:
     ap.add_argument("--results", required=True, help="Write JSON report here.")
     ap.add_argument("--http", help="Talk to a remote server at this URL instead of stdio.")
     ap.add_argument("--python", help="Override the python.exe used for the stdio server.")
+    ap.add_argument(
+        "--mode", choices=["allow_all", "block"], default="allow_all",
+        help="Which policy phase the surrounding script set up before invoking us.",
+    )
     args = ap.parse_args()
 
     try:

@@ -92,9 +92,45 @@ function Verify-Service {
 function Run-MCP-Tests {
     Push-Location $LocalRepo
     try {
-        Log "Running mcp_client.py (stdio transport, in-VM)…"
-        uv run python tests\manual\vm_e2e\mcp_client.py --results $ResultsJson 2>&1 |
-            Tee-Object -FilePath (Join-Path $ResultsDir "mcp_client.log")
+        # ----- phase 1: allow_all (clicks Yes, asserts UAC dismissed) -----
+        Log "Setting policy=allow_all"
+        uv run windows-mcp service secure-desktop set-policy allow_all 2>&1 |
+            Tee-Object -FilePath (Join-Path $ResultsDir "set-policy-allow_all.log") | Out-Null
+        Log "Running mcp_client.py --mode allow_all"
+        $allowJson = Join-Path $ResultsDir "results-allow_all.json"
+        uv run python tests\manual\vm_e2e\mcp_client.py `
+            --results $allowJson --mode allow_all 2>&1 |
+            Tee-Object -FilePath (Join-Path $ResultsDir "mcp_client-allow_all.log")
+
+        # ----- phase 2: block (asserts click is refused) -----
+        Log "Setting policy=block"
+        uv run windows-mcp service secure-desktop set-policy block 2>&1 |
+            Tee-Object -FilePath (Join-Path $ResultsDir "set-policy-block.log") | Out-Null
+        Log "Running mcp_client.py --mode block"
+        $blockJson = Join-Path $ResultsDir "results-block.json"
+        uv run python tests\manual\vm_e2e\mcp_client.py `
+            --results $blockJson --mode block 2>&1 |
+            Tee-Object -FilePath (Join-Path $ResultsDir "mcp_client-block.log")
+
+        # ----- combined report ------------------------------------------------
+        $allow = Get-Content $allowJson -Raw | ConvertFrom-Json
+        $block = Get-Content $blockJson -Raw | ConvertFrom-Json
+        $combined = [pscustomobject]@{
+            started_at  = $allow.started_at
+            finished_at = $block.finished_at
+            transport   = $allow.transport
+            phases      = @{
+                allow_all = $allow
+                block     = $block
+            }
+            summary = @{
+                total  = ($allow.summary.total + $block.summary.total)
+                passed = ($allow.summary.passed + $block.summary.passed)
+                failed = ($allow.summary.failed + $block.summary.failed)
+            }
+        }
+        $combined | ConvertTo-Json -Depth 8 | Set-Content -Path $ResultsJson
+        Log "Combined results.json written: total=$($combined.summary.total) passed=$($combined.summary.passed) failed=$($combined.summary.failed)"
     } finally {
         Pop-Location
     }
