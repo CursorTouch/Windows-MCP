@@ -68,6 +68,11 @@ function Ensure-Uv {
         return
     }
     Log "Installing uv (in-process, no subshell)…"
+    # Win11 PowerShell 5.1 defaults to TLS 1.0/1.1 for outbound HTTPS, which
+    # Astral's CDN rejects with "Could not establish trust relationship". Force
+    # TLS 1.2 before downloading the install script.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor `
+        [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
     # `irm | iex` in the SAME process so any env changes the installer makes
     # persist into our session.
     Invoke-Expression (Invoke-RestMethod -Uri https://astral.sh/uv/install.ps1)
