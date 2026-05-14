@@ -236,6 +236,30 @@ Set-Content -Path $LocalLog -Value "run_all.ps1 started $(Get-Date -Format o)"
 try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 
 try {
+    # Pre-flight: dockur's autounattend disables UAC entirely
+    # (EnableLUA=false). The whole point of this test is UAC handling, so we
+    # need it on. If it's off, turn it on, schedule run_all.ps1 to fire on
+    # next login, and reboot. The next boot's auto-login + scheduled task
+    # will resume here with UAC active.
+    $luaKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+    $lua    = (Get-ItemProperty -Path $luaKey -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA
+    if ($lua -ne 1) {
+        Log "EnableLUA=$lua. Enabling UAC, scheduling re-run on next login, and rebooting…"
+        Set-ItemProperty -Path $luaKey -Name EnableLUA -Type DWord -Value 1
+        Set-ItemProperty -Path $luaKey -Name ConsentPromptBehaviorAdmin -Type DWord -Value 5
+        $task = "windows-mcp-test-resume"
+        schtasks.exe /Delete /TN $task /F 2>$null | Out-Null
+        $tr = "powershell.exe -ExecutionPolicy Bypass -File \\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\run_all.ps1"
+        schtasks.exe /Create /TN $task /SC ONLOGON /RL HIGHEST /RU Docker /TR "$tr" /F | Out-Null
+        Log "Scheduled task $task. Rebooting in 5s…"
+        Start-Sleep -Seconds 2
+        shutdown.exe /r /t 5 /c "Enabling UAC for windows-mcp test"
+        exit 0
+    }
+    # If we just resumed via scheduled task, remove the task so future logins
+    # don't re-trigger the harness.
+    schtasks.exe /Delete /TN windows-mcp-test-resume /F 2>$null | Out-Null
+
     Ensure-Python
     Ensure-Uv
     Stage-Repo
