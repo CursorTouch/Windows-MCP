@@ -163,8 +163,10 @@ async def assert_wait_for_uac_returns_dialog(
     tree = payload.get("tree") or []
     ok = fired and bool(tree)
     detail = (
-        f"fired={fired} top_windows={len(tree)} "
-        f"publisher={payload.get('publisher')!r} policy={payload.get('policy')}"
+        f"ok={payload.get('ok')!r} fired={payload.get('fired')!r} "
+        f"reason={payload.get('reason')!r} error={payload.get('error')!r} "
+        f"top_windows={len(tree)} publisher={payload.get('publisher')!r} "
+        f"policy={payload.get('policy')}"
     )
     _record(report, "WaitForUACPrompt returns dialog", ok, detail, t0)
 
