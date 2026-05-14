@@ -26,6 +26,27 @@ function Log($msg) {
     try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 }
 
+# Run a native command with stderr merged into stdout and Tee'd to a log,
+# locally suppressing PowerShell's "stderr lines = error" treatment. Throws
+# only on non-zero exit code, not on stderr noise.
+function Invoke-Native {
+    param([string]$LogName, [scriptblock]$Block)
+    $localLog = "$env:TEMP\$LogName"
+    $shareLog = Join-Path $ResultsDir $LogName
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Block 2>&1 | Tee-Object -FilePath $localLog
+        $rc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    try { Copy-Item -Force $localLog $shareLog -ErrorAction Stop } catch { }
+    if ($rc -ne 0) {
+        throw "Native command in $LogName exited with $rc (see $shareLog)"
+    }
+}
+
 # -----------------------------------------------------------------------------
 # 1) Bootstrap. Skip Windows-managed Python entirely — winget on a fresh
 #    dockur Win11 has a broken source ("Data required by the source is
@@ -116,11 +137,12 @@ function Setup-Project {
     Push-Location $LocalRepo
     try {
         Log "uv sync"
-        uv sync 2>&1 | Tee-Object -FilePath (Join-Path $ResultsDir "uv_sync.log")
+        Invoke-Native "uv_sync.log" { & uv sync }
         Log "Installing the host service (allow-user-binary-path because this is a VM)…"
-        uv run windows-mcp service secure-desktop install `
-            --policy allow_all --allow-user-binary-path --force 2>&1 |
-            Tee-Object -FilePath (Join-Path $ResultsDir "install.log")
+        Invoke-Native "install.log" {
+            & uv run windows-mcp service secure-desktop install `
+                --policy allow_all --allow-user-binary-path --force
+        }
     } finally {
         Pop-Location
     }
@@ -145,23 +167,27 @@ function Run-MCP-Tests {
     try {
         # ----- phase 1: allow_all (clicks Yes, asserts UAC dismissed) -----
         Log "Setting policy=allow_all"
-        uv run windows-mcp service secure-desktop set-policy allow_all 2>&1 |
-            Tee-Object -FilePath (Join-Path $ResultsDir "set-policy-allow_all.log") | Out-Null
+        Invoke-Native "set-policy-allow_all.log" {
+            & uv run windows-mcp service secure-desktop set-policy allow_all
+        }
         Log "Running mcp_client.py --mode allow_all"
         $allowJson = Join-Path $ResultsDir "results-allow_all.json"
-        uv run python tests\manual\vm_e2e\mcp_client.py `
-            --results $allowJson --mode allow_all 2>&1 |
-            Tee-Object -FilePath (Join-Path $ResultsDir "mcp_client-allow_all.log")
+        Invoke-Native "mcp_client-allow_all.log" {
+            & uv run python tests\manual\vm_e2e\mcp_client.py `
+                --results $allowJson --mode allow_all
+        }
 
         # ----- phase 2: block (asserts click is refused) -----
         Log "Setting policy=block"
-        uv run windows-mcp service secure-desktop set-policy block 2>&1 |
-            Tee-Object -FilePath (Join-Path $ResultsDir "set-policy-block.log") | Out-Null
+        Invoke-Native "set-policy-block.log" {
+            & uv run windows-mcp service secure-desktop set-policy block
+        }
         Log "Running mcp_client.py --mode block"
         $blockJson = Join-Path $ResultsDir "results-block.json"
-        uv run python tests\manual\vm_e2e\mcp_client.py `
-            --results $blockJson --mode block 2>&1 |
-            Tee-Object -FilePath (Join-Path $ResultsDir "mcp_client-block.log")
+        Invoke-Native "mcp_client-block.log" {
+            & uv run python tests\manual\vm_e2e\mcp_client.py `
+                --results $blockJson --mode block
+        }
 
         # ----- combined report ------------------------------------------------
         $allow = Get-Content $allowJson -Raw | ConvertFrom-Json
