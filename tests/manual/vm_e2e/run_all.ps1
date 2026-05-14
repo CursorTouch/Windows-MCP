@@ -248,9 +248,11 @@ try {
         Set-ItemProperty -Path $luaKey -Name EnableLUA -Type DWord -Value 1
         Set-ItemProperty -Path $luaKey -Name ConsentPromptBehaviorAdmin -Type DWord -Value 5
         $task = "windows-mcp-test-resume"
-        schtasks.exe /Delete /TN $task /F 2>$null | Out-Null
+        # Use cmd to swallow schtasks's stderr-on-not-found that would otherwise
+        # be promoted to a fatal error by $ErrorActionPreference=Stop.
+        cmd.exe /c "schtasks.exe /Delete /TN $task /F >nul 2>&1" | Out-Null
         $tr = "powershell.exe -ExecutionPolicy Bypass -File \\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\run_all.ps1"
-        schtasks.exe /Create /TN $task /SC ONLOGON /RL HIGHEST /RU Docker /TR "$tr" /F | Out-Null
+        cmd.exe /c "schtasks.exe /Create /TN $task /SC ONLOGON /RL HIGHEST /RU Docker /TR `"$tr`" /F" | Out-Null
         Log "Scheduled task $task. Rebooting in 5s…"
         Start-Sleep -Seconds 2
         shutdown.exe /r /t 5 /c "Enabling UAC for windows-mcp test"
@@ -258,7 +260,7 @@ try {
     }
     # If we just resumed via scheduled task, remove the task so future logins
     # don't re-trigger the harness.
-    schtasks.exe /Delete /TN windows-mcp-test-resume /F 2>$null | Out-Null
+    cmd.exe /c "schtasks.exe /Delete /TN windows-mcp-test-resume /F >nul 2>&1" | Out-Null
 
     Ensure-Python
     Ensure-Uv
