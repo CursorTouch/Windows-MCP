@@ -40,44 +40,58 @@ function Ensure-Uv {
         Log "uv present: $(uv --version)"
         return
     }
-    Log "Installing uv (in-process, no subshell)…"
-    # Win11 PowerShell 5.1 defaults to TLS 1.0/1.1 for outbound HTTPS. Force 1.2.
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor `
-        [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
-    # If the sandbox network MITMs TLS (cloud test envs commonly do), the VM
-    # has no way to validate the intercept CA — we'd hit "Could not establish
-    # trust relationship". This is a disposable test VM, so accept all certs
-    # for the duration of this script only. Do NOT do this in production.
-    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    # `irm | iex` in the SAME process so any env changes the installer makes
-    # persist into our session.
-    Invoke-Expression (Invoke-RestMethod -Uri https://astral.sh/uv/install.ps1)
-
-    # Astral's installer drops uv.exe at $env:USERPROFILE\.local\bin per docs.
-    foreach ($candidate in @(
-        "$env:USERPROFILE\.local\bin",
-        "$env:LOCALAPPDATA\uv\bin",
-        "$env:LOCALAPPDATA\Programs\uv"
-    )) {
-        if (Test-Path "$candidate\uv.exe") {
-            $env:Path = "$candidate;$env:Path"
-            Log "uv after install: $candidate\uv.exe"
-            return
-        }
+    # We pre-stage uv.exe in the share at tests/manual/vm_e2e/bin/uv.exe so we
+    # don't depend on Windows being able to reach Astral's CDN. (In the
+    # disposable test VM the sandbox network MITMs TLS and the VM doesn't
+    # trust the intercept CA — outbound HTTPS from Windows is unreliable.)
+    $sharedUv = Join-Path $Repo "tests\manual\vm_e2e\bin\uv.exe"
+    $dest = "$env:USERPROFILE\.local\bin"
+    if (-not (Test-Path $sharedUv)) {
+        throw "Expected pre-staged uv.exe at $sharedUv but it was missing. Re-stage from the host: curl -sL -o /tmp/u.zip https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip && unzip -o /tmp/u.zip -d <repo>/tests/manual/vm_e2e/bin/"
     }
-    throw "uv install ran but uv.exe was not found in any expected path."
+    Log "Copying pre-staged uv.exe from share to $dest…"
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Copy-Item -Force $sharedUv "$dest\uv.exe"
+    $env:Path = "$dest;$env:Path"
+    Log "uv ready: $(& uv --version)"
 }
 
 function Ensure-Python {
-    # uv ships a Python distribution manager. `uv python install 3.13` downloads
-    # and pins a real CPython under uv's own cache — no Microsoft Store, no
-    # winget, no PATH editing in Windows.
-    Log "Installing Python 3.13 via uv (uv-managed)…"
-    & uv python install 3.13 2>&1 | Out-File -FilePath (Join-Path $ResultsDir "uv-python.log") -Append
-    if ($LASTEXITCODE -ne 0) {
-        throw "uv python install 3.13 failed (exit $LASTEXITCODE)."
+    # Detect a real (non-Store-stub) Python 3.13 if already installed.
+    foreach ($candidate in @(
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "$env:ProgramFiles\Python313\python.exe"
+    )) {
+        if (Test-Path $candidate) {
+            $verOut = & $candidate --version 2>&1 | Out-String
+            if ($verOut -match 'Python 3\.13') {
+                $env:Path = "$([System.IO.Path]::GetDirectoryName($candidate));$env:Path"
+                Log "python already installed: $candidate ($($verOut.Trim()))"
+                return
+            }
+        }
     }
-    Log "uv-managed Python ready."
+    # Install via the pre-staged python.org installer (avoids winget + outbound HTTPS).
+    $stagedInstaller = Join-Path $Repo "tests\manual\vm_e2e\bin\python-install.exe"
+    if (-not (Test-Path $stagedInstaller)) {
+        throw "Expected pre-staged Python installer at $stagedInstaller but it was missing."
+    }
+    Log "Running pre-staged Python installer (quiet, per-user, add to PATH)…"
+    & $stagedInstaller /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_pip=1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python installer exited with $LASTEXITCODE"
+    }
+    foreach ($candidate in @(
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "$env:ProgramFiles\Python313\python.exe"
+    )) {
+        if (Test-Path $candidate) {
+            $env:Path = "$([System.IO.Path]::GetDirectoryName($candidate));$env:Path"
+            Log "python installed: $candidate"
+            return
+        }
+    }
+    throw "Python installer ran (exit 0) but python.exe not found in expected paths."
 }
 
 # -----------------------------------------------------------------------------
@@ -183,9 +197,8 @@ Set-Content -Path $LocalLog -Value "run_all.ps1 started $(Get-Date -Format o)"
 try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 
 try {
-    # uv first — Ensure-Python now uses uv to install Python.
-    Ensure-Uv
     Ensure-Python
+    Ensure-Uv
     Stage-Repo
     Setup-Project
     Verify-Service
