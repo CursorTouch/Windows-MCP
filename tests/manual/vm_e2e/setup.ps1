@@ -130,8 +130,25 @@ function Stage-Repo {
     if (Get-Service WindowsMCPHost -ErrorAction SilentlyContinue) {
         Log "Stopping/removing prior WindowsMCPHost before re-staging…"
         try { Stop-Service WindowsMCPHost -Force -ErrorAction SilentlyContinue } catch { }
+        # Wait up to 20s for SCM to mark the service Stopped — Stop-Service
+        # is async and uv sync will fail with "Access is denied" if the
+        # service process still has windows-mcp.exe open under .venv.
+        for ($i = 0; $i -lt 40; $i++) {
+            $svc = Get-Service WindowsMCPHost -ErrorAction SilentlyContinue
+            if (-not $svc -or $svc.Status -eq "Stopped") { break }
+            Start-Sleep -Milliseconds 500
+        }
         try { sc.exe delete WindowsMCPHost | Out-Null } catch { }
-        Start-Sleep -Seconds 2
+        # Belt-and-braces: nuke any leftover python.exe that's still holding
+        # files in C:\windows-mcp (e.g. the SCM marked the service Stopped
+        # but the host.py worker thread is mid-shutdown).
+        Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path -like "$LocalRepo\.venv\*" } |
+            ForEach-Object {
+                Log "Killing leftover venv process pid=$($_.Id) name=$($_.ProcessName)"
+                try { $_.Kill() } catch { }
+            }
+        Start-Sleep -Seconds 1
     }
     if (Test-Path $LocalRepo) {
         Log "Refreshing $LocalRepo"
