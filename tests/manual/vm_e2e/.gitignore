@@ -1,0 +1,4 @@
+# Per-run artifacts written by the harness on the share
+results.json
+results-*.json
+*.log
