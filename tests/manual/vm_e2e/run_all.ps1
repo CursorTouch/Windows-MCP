@@ -11,12 +11,19 @@ $Repo       = "\\host.lan\Data\Windows-MCP"
 $LocalRepo  = "C:\windows-mcp"
 $ResultsDir = Join-Path $Repo "tests\manual\vm_e2e"
 $ResultsJson = Join-Path $ResultsDir "results.json"
-$Log         = Join-Path $ResultsDir "run_all.log"
+
+# Write the log LOCALLY during execution; copy to the share at the end.
+# Set-Content/Add-Content directly to a UNC path is flaky on Win11 (saw
+# transient FileNotFoundException on a fresh path) — local writes are not.
+$LocalLog   = "$env:TEMP\windows-mcp-run_all.log"
+$ShareLog   = Join-Path $ResultsDir "run_all.log"
 
 function Log($msg) {
     $ts = (Get-Date).ToString("HH:mm:ss")
-    Add-Content -Path $Log -Value "[$ts] $msg"
+    Add-Content -Path $LocalLog -Value "[$ts] $msg"
     Write-Host "[$ts] $msg"
+    # Best-effort live mirror to the share. Failure to mirror does not stop the run.
+    try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 }
 
 # -----------------------------------------------------------------------------
@@ -191,7 +198,8 @@ function Run-MCP-Tests {
 if (-not (Test-Path $ResultsDir)) {
     New-Item -ItemType Directory -Path $ResultsDir | Out-Null
 }
-Set-Content -Path $Log -Value "run_all.ps1 started $(Get-Date -Format o)"
+Set-Content -Path $LocalLog -Value "run_all.ps1 started $(Get-Date -Format o)"
+try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 
 try {
     Ensure-Python
