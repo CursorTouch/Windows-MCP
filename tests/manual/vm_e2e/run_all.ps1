@@ -136,7 +136,10 @@ function Stage-Repo {
 function Setup-Project {
     Push-Location $LocalRepo
     try {
-        Log "uv sync"
+        # Sandbox MITM proxy: tell uv to skip cert verification for PyPI hosts.
+        # Same disposable-VM caveat as the .NET cert bypass earlier.
+        $env:UV_INSECURE_HOST = "pypi.org files.pythonhosted.org github.com astral.sh objects.githubusercontent.com"
+        Log "uv sync (UV_INSECURE_HOST set for MITM proxy)"
         Invoke-Native "uv_sync.log" { & uv sync }
         Log "Installing the host service (allow-user-binary-path because this is a VM)…"
         Invoke-Native "install.log" {
