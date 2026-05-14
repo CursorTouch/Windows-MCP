@@ -489,7 +489,7 @@ def _gen_tls(host: str, cert_path, key_path) -> None:
     mkcert = subprocess.run(["where", "mkcert"], capture_output=True).returncode == 0
 
     if mkcert:
-        click.echo("mkcert detected — generating a locally-trusted certificate...")
+        click.echo("mkcert detected -- generating a locally-trusted certificate...")
         install = subprocess.run(["mkcert", "-install"], capture_output=True, text=True)
         if install.returncode != 0:
             raise click.ClickException(f"mkcert -install failed:\n{install.stderr.strip()}")
@@ -508,7 +508,7 @@ def _gen_tls(host: str, cert_path, key_path) -> None:
             raise click.ClickException(f"mkcert failed:\n{result.stderr.strip()}")
         click.echo("  Certificate is automatically trusted by Windows.")
     else:
-        click.echo("mkcert not found — falling back to openssl (self-signed)...")
+        click.echo("mkcert not found -- falling back to openssl (self-signed)...")
         click.echo("  Tip: winget install FiloSottile.mkcert  for auto-trusted certs next time.")
         result = subprocess.run(
             [
@@ -525,8 +525,8 @@ def _gen_tls(host: str, cert_path, key_path) -> None:
         click.echo("  To make Windows trust this cert, run in an elevated PowerShell:")
         click.echo(f'    Import-Certificate -FilePath "{cert_path}" -CertStoreLocation Cert:\\LocalMachine\\Root')
 
-    click.echo(f"  cert → {cert_path}")
-    click.echo(f"  key  → {key_path}")
+    click.echo(f"  cert -> {cert_path}")
+    click.echo(f"  key  -> {key_path}")
 
 
 _TASK_NAME = "windows-mcp-server"
@@ -610,7 +610,7 @@ def install(transport: str, host: str, port: int, force: bool) -> None:
     if run_result.returncode != 0:
         raise click.ClickException(f"schtasks /Run failed:\n{run_result.stderr.strip() or run_result.stdout.strip()}")
 
-    click.echo("Scheduled task installed — server is starting now.")
+    click.echo("Scheduled task installed -- server is starting now.")
     click.echo(f"  Task      : {_TASK_NAME}")
     click.echo(f"  Transport : {transport}")
     click.echo(f"  Address   : {host}:{port}")
@@ -775,7 +775,7 @@ def _admin_only_prefixes() -> list[str]:
 def _path_is_admin_only(path: str) -> bool:
     """Return True if *path* lives under a default admin-only prefix.
 
-    This is a *heuristic*, not a permission check — but it covers 99% of
+    This is a *heuristic*, not a permission check -- but it covers 99% of
     real installs.  Users on truly custom layouts can override with
     --allow-user-binary-path.
     """
@@ -863,7 +863,7 @@ def service_secure_desktop():
     so the MCP broker can capture screenshots and route input across the
     Winlogon (Secure Desktop) boundary that fires during UAC consent prompts.
 
-    UAC remains fully enabled — the service does NOT weaken the Secure Desktop
+    UAC remains fully enabled -- the service does NOT weaken the Secure Desktop
     policy.  Whether the broker may auto-click a UAC prompt is governed by the
     ``WINDOWS_MCP_SECURE_DESKTOP_POLICY`` env var (``block`` by default).
 
@@ -900,7 +900,7 @@ def service_secure_desktop():
     default=False,
     help=(
         "Allow installing even if Python or windows_mcp live in a user-writable "
-        "location. Unsafe outside a disposable VM — any local process running as "
+        "location. Unsafe outside a disposable VM -- any local process running as "
         "the user can replace the binary and gain SYSTEM at next service start."
     ),
 )
@@ -987,7 +987,7 @@ def service_secure_desktop_install(
             None,   # load order group
             0,      # tag id
             None,   # dependencies
-            None,   # service account → LocalSystem
+            None,   # service account -> LocalSystem
             None,   # password
         )
         win32service.ChangeServiceConfig2(
@@ -1042,7 +1042,7 @@ def service_secure_desktop_uninstall():
         win32serviceutil.StopService(_SERVICE_NAME)
         click.echo(f"Service '{_SERVICE_NAME}' stopped.")
     except pywintypes.error:
-        pass  # Not running — that's fine
+        pass  # Not running -- that's fine
 
     try:
         win32serviceutil.RemoveService(_SERVICE_NAME)
@@ -1085,7 +1085,7 @@ def service_secure_desktop_set_policy(policy_name: str, allow_publisher: tuple[s
         )
     except Exception as exc:
         raise click.ClickException(f"Failed to write policy: {exc}")
-    click.echo(f"Policy updated → {policy_name}")
+    click.echo(f"Policy updated -> {policy_name}")
     if allowlist:
         click.echo(f"  publishers allowlist: {allowlist}")
 
@@ -1141,7 +1141,7 @@ def service_secure_desktop_status():
                 else:
                     click.echo("Pipe    : not reachable (service may still be starting)")
             except Exception as exc:
-                click.echo(f"Pipe    : error — {exc}")
+                click.echo(f"Pipe    : error -- {exc}")
     except pywintypes.error:
         click.echo(f"Service '{_SERVICE_NAME}' is not installed.")
 
