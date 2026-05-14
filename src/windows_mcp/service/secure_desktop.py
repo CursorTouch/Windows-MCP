@@ -590,7 +590,6 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     creation_flags = (
         win32con.CREATE_NO_WINDOW
         | win32process.CREATE_UNICODE_ENVIRONMENT
-        | win32con.CREATE_NEW_CONSOLE
     )
 
     proc_handle = thread_handle = None
