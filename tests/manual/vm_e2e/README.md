@@ -1,44 +1,91 @@
 # Windows-MCP — VM end-to-end test harness
 
-Tests the secure-desktop host service against a real UAC prompt inside a
-Windows VM. Two driver paths are supported:
+Tests the secure-desktop story (UAC handling) against a real UAC prompt
+fired on a clean Windows VM, by verifying that **windows-mcp comes up on
+its own after reboot** and the MCP server is reachable.
 
-## Path A — in-VM driver (default)
+## Architecture
 
-The MCP client runs *inside* the Windows VM and talks to the MCP server
-over the stdio transport — the same shape Claude Desktop uses. Results
-are written to a JSON file in the bind-mounted share so the Linux side
-can read them without any port mapping.
+The harness is split into setup and test phases so the test never restarts
+windows-mcp itself — windows-mcp must self-start after reboot using its
+own Windows service + scheduled-task mechanisms.
 
-  Linux                       Windows VM
-  ─────                       ──────────
-  /home/.../tests/  ◄──SMB──► \\host.lan\Data\…\tests\
-  └─ vm_e2e/                  └─ run_all.ps1
-       └─ results.json ◄──── writes ◄──── mcp_client.py ──stdio──► windows-mcp serve
+```
++- setup.ps1 -------------+   one-time, elevated
+| install python+uv       |
+| uv sync                 |
+| set UAC reg values      |
+| install host service    |   SERVICE_AUTO_START → SCM brings it up
+| windows-mcp install     |   ONLOGON task        → MCP server brings itself up
+| register test task      |   ONLOGON, non-elev   → test.ps1 fires per boot
+| shutdown /r             |
++------------+------------+
+             |
+             v   (reboot)
++- after reboot ----------+
+| SCM auto-starts         |
+|   WindowsMCPHost        |
+| TaskSched fires         |
+|   windows-mcp-server    |   listens on 127.0.0.1:8000
+|   windows-mcp-test      |   medium-integrity, runs test.ps1
++------------+------------+
+             |
+             v
++- test.ps1 (every boot) -+
+| verify service running  |
+| wait for MCP HTTP up    |
+| mcp_client.py --http    |   real MCP protocol over streamable-http
+|   triggers UAC          |
+|   asserts WaitForUACPrompt
+|   asserts Click(Yes)    |
+| results.json            |
++-------------------------+
+```
 
-## Path B — Linux-side driver
+## Files
 
-The MCP server inside the VM is served over streamable-http. Container
-port 8000 is forwarded to the Linux host (needs container restart with
-`-p 8000:8000`). The Python MCP client runs on Linux. Same assertions
-but exercises HTTP transport too.
+| File | Run when | Privilege |
+|------|----------|-----------|
+| `setup.ps1` | Once per VM | Elevated (admin) |
+| `test.ps1`  | Every reboot | Non-elevated (medium integrity) |
+| `run_all.ps1` | Convenience dispatcher | Whichever |
+| `mcp_client.py` | Called by test.ps1 | Medium integrity |
+| `bin/`      | Pre-staged binaries (gitignored) | n/a |
 
-## Bring-up sequence
+## First-time bring-up
 
-Run from Linux:
+1. Stage host-side binaries (uv, Python installer) into `bin/` — one-time:
+   ```
+   curl -sL -o /tmp/u.zip https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip
+   unzip -o /tmp/u.zip -d tests/manual/vm_e2e/bin/
+   curl -sL -o tests/manual/vm_e2e/bin/python-install.exe https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe
+   ```
+2. From an **elevated** PowerShell inside the VM, run:
+   ```
+   powershell -ExecutionPolicy Bypass -File \\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\setup.ps1
+   ```
+3. Setup reboots. After the reboot, both windows-mcp components come up on
+   their own. The `windows-mcp-test` task also fires automatically and
+   runs the assertions. Read `results.json` from the share to see the result.
 
-    bash tests/manual/vm_e2e/bringup.sh
+## Reboot survival
 
-That installs Python+uv+windows-mcp inside the VM, registers the service
-with `--allow-user-binary-path` (since the VM is disposable), and runs
-`run_all.ps1`. After completion, `results.json` will exist at
-`tests/manual/vm_e2e/results.json` on the Linux side.
+The architecture inherently tests reboot survival on every cycle: each
+reboot validates that windows-mcp self-starts and the MCP tools work.
 
-## Tests covered
+## Re-running
 
-1. Service install succeeds, service is RUNNING.
-2. Service auto-starts after a Windows reboot (no manual start needed).
-3. MCP `WaitForUACPrompt` blocks, returns a dialog after we trigger UAC.
-4. Policy=`block`  → service refuses auto-click on Winlogon.
-5. Policy=`allow_all` → service performs the auto-click.
-6. Service uninstall removes the registry policy and the service entry.
+After the first setup, every subsequent reboot re-fires `test.ps1` and
+overwrites `results.json`. To re-trigger without rebooting:
+
+```
+schtasks /Run /TN windows-mcp-test
+```
+
+To wipe everything and start over:
+```
+schtasks /Delete /TN windows-mcp-test /F
+schtasks /Delete /TN windows-mcp-server /F
+sc.exe delete WindowsMCPHost
+# then re-run setup.ps1
+```
