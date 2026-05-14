@@ -20,17 +20,46 @@ function Log($msg) {
 }
 
 # -----------------------------------------------------------------------------
-# 1) Bootstrap Python + uv if not already on PATH
+# 1) Bootstrap Python + uv. Don't trust `Get-Command python` — Win11 ships a
+#    Microsoft Store *stub* of that name that opens the Store and does nothing.
+#    Always check for a real interpreter (or install one) before proceeding.
 # -----------------------------------------------------------------------------
+function Test-RealPython {
+    # The Store stub returns immediately with no output. A real interpreter
+    # prints its version. Capture stdout/stderr explicitly.
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -eq $cmd) { return $null }
+    try {
+        $ver = (& python --version 2>&1) | Out-String
+        if ($ver -match 'Python (\d+\.\d+)') { return $cmd.Source }
+    } catch { }
+    return $null
+}
+
 function Ensure-Python {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        Log "python present: $(python --version)"
+    $real = Test-RealPython
+    if ($real) {
+        Log "python present: $real"
         return
     }
     Log "Installing Python via winget…"
     winget install --id Python.Python.3.13 --source winget --silent `
-        --accept-source-agreements --accept-package-agreements | Out-Null
-    $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python313\;$env:Path"
+        --accept-source-agreements --accept-package-agreements 2>&1 |
+        Out-File -FilePath (Join-Path $ResultsDir "winget-python.log") -Append
+
+    # winget puts user-scope Python under %LOCALAPPDATA%\Programs\Python\…
+    foreach ($candidate in @(
+        "$env:LOCALAPPDATA\Programs\Python\Python313",
+        "$env:ProgramFiles\Python313",
+        "$env:LOCALAPPDATA\Programs\Python\Python312"
+    )) {
+        if (Test-Path "$candidate\python.exe") {
+            $env:Path = "$candidate;$candidate\Scripts;$env:Path"
+            Log "python after install: $candidate\python.exe"
+            return
+        }
+    }
+    throw "Python installed via winget but python.exe not found in any expected path."
 }
 
 function Ensure-Uv {
@@ -38,9 +67,24 @@ function Ensure-Uv {
         Log "uv present: $(uv --version)"
         return
     }
-    Log "Installing uv…"
-    powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
-    $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+    Log "Installing uv (in-process, no subshell)…"
+    # `irm | iex` in the SAME process so any env changes the installer makes
+    # persist into our session.
+    Invoke-Expression (Invoke-RestMethod -Uri https://astral.sh/uv/install.ps1)
+
+    # Astral's installer drops uv.exe at $env:USERPROFILE\.local\bin per docs.
+    foreach ($candidate in @(
+        "$env:USERPROFILE\.local\bin",
+        "$env:LOCALAPPDATA\uv\bin",
+        "$env:LOCALAPPDATA\Programs\uv"
+    )) {
+        if (Test-Path "$candidate\uv.exe") {
+            $env:Path = "$candidate;$env:Path"
+            Log "uv after install: $candidate\uv.exe"
+            return
+        }
+    }
+    throw "uv install ran but uv.exe was not found in any expected path."
 }
 
 # -----------------------------------------------------------------------------
