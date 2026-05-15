@@ -159,7 +159,7 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
         "--onefile",
         "--noconfirm",
         "--clean",
-        "--log-level", "WARN",
+        "--log-level", "INFO",
         "--distpath", str(dist_dir),
         "--workpath", str(build_dir),
         "--specpath", str(workdir),
@@ -218,7 +218,17 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
     ]
     if progress:
         progress("Building UIA worker .exe (this takes 60–120s; PyInstaller output follows)…")
-    rc = subprocess.run(cmd, check=False).returncode
+    # Hard cap: PyInstaller analysis pathologically hangs on some Defender-
+    # heavy Windows configs. Better to abort with a clear error than burn
+    # the install-time budget waiting forever.
+    try:
+        rc = subprocess.run(cmd, check=False, timeout=900).returncode
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "PyInstaller build exceeded 15 min — likely AV scanning %TEMP% on every "
+            "intermediate write. Add Defender exclusions for %TEMP% and the venv, "
+            "or pass --uia-worker <prebuilt-path> to skip the in-CLI build."
+        ) from None
     exe = dist_dir / _WORKER_EXE_NAME
     if rc != 0 or not exe.is_file():
         raise RuntimeError(

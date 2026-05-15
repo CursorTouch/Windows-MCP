@@ -163,8 +163,28 @@ function Uv-Sync {
     Push-Location $LocalRepo
     try {
         $env:UV_INSECURE_HOST = "pypi.org files.pythonhosted.org github.com astral.sh objects.githubusercontent.com"
-        Log "uv sync (UV_INSECURE_HOST set for the sandbox MITM proxy)"
-        Invoke-Native "uv_sync.log" { & uv sync }
+        # Nuke any cached bytecode under src/ — robocopy preserves source
+        # mtimes, so an older Python .pyc next to a newer .py can win the
+        # import race if mtimes don't strictly differ. Belt-and-braces.
+        Get-ChildItem -Path "$LocalRepo\src" -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        # --reinstall-package windows-mcp forces uv to rebuild the wheel
+        # from C:\windows-mcp\src instead of reusing one cached from a
+        # previous run with stale code. The project ships as a non-editable
+        # wheel under uv sync, so without this any change to src/ on
+        # subsequent runs is silently ignored.
+        Log "uv sync --reinstall-package windows-mcp (UV_INSECURE_HOST set for the sandbox MITM proxy)"
+        Invoke-Native "uv_sync.log" { & uv sync --reinstall-package windows-mcp }
+        # Sanity check: confirm the freshly-installed code matches the source
+        # we just robocopy'd. If anything still resolves to a cached wheel,
+        # we want a loud failure now, not a confusing pyinstaller bootstrap
+        # error 5 minutes later.
+        $expected = (Get-FileHash -Algorithm SHA256 "$LocalRepo\src\windows_mcp\service\uia_worker_install.py").Hash
+        $installed = (& uv run python -c "import windows_mcp.service.uia_worker_install as m, hashlib; print(hashlib.sha256(open(m.__file__,'rb').read()).hexdigest())").Trim()
+        if ($expected -ne $installed) {
+            throw "venv has stale windows_mcp: src=$expected installed=$installed"
+        }
+        Log "venv windows_mcp matches src ($($expected.Substring(0,12))…)."
     } finally {
         Pop-Location
     }
