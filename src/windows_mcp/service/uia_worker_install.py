@@ -84,13 +84,23 @@ def _resolve_uv() -> str | None:
     return None
 
 
+def _have_pip() -> bool:
+    try:
+        import pip  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def ensure_pyinstaller(progress: callable | None = None) -> None:
     """Install PyInstaller into the current interpreter if not present.
 
-    Most ``windows-mcp`` installs are uv-managed, and uv-built venvs ship
-    *without* ``pip``. So we prefer ``uv pip install --python <sys.executable>``
-    when uv is reachable; only fall back to ``python -m pip`` for the
-    non-uv case (where pip is presumably present).
+    uv-managed venvs ship *without* ``pip``, which the obvious
+    ``python -m pip install pyinstaller`` then trips on with "No module
+    named pip". ``python -m ensurepip --upgrade`` bootstraps pip into
+    the current interpreter using a stdlib-bundled wheel and works
+    regardless of who created the venv. After that, plain
+    ``python -m pip install pyinstaller`` is the simplest path.
     """
     if _have_pyinstaller():
         return
@@ -98,18 +108,26 @@ def ensure_pyinstaller(progress: callable | None = None) -> None:
         progress("Installing PyInstaller (one-time, ~25 MB)…")
 
     env = os.environ.copy()
-    # If the surrounding harness set UV_INSECURE_HOST (we are behind a MITM
-    # proxy), translate to pip's equivalent for the python -m pip fallback.
+    # Sandbox/CI environments may pre-set UV_INSECURE_HOST behind a MITM
+    # proxy. pip uses --trusted-host, not UV_INSECURE_HOST; translate.
     if env.get("UV_INSECURE_HOST") and "PIP_TRUSTED_HOST" not in env:
         env["PIP_TRUSTED_HOST"] = env["UV_INSECURE_HOST"]
 
-    uv_bin = _resolve_uv()
-    if uv_bin:
-        cmd = [uv_bin, "pip", "install", "--quiet",
-               "--python", sys.executable, "pyinstaller"]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--quiet", "pyinstaller"]
+    if not _have_pip():
+        if progress:
+            progress("pip is missing in this venv (uv-managed?); bootstrapping via ensurepip…")
+        rc = subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            env=env, check=False,
+        ).returncode
+        if rc != 0 or not _have_pip():
+            raise RuntimeError(
+                f"ensurepip failed (exit={rc}). The current Python "
+                f"({sys.executable}) lacks pip and the stdlib bootstrap could "
+                "not install it. Install PyInstaller manually and re-run install."
+            )
 
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet", "pyinstaller"]
     rc = subprocess.run(cmd, env=env, check=False).returncode
     if rc != 0 or not _have_pyinstaller():
         installer = " ".join(cmd)
