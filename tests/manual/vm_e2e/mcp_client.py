@@ -168,6 +168,16 @@ async def assert_wait_for_uac_returns_dialog(
     fired = bool(payload.get("ok")) and payload.get("fired") is True
     tree = payload.get("tree") or []
     ok = fired and bool(tree)
+    # Dump the full payload to the share so the host-side driver can see
+    # exactly what the worker returned. Useful for diagnosing the "Yes button
+    # not invokable" downstream assertion after fix 2 verified the tree is
+    # non-empty.
+    try:
+        dump_path = r"\\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\.work\wait_for_uac_payload.json"
+        with open(dump_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+    except Exception:
+        pass
     detail = (
         f"ok={payload.get('ok')!r} fired={payload.get('fired')!r} "
         f"reason={payload.get('reason')!r} error={payload.get('error')!r} "
