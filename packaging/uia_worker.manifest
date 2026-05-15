@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    Windows-MCP UIAccess worker manifest.
+
+    The host service spawns this binary in the active console user's session
+    (via CreateProcessAsUser) when it needs to walk or click consent.exe on
+    the Winlogon (Secure Desktop). Three things must hold for the OS to
+    grant cross-integrity UIA access (per Microsoft's UIAccess docs):
+
+      1. uiAccess="true" in this manifest.
+      2. The .exe is Authenticode-signed with a code-signing certificate.
+      3. The .exe is launched from a "trusted location" — either
+         %WinDir% or %ProgramFiles% (or a path explicitly added to the
+         HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AccessibilityCPL\
+         Trusted Locations list, which we don't need).
+
+    Without all three, the worker still runs but UIA enumeration of
+    consent.exe's children silently returns nothing — exactly the failure
+    mode we hit during VM e2e validation before this manifest landed.
+
+    requireAdministrator: when CreateProcessAsUser passes the user's linked
+    elevated token, this is satisfied without a UAC prompt. If a
+    standard-user accidentally double-clicks the .exe outside the service,
+    Windows will prompt for elevation rather than silently granting
+    UIAccess at non-admin integrity.
+  -->
+  <assemblyIdentity
+      version="1.0.0.0"
+      name="WindowsMCP.UiaWorker"
+      type="win32"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="true"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Win10 / Win11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

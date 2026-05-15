@@ -789,6 +789,52 @@ def _path_is_admin_only(path: str) -> bool:
     return False
 
 
+_UIA_WORKER_INSTALL_DIR = os.path.join(
+    os.environ.get("ProgramFiles", r"C:\Program Files"), "WindowsMCP"
+)
+_UIA_WORKER_INSTALL_NAME = "windows-mcp-uia-worker.exe"
+
+
+def _install_uia_worker(src_path: str) -> str:
+    """Copy a UIAccess-signed worker into ``%ProgramFiles%\\WindowsMCP\\`` and
+    lock its ACLs to admin-only. Returns the absolute installed path.
+
+    Two reasons we *must* land in Program Files (not a user dir):
+
+      1. Windows only grants UIAccess to manifested + signed binaries that
+         live in a "trusted location" — Program Files and the Windows
+         directory qualify by default. Copying to %TEMP% or %LOCALAPPDATA%
+         silently downgrades the binary back to "no UIAccess" and the
+         consent.exe tree walks return empty.
+      2. Anything readable by the LocalSystem service that the standard
+         user can rewrite is a SYSTEM-elevation hole. Locking the dir to
+         BUILTIN\\Administrators + SYSTEM closes that.
+    """
+    import shutil
+    import subprocess
+
+    src = os.path.abspath(src_path)
+    if not os.path.isfile(src):
+        raise click.ClickException(f"UIA worker not found: {src}")
+    os.makedirs(_UIA_WORKER_INSTALL_DIR, exist_ok=True)
+    dest = os.path.join(_UIA_WORKER_INSTALL_DIR, _UIA_WORKER_INSTALL_NAME)
+    shutil.copy2(src, dest)
+
+    # icacls: reset ACL, then grant SYSTEM + Administrators full control,
+    # remove inherited Users entries. Best effort -- if icacls fails the
+    # binary is still functional, just less defensively ACLed.
+    for cmd in (
+        ["icacls", _UIA_WORKER_INSTALL_DIR, "/inheritance:r"],
+        ["icacls", _UIA_WORKER_INSTALL_DIR, "/grant", "*S-1-5-18:(OI)(CI)F"],   # SYSTEM
+        ["icacls", _UIA_WORKER_INSTALL_DIR, "/grant", "*S-1-5-32-544:(OI)(CI)F"],  # Administrators
+    ):
+        try:
+            subprocess.run(cmd, capture_output=True, check=False)
+        except Exception:
+            pass
+    return dest
+
+
 def _verify_install_paths_are_admin_only() -> None:
     """Raise ClickException if the Python interpreter or windows_mcp package live
     in a user-writable location.
@@ -904,11 +950,28 @@ def service_secure_desktop():
         "the user can replace the binary and gain SYSTEM at next service start."
     ),
 )
+@click.option(
+    "--uia-worker",
+    "uia_worker",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    default=None,
+    help=(
+        "Path to a UIAccess-signed worker .exe (built from "
+        "packaging/uia_worker.spec and Authenticode-signed). When provided, "
+        "the binary is copied to %ProgramFiles%\\WindowsMCP\\ (a trusted "
+        "path) and registered in HKLM so the LocalSystem service spawns it "
+        "in the user session for cross-integrity UIA against consent.exe. "
+        "Without this flag the service falls back to a plain python worker "
+        "that *cannot* walk the consent dialog tree -- see "
+        "docs/secure-desktop.md."
+    ),
+)
 def service_secure_desktop_install(
     force: bool,
     policy: str | None,
     allow_publisher: tuple[str, ...],
     allow_user_binary_path: bool,
+    uia_worker: str | None,
 ):
     """Install and start the Secure Desktop host service (requires elevation)."""
     _require_win32()
@@ -1025,6 +1088,22 @@ def service_secure_desktop_install(
         click.echo(f"Warning: could not persist UAC policy: {exc}")
         click.echo("         Service will refuse auto-clicks until policy is set.")
 
+    if uia_worker:
+        try:
+            installed = _install_uia_worker(uia_worker)
+            policy_mod.write_uia_worker_path(installed)
+            click.echo(f"UIA worker         : {installed}")
+        except Exception as exc:
+            click.echo(f"Warning: failed to install UIA worker: {exc}")
+            click.echo("         Service will use the unsigned fallback; "
+                       "consent.exe tree walking will return empty.")
+    else:
+        click.echo(
+            "UIA worker         : (none) -- service will use the unsigned "
+            "python fallback; cross-integrity UIA against consent.exe will "
+            "return empty. Re-install with --uia-worker <path> to enable."
+        )
+
     click.echo("\nThe host service is now running as NT AUTHORITY\\SYSTEM.")
     click.echo("It will restart automatically at each boot.")
     click.echo("Run `windows-mcp service secure-desktop set-policy <policy>` to change without reinstalling.")
@@ -1056,6 +1135,17 @@ def service_secure_desktop_uninstall():
         click.echo("UAC consent policy : cleared from registry.")
     except Exception as exc:
         click.echo(f"Warning: could not clear UAC policy registry key: {exc}")
+
+    # Best-effort: remove the installed UIA worker binary. The registry
+    # entry is gone with the parent key above, so even if the .exe lingers
+    # the service won't try to spawn it on next install.
+    installed = os.path.join(_UIA_WORKER_INSTALL_DIR, _UIA_WORKER_INSTALL_NAME)
+    if os.path.isfile(installed):
+        try:
+            os.remove(installed)
+            click.echo(f"UIA worker         : removed {installed}")
+        except Exception as exc:
+            click.echo(f"Warning: could not remove UIA worker: {exc}")
 
 
 @service_secure_desktop.command("set-policy")

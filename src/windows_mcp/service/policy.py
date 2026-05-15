@@ -39,6 +39,7 @@ ENV_ALLOWLIST = "WINDOWS_MCP_SECURE_DESKTOP_ALLOWLIST"
 _REG_PATH = r"SOFTWARE\Windows-MCP\SecureDesktop"
 _REG_POLICY = "Policy"
 _REG_ALLOWLIST = "PublishersAllowlist"
+_REG_UIA_WORKER = "UiaWorkerPath"
 
 
 @dataclass
@@ -141,6 +142,44 @@ def delete_from_registry() -> None:
         pass
     except OSError as exc:
         logger.warning("Could not delete policy registry key: %s", exc)
+
+
+def read_uia_worker_path() -> str | None:
+    """Read the path of the installed UIAccess-signed worker, if any.
+
+    Returns ``None`` when no signed worker is registered. The service falls
+    back to spawning ``python -m windows_mcp.service.user_session_worker``
+    directly in that case — which works for everything *except* walking the
+    Winlogon UIA tree across the integrity-level boundary (consent.exe runs
+    at System integrity, and only a manifested + signed binary in a
+    trusted path is granted UIAccess). See docs/secure-desktop.md.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, _REG_PATH, access=winreg.KEY_READ
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, _REG_UIA_WORKER)
+            value = str(value).strip()
+            return value or None
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning("Reading UIA worker path from registry failed: %s", exc)
+        return None
+
+
+def write_uia_worker_path(path: str) -> None:
+    """Persist the installed UIAccess worker's path to HKLM. Requires elevation."""
+    import winreg
+    with winreg.CreateKeyEx(
+        winreg.HKEY_LOCAL_MACHINE, _REG_PATH, access=winreg.KEY_SET_VALUE
+    ) as key:
+        winreg.SetValueEx(key, _REG_UIA_WORKER, 0, winreg.REG_SZ, path)
+    logger.info("Recorded UIA worker path: %s", path)
 
 
 def resolve_install_time_policy(

@@ -31,6 +31,10 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# ...except the UIAccess worker spec + manifest, which are checked-in inputs
+# to the build (signing happens later in the release pipeline).
+!packaging/*.manifest
+!packaging/*.spec
 
 # Installer logs
 pip-log.txt
