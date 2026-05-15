@@ -539,6 +539,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     import win32file
     import win32pipe
     import win32process
+    import win32profile  # CreateEnvironmentBlock lives here, not in win32process
     import win32security
     import win32ts
 
@@ -595,7 +596,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     # _input_desktop() before touching UIA.
     startup.lpDesktop = r"winsta0\default"
 
-    user_env = win32process.CreateEnvironmentBlock(spawn_token, False)
+    user_env = win32profile.CreateEnvironmentBlock(spawn_token, False)
 
     creation_flags = (
         win32con.CREATE_NO_WINDOW
