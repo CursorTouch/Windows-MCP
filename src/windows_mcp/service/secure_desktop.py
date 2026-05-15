@@ -76,6 +76,11 @@ def _open_input_desktop(access: int = _DESKTOP_ALL_ACCESS) -> int:
     return handle or 0
 
 
+def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
+    handle = _user32.OpenDesktopW(name, 0, False, access)
+    return handle or 0
+
+
 def _get_desktop_name(hdesk: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
     needed = ctypes.wintypes.DWORD()
@@ -86,13 +91,21 @@ def _get_desktop_name(hdesk: int) -> str:
 
 
 @contextmanager
-def _input_desktop():
-    """Switch process/thread to WinSta0\\<input desktop>, then restore on exit.
+def _input_desktop(prefer_winlogon: bool = True):
+    """Switch process/thread to the input desktop, then restore on exit.
 
-    Tries ALL_ACCESS first (needed for synthetic input ops), falls back to the
-    minimum read+switch mask. Winlogon's DACL grants only a narrow set even to
-    admin tokens, so without the fallback the user-session worker silently
-    stays on its initial Default desktop and enumerates the *wrong* UIA tree.
+    From a user-session process, ``OpenInputDesktop`` returns the user's
+    *Default* desktop even while UAC is up — Secure Desktop is intentionally
+    isolated from the user session, and the user-session worker can't see
+    Winlogon as the input desktop. So when *prefer_winlogon* is true (the
+    case for UAC tree walking), we first try opening "Winlogon" by name and
+    only fall back to OpenInputDesktop if that fails. The handle-by-name
+    path goes through ``OpenDesktopW`` which Winlogon's DACL does grant to
+    admin tokens (and to uiAccess processes).
+
+    Tries ALL_ACCESS first (needed for synthetic input ops), falls back to
+    the minimum read+switch mask. Logs which path actually stuck (and a
+    loud warning if nothing did) so future regressions don't fail silently.
     """
     hwinsta_prev = _user32.GetProcessWindowStation()
     hdesk_prev = _user32.GetThreadDesktop(_kernel32.GetCurrentThreadId())
@@ -101,28 +114,39 @@ def _input_desktop():
         _user32.SetProcessWindowStation(hwinsta)
     hdesk = 0
     attached_via = None
-    for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
-        hdesk = _open_input_desktop(access)
-        if not hdesk:
-            continue
-        if _user32.SetThreadDesktop(hdesk):
-            attached_via = access
+    attached_how = None
+    candidates: list[tuple[str, Any]] = []
+    if prefer_winlogon:
+        candidates.append(("Winlogon-by-name",
+                           lambda access: _open_desktop_by_name("Winlogon", access)))
+    candidates.append(("input-desktop", _open_input_desktop))
+    for how, opener in candidates:
+        for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
+            hdesk = opener(access)
+            if not hdesk:
+                continue
+            if _user32.SetThreadDesktop(hdesk):
+                attached_via = access
+                attached_how = how
+                break
+            # SetThreadDesktop failed even though we got a handle — drop it
+            # and try a narrower access mask.
+            _user32.CloseDesktop(hdesk)
+            hdesk = 0
+        if hdesk:
             break
-        # SetThreadDesktop failed even though we got a handle — drop it and
-        # try a narrower access mask.
-        _user32.CloseDesktop(hdesk)
-        hdesk = 0
     if hdesk:
         name = _get_desktop_name(hdesk) or "(unknown)"
         logger.info(
-            "_input_desktop: attached to %r via access=0x%04x", name, attached_via
+            "_input_desktop: attached to %r via %s access=0x%04x",
+            name, attached_how, attached_via,
         )
     else:
         logger.warning(
-            "_input_desktop: could not attach to input desktop "
-            "(OpenInputDesktop returned NULL for every access mask we tried). "
-            "The thread will stay on the worker's initial desktop and UIA "
-            "enumeration will reflect that desktop, not the input one."
+            "_input_desktop: could not attach to any candidate desktop "
+            "(prefer_winlogon=%s). The thread will stay on the worker's "
+            "initial desktop and UIA enumeration will reflect that desktop.",
+            prefer_winlogon,
         )
     try:
         yield
