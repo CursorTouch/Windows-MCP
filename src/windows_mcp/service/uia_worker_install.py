@@ -155,18 +155,19 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
 
 _GENERATE_CERT_PS = textwrap.dedent(
     r"""
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Subject)
     $ErrorActionPreference = 'Stop'
-    $subject = $args[0]
     # Reuse an existing cert if one already exists with this subject
     # (idempotent re-runs of install). Otherwise create a fresh one.
     $existing = Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert -ErrorAction SilentlyContinue |
-        Where-Object { $_.Subject -eq $subject } | Select-Object -First 1
+        Where-Object { $_.Subject -eq $Subject } | Select-Object -First 1
     if ($existing) {
         $cert = $existing
     } else {
         $cert = New-SelfSignedCertificate `
             -Type CodeSigningCert `
-            -Subject $subject `
+            -Subject $Subject `
             -KeyUsage DigitalSignature `
             -KeyAlgorithm RSA -KeyLength 2048 `
             -HashAlgorithm SHA256 `
@@ -191,11 +192,14 @@ _GENERATE_CERT_PS = textwrap.dedent(
 
 _SIGN_PS = textwrap.dedent(
     r"""
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Thumbprint,
+        [Parameter(Mandatory)][string]$ExePath
+    )
     $ErrorActionPreference = 'Stop'
-    $thumbprint = $args[0]
-    $exePath    = $args[1]
-    $cert = Get-Item "Cert:\LocalMachine\My\$thumbprint"
-    $sig  = Set-AuthenticodeSignature -FilePath $exePath -Certificate $cert `
+    $cert = Get-Item "Cert:\LocalMachine\My\$Thumbprint"
+    $sig  = Set-AuthenticodeSignature -FilePath $ExePath -Certificate $cert `
         -HashAlgorithm SHA256 -IncludeChain All
     if ($sig.Status -ne 'Valid') {
         throw "Signature status is '$($sig.Status)': $($sig.StatusMessage)"
@@ -204,22 +208,45 @@ _SIGN_PS = textwrap.dedent(
 )
 
 
-def _run_powershell(script: str, *args: str) -> str:
-    """Run an inline PowerShell script with positional args. Returns trimmed stdout."""
-    cmd = [
-        "powershell.exe",
-        "-NoLogo", "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", script + "\n",
-        "--",
-        *args,
-    ]
-    p = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if p.returncode != 0:
-        raise RuntimeError(
-            f"PowerShell call failed (exit={p.returncode}): {p.stderr.strip() or p.stdout.strip()}"
-        )
-    return p.stdout.strip()
+def _run_powershell(script: str, *params: tuple[str, str]) -> str:
+    """Run a PowerShell script with named parameters via a temp .ps1 file.
+
+    *params* is a sequence of ``(name, value)`` pairs that map onto the
+    script's declared ``param(...)`` block. Using ``-File`` (not
+    ``-Command``) and a real script file is the only reliable way to
+    pass strings containing arbitrary characters into PowerShell from
+    subprocess; ``-Command "<script>" arg`` does *not* populate
+    ``$args`` consistently across PowerShell versions.
+
+    Returns the trimmed stdout. Raises ``RuntimeError`` with stderr on
+    non-zero exit.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(script)
+        script_path = tmp.name
+    try:
+        cmd = [
+            "powershell.exe",
+            "-NoLogo", "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+        ]
+        for name, value in params:
+            cmd.extend([f"-{name}", value])
+        p = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if p.returncode != 0:
+            raise RuntimeError(
+                f"PowerShell call failed (exit={p.returncode}): "
+                f"{p.stderr.strip() or p.stdout.strip()}"
+            )
+        return p.stdout.strip()
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
 
 
 def generate_local_cert(progress: callable | None = None) -> str:
@@ -228,14 +255,14 @@ def generate_local_cert(progress: callable | None = None) -> str:
     """
     if progress:
         progress(f"Generating self-signed code-signing cert ({_CERT_SUBJECT})…")
-    return _run_powershell(_GENERATE_CERT_PS, _CERT_SUBJECT)
+    return _run_powershell(_GENERATE_CERT_PS, ("Subject", _CERT_SUBJECT))
 
 
 def sign_worker(exe_path: Path, thumbprint: str, progress: callable | None = None) -> None:
     """Authenticode-sign *exe_path* with the cert identified by *thumbprint*."""
     if progress:
         progress(f"Signing {exe_path.name} with self-signed cert…")
-    _run_powershell(_SIGN_PS, thumbprint, str(exe_path))
+    _run_powershell(_SIGN_PS, ("Thumbprint", thumbprint), ("ExePath", str(exe_path)))
 
 
 # ---------------------------------------------------------------------------

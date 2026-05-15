@@ -890,12 +890,13 @@ def _resolve_uia_worker_choice(non_interactive: bool | None) -> bool:
 
 
 _REMOVE_CERT_PS = r"""
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$Subject)
 $ErrorActionPreference = 'Continue'
-$subject = $args[0]
 $removed = 0
 foreach ($store in @('My','Root','TrustedPublisher')) {
     $items = Get-ChildItem "Cert:\LocalMachine\$store" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Subject -eq $subject }
+        Where-Object { $_.Subject -eq $Subject }
     foreach ($c in $items) {
         try { Remove-Item -Path $c.PSPath -Force -ErrorAction Stop; $removed++ } catch {}
     }
@@ -907,13 +908,23 @@ Write-Output $removed
 def _try_remove_self_signed_cert() -> None:
     """Best-effort: remove our self-signed cert from LocalMachine cert stores
     on uninstall. Silent on failure -- the uninstall succeeds regardless."""
+    import tempfile
     try:
         from windows_mcp.service.uia_worker_install import _CERT_SUBJECT
-        p = subprocess.run(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-Command", _REMOVE_CERT_PS, "--", _CERT_SUBJECT],
-            capture_output=True, text=True, check=False,
-        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(_REMOVE_CERT_PS)
+            script_path = tmp.name
+        try:
+            p = subprocess.run(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", script_path, "-Subject", _CERT_SUBJECT],
+                capture_output=True, text=True, check=False,
+            )
+        finally:
+            try: os.unlink(script_path)
+            except OSError: pass
         n = (p.stdout or "0").strip().splitlines()[-1] if p.stdout else "0"
         if n != "0":
             click.echo(f"Self-signed cert   : removed {n} entries from LocalMachine cert stores.")
