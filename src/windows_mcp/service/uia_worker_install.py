@@ -58,27 +58,45 @@ def _have_pyinstaller() -> bool:
     return True
 
 
+def _resolve_uv() -> str | None:
+    """Return the path to the ``uv`` binary, or None if not on PATH.
+
+    Prefers ``uv.exe`` on Windows, falls back to ``uv``.
+    """
+    return shutil.which("uv.exe") or shutil.which("uv")
+
+
 def ensure_pyinstaller(progress: callable | None = None) -> None:
-    """Install PyInstaller into the current interpreter if not present."""
+    """Install PyInstaller into the current interpreter if not present.
+
+    Most ``windows-mcp`` installs are uv-managed, and uv-built venvs ship
+    *without* ``pip``. So we prefer ``uv pip install --python <sys.executable>``
+    when uv is reachable; only fall back to ``python -m pip`` for the
+    non-uv case (where pip is presumably present).
+    """
     if _have_pyinstaller():
         return
     if progress:
         progress("Installing PyInstaller (one-time, ~25 MB)…")
-    # If the surrounding harness set UV_INSECURE_HOST (we are behind a MITM
-    # proxy), translate it to pip's equivalent so the bootstrap install
-    # doesn't trip on certificate validation.
+
     env = os.environ.copy()
+    # If the surrounding harness set UV_INSECURE_HOST (we are behind a MITM
+    # proxy), translate to pip's equivalent for the python -m pip fallback.
     if env.get("UV_INSECURE_HOST") and "PIP_TRUSTED_HOST" not in env:
         env["PIP_TRUSTED_HOST"] = env["UV_INSECURE_HOST"]
-    rc = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "pyinstaller"],
-        env=env,
-        check=False,
-    ).returncode
+
+    uv_bin = _resolve_uv()
+    if uv_bin:
+        cmd = [uv_bin, "pip", "install", "--quiet",
+               "--python", sys.executable, "pyinstaller"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--quiet", "pyinstaller"]
+
+    rc = subprocess.run(cmd, env=env, check=False).returncode
     if rc != 0 or not _have_pyinstaller():
+        installer = " ".join(cmd)
         raise RuntimeError(
-            "pip install pyinstaller failed. Install it manually with: "
-            f"{sys.executable} -m pip install pyinstaller"
+            f"PyInstaller bootstrap failed (exit={rc}). Install it manually with: {installer}"
         )
 
 
