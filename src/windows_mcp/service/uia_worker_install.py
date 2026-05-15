@@ -166,10 +166,17 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
         "--name", "windows-mcp-uia-worker",
         "--manifest", str(manifest),
         "--paths", str(src_root),
-        # comtypes generates COM proxy modules at runtime; PyInstaller's
-        # static analysis can't see them, so collect the whole subtree.
-        "--collect-submodules", "comtypes",
+        # Explicit hidden imports — comtypes uses dynamic imports we have
+        # to spell out for the static analyzer. Avoid --collect-submodules
+        # comtypes: it pulls in every cached COM proxy on the host, which
+        # on a fresh box with a busy comtypes cache can hang the build for
+        # 10+ minutes during analysis. The runtime-time `gen` subpackage
+        # regenerates the proxies we actually need.
         "--hidden-import", "windows_mcp.service.secure_desktop",
+        "--hidden-import", "comtypes",
+        "--hidden-import", "comtypes.client",
+        "--hidden-import", "comtypes.client._generate",
+        "--hidden-import", "comtypes.gen",
         # Trim things the worker doesn't actually need; keeps the exe under
         # ~15 MB instead of pulling in fastmcp / mcp / uvicorn / pydantic.
         "--exclude-module", "fastmcp",
