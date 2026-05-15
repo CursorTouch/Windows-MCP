@@ -178,6 +178,23 @@ function Set-Uac-Config {
     Log "UAC: EnableLUA=1 ConsentPromptBehaviorAdmin=2 PromptOnSecureDesktop=1"
 }
 
+function Disable-Defender-For-Build {
+    # PyInstaller writes hundreds of small files into %TEMP%\_MEIxxxxx and
+    # %TEMP%\windows-mcp-uia-build-*; Defender real-time scan on a slow VM
+    # serializes those writes and effectively hangs the build. Add an
+    # exclusion for the build paths and the venv. VM-only -- production
+    # users on a normal disk don't see the slowdown.
+    try {
+        Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
+        Add-MpPreference -ExclusionPath "$LocalRepo\.venv" -ErrorAction SilentlyContinue
+        Add-MpPreference -ExclusionProcess "pyinstaller.exe" -ErrorAction SilentlyContinue
+        Add-MpPreference -ExclusionProcess "python.exe"      -ErrorAction SilentlyContinue
+        Log "Defender exclusions added for %TEMP%, .venv, pyinstaller, python."
+    } catch {
+        Log "WARN: Add-MpPreference failed: $($_.Exception.Message). Continuing."
+    }
+}
+
 function Install-Host-Service {
     Push-Location $LocalRepo
     try {
@@ -240,6 +257,7 @@ try {
     Stage-Repo
     Uv-Sync
     Set-Uac-Config
+    Disable-Defender-For-Build
     Install-Host-Service
     Install-Server-AutoStart
     Register-Test-Task
