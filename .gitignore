@@ -173,3 +173,9 @@ sandbox
 .idea/
 node_modules
 elevated-run.bat
+
+# vm_e2e dev helpers (untracked, never shipped)
+/r.bat
+/vm-screen.png
+/vm-screen.ppm
+tests/manual/vm_e2e/.work/
