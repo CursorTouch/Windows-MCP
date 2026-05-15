@@ -368,6 +368,15 @@ def _serve_one_client(handle: Any) -> None:
         req = Request.decode(data)
         resp = _dispatch(req)
         win32file.WriteFile(handle, resp.encode())
+        # FlushFileBuffers blocks until the client has read the response.
+        # Without it, the DisconnectNamedPipe below will discard the bytes
+        # we just wrote — MSDN: "DisconnectNamedPipe forces all the data
+        # that has not been read out of the pipe to be discarded." The
+        # race shows up under timing variance: small responses fit the
+        # pipe buffer instantly so WriteFile returns before the client
+        # has drained it, and the client then reads 0 bytes from a
+        # disconnected pipe instead of the actual response.
+        win32file.FlushFileBuffers(handle)
     except Exception as exc:
         logger.warning("Error serving pipe client: %s", exc)
     finally:
