@@ -167,25 +167,53 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
         "--manifest", str(manifest),
         "--paths", str(src_root),
         # Explicit hidden imports — comtypes uses dynamic imports we have
-        # to spell out for the static analyzer. Avoid --collect-submodules
-        # comtypes: it pulls in every cached COM proxy on the host, which
-        # on a fresh box with a busy comtypes cache can hang the build for
-        # 10+ minutes during analysis. The runtime-time `gen` subpackage
-        # regenerates the proxies we actually need.
+        # to spell out for the static analyzer.
         "--hidden-import", "windows_mcp.service.secure_desktop",
         "--hidden-import", "comtypes",
         "--hidden-import", "comtypes.client",
-        "--hidden-import", "comtypes.client._generate",
-        "--hidden-import", "comtypes.gen",
-        # Trim things the worker doesn't actually need; keeps the exe under
-        # ~15 MB instead of pulling in fastmcp / mcp / uvicorn / pydantic.
+        # Aggressive exclusion. The worker only needs secure_desktop and
+        # its direct deps (comtypes, ctypes, pywin32). Pulling in any of
+        # the MCP / FastMCP / tool surface during analysis on a slow VM
+        # tipped PyInstaller into a 10+ minute scan it never recovered
+        # from. Excluding by top-level module trims the analysis graph
+        # before it explodes.
         "--exclude-module", "fastmcp",
         "--exclude-module", "mcp",
         "--exclude-module", "starlette",
         "--exclude-module", "uvicorn",
         "--exclude-module", "sse_starlette",
         "--exclude-module", "pydantic",
+        "--exclude-module", "pydantic_core",
+        "--exclude-module", "pydantic_settings",
         "--exclude-module", "posthog",
+        "--exclude-module", "rapidfuzz",
+        "--exclude-module", "thefuzz",
+        "--exclude-module", "fuzzywuzzy",
+        "--exclude-module", "dxcam",
+        "--exclude-module", "PIL",
+        "--exclude-module", "pillow",
+        "--exclude-module", "click",
+        "--exclude-module", "watchfiles",
+        "--exclude-module", "websockets",
+        "--exclude-module", "httpx",
+        "--exclude-module", "httpcore",
+        "--exclude-module", "anyio",
+        "--exclude-module", "h11",
+        "--exclude-module", "markdownify",
+        "--exclude-module", "beautifulsoup4",
+        "--exclude-module", "bs4",
+        "--exclude-module", "tabulate",
+        "--exclude-module", "psutil",
+        "--exclude-module", "pygments",
+        "--exclude-module", "requests",
+        "--exclude-module", "windows_mcp.tools",
+        "--exclude-module", "windows_mcp.desktop",
+        "--exclude-module", "windows_mcp.tree",
+        "--exclude-module", "windows_mcp.uia",
+        "--exclude-module", "windows_mcp.watchdog",
+        "--exclude-module", "windows_mcp.vdm",
+        "--exclude-module", "windows_mcp.infrastructure",
+        "--exclude-module", "windows_mcp.config",
         str(script),
     ]
     if progress:
