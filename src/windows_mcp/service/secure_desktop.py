@@ -45,6 +45,13 @@ _UOI_NAME = 2
 _WINSTA_ALL_ACCESS = 0x037F
 _DESKTOP_ALL_ACCESS = 0x01FF
 _DESKTOP_READOBJECTS = 0x0001
+_DESKTOP_ENUMERATE = 0x0040
+_DESKTOP_SWITCHDESKTOP = 0x0100
+# Minimum rights to SetThreadDesktop + walk UIA on the input desktop.
+# Winlogon's DACL doesn't grant ALL_ACCESS to admin tokens, so the read-only
+# attach is the only one that actually succeeds for the user-session worker
+# enumerating consent.exe.
+_DESKTOP_READ_ATTACH = _DESKTOP_SWITCHDESKTOP | _DESKTOP_ENUMERATE | _DESKTOP_READOBJECTS
 
 _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
@@ -80,15 +87,43 @@ def _get_desktop_name(hdesk: int) -> str:
 
 @contextmanager
 def _input_desktop():
-    """Switch process/thread to WinSta0\\<input desktop>, then restore on exit."""
+    """Switch process/thread to WinSta0\\<input desktop>, then restore on exit.
+
+    Tries ALL_ACCESS first (needed for synthetic input ops), falls back to the
+    minimum read+switch mask. Winlogon's DACL grants only a narrow set even to
+    admin tokens, so without the fallback the user-session worker silently
+    stays on its initial Default desktop and enumerates the *wrong* UIA tree.
+    """
     hwinsta_prev = _user32.GetProcessWindowStation()
     hdesk_prev = _user32.GetThreadDesktop(_kernel32.GetCurrentThreadId())
     hwinsta = _open_winsta0()
     if hwinsta:
         _user32.SetProcessWindowStation(hwinsta)
-    hdesk = _open_input_desktop(_DESKTOP_ALL_ACCESS)
+    hdesk = 0
+    attached_via = None
+    for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
+        hdesk = _open_input_desktop(access)
+        if not hdesk:
+            continue
+        if _user32.SetThreadDesktop(hdesk):
+            attached_via = access
+            break
+        # SetThreadDesktop failed even though we got a handle — drop it and
+        # try a narrower access mask.
+        _user32.CloseDesktop(hdesk)
+        hdesk = 0
     if hdesk:
-        _user32.SetThreadDesktop(hdesk)
+        name = _get_desktop_name(hdesk) or "(unknown)"
+        logger.info(
+            "_input_desktop: attached to %r via access=0x%04x", name, attached_via
+        )
+    else:
+        logger.warning(
+            "_input_desktop: could not attach to input desktop "
+            "(OpenInputDesktop returned NULL for every access mask we tried). "
+            "The thread will stay on the worker's initial desktop and UIA "
+            "enumeration will reflect that desktop, not the input one."
+        )
     try:
         yield
     finally:
