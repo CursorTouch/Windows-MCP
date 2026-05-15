@@ -650,17 +650,12 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     startup.hStdInput = None
     startup.hStdOutput = stdout_w
     startup.hStdError = stderr_w
-    # Spawn the worker directly on Winlogon for read-only enumeration ops.
-    # The user-session worker cannot OpenDesktopW("Winlogon") from inside
-    # itself (uiAccess + admin token still fails the DACL check); but the
-    # broker, running as SYSTEM, has full access to all desktops and can
-    # legitimately specify Winlogon in lpDesktop when starting the child.
-    # The OS attaches the new process's main thread to that desktop at
-    # creation time, no SetThreadDesktop call required.
-    if op_args and op_args[0] in ("tree", "publisher"):
-        startup.lpDesktop = r"winsta0\winlogon"
-    else:
-        startup.lpDesktop = r"winsta0\default"
+    # Spawn on the interactive Default desktop; the worker re-binds its own
+    # thread to whichever desktop it needs via _input_desktop() before
+    # touching UIA. (Specifying lpDesktop="winsta0\winlogon" here trips
+    # STATUS_DLL_INIT_FAILED because the user token has no rights on the
+    # Winlogon desktop — verified against the host log.)
+    startup.lpDesktop = r"winsta0\default"
 
     user_env = win32profile.CreateEnvironmentBlock(spawn_token, False)
 
