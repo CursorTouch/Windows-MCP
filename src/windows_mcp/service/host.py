@@ -199,7 +199,11 @@ def _enforce_policy(operation: str) -> tuple[bool, str]:
     if secure_desktop.get_input_desktop_name().lower() != "winlogon":
         return True, "input desktop is not Winlogon"
     pol = policy.read_from_registry()
-    publisher = secure_desktop.get_uac_publisher()
+    try:
+        publisher = secure_desktop._spawn_in_user_session("publisher", timeout=15.0)
+    except Exception as exc:
+        logger.warning("policy: user-session publisher lookup failed: %s", exc)
+        publisher = None
     allowed, reason = pol.allows_auto_click(publisher)
     logger.info(
         "policy check: op=%s desktop=Winlogon policy=%s publisher=%r → %s (%s)",
@@ -224,15 +228,17 @@ def _dispatch(req: Request) -> Response:
                 return Response(id=req.id, result=base64.b64encode(png).decode())
 
             case "uia_windows":
-                titles = secure_desktop.uia_get_window_titles()
+                # Same Session 0 isolation as uia_invoke / uia_click_at —
+                # walk in the user session via the worker.
+                titles = secure_desktop._spawn_in_user_session("windows")
                 return Response(id=req.id, result=titles)
 
             case "uia_tree":
-                tree = secure_desktop.uia_get_tree()
+                tree = secure_desktop._spawn_in_user_session("tree")
                 return Response(id=req.id, result=tree)
 
             case "get_uac_publisher":
-                pub = secure_desktop.get_uac_publisher()
+                pub = secure_desktop._spawn_in_user_session("publisher")
                 return Response(id=req.id, result=pub)
 
             case "wait_for_uac_prompt":
