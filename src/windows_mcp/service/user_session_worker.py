@@ -52,6 +52,40 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _log_token_diag() -> None:
+    """Log uiAccess + integrity level + current desktop. Drives diagnosis when
+    the worker silently enumerates the wrong UIA tree."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+        TokenUIAccess = 26
+        TokenIntegrityLevel = 25
+        h_token = wt.HANDLE()
+        ctypes.windll.advapi32.OpenProcessToken(
+            ctypes.windll.kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(h_token)
+        )
+        ui_access = wt.DWORD(0)
+        rlen = wt.DWORD(0)
+        ctypes.windll.advapi32.GetTokenInformation(
+            h_token, TokenUIAccess, ctypes.byref(ui_access), 4, ctypes.byref(rlen)
+        )
+        # Current desktop name
+        buf = ctypes.create_unicode_buffer(256)
+        needed = wt.DWORD()
+        hdesk = ctypes.windll.user32.GetThreadDesktop(
+            ctypes.windll.kernel32.GetCurrentThreadId()
+        )
+        ctypes.windll.user32.GetUserObjectInformationW(
+            hdesk, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)
+        )
+        logger.info(
+            "diag: TokenUIAccess=%d initial-desktop=%r",
+            ui_access.value, buf.value,
+        )
+    except Exception as exc:
+        logger.warning("token diagnostics failed: %s", exc)
+
+
 def main() -> int:
     # Worker diagnostics go to stderr; stdout is reserved for the JSON payload
     # the parent service reads back.
@@ -60,6 +94,7 @@ def main() -> int:
         level=logging.INFO,
         format="[user-session-worker pid=%(process)d] %(message)s",
     )
+    _log_token_diag()
     args = _build_parser().parse_args()
 
     # Import lazily so a failed import surfaces as JSON instead of a Python
