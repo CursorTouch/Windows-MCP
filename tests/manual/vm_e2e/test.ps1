@@ -60,12 +60,21 @@ try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 
 try {
     # ----- 1. Verify host service self-started --------------------------------
-    $svc = Get-Service WindowsMCPHost -ErrorAction SilentlyContinue
+    # On slow VMs SCM can take 30-60s to bring up the auto-start service after
+    # the user logs in. Retry for up to 60s before declaring failure — the
+    # assertion is "the service eventually self-starts," not "it's already
+    # Running by the moment we check."
+    $svc = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        $svc = Get-Service WindowsMCPHost -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq "Running") { break }
+        Start-Sleep -Seconds 2
+    }
     if ($null -eq $svc) {
         throw "WindowsMCPHost service is not registered. Did setup.ps1 run?"
     }
     if ($svc.Status -ne "Running") {
-        throw "WindowsMCPHost service did not auto-start after reboot. Current status: $($svc.Status)"
+        throw "WindowsMCPHost service did not auto-start within 60s. Current status: $($svc.Status)"
     }
     Log "WindowsMCPHost is Running (self-started)."
 
