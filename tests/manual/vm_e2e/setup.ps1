@@ -188,6 +188,13 @@ function Install-Host-Service {
         # plants it in LocalMachine\Root + \TrustedPublisher, signs the exe,
         # and copies into %ProgramFiles%\WindowsMCP\. Same code path an end
         # user gets when they answer 'y' to the interactive prompt.
+        #
+        # PIP_TRUSTED_HOST: the sandbox MITM proxy in the test harness breaks
+        # TLS verification; pip ships its own resolver (not uv), so the
+        # UV_INSECURE_HOST we set earlier doesn't carry over. Setting
+        # PIP_TRUSTED_HOST is the pip equivalent. Production users with
+        # direct PyPI access don't need it.
+        $env:PIP_TRUSTED_HOST = "pypi.org files.pythonhosted.org"
         Invoke-Native "install-host.log" {
             & uv run windows-mcp service secure-desktop install `
                 --policy allow_all --allow-user-binary-path `

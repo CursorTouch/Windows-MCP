@@ -64,8 +64,15 @@ def ensure_pyinstaller(progress: callable | None = None) -> None:
         return
     if progress:
         progress("Installing PyInstaller (one-time, ~25 MB)…")
+    # If the surrounding harness set UV_INSECURE_HOST (we are behind a MITM
+    # proxy), translate it to pip's equivalent so the bootstrap install
+    # doesn't trip on certificate validation.
+    env = os.environ.copy()
+    if env.get("UV_INSECURE_HOST") and "PIP_TRUSTED_HOST" not in env:
+        env["PIP_TRUSTED_HOST"] = env["UV_INSECURE_HOST"]
     rc = subprocess.run(
         [sys.executable, "-m", "pip", "install", "--quiet", "pyinstaller"],
+        env=env,
         check=False,
     ).returncode
     if rc != 0 or not _have_pyinstaller():
