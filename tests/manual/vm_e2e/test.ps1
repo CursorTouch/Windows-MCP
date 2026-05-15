@@ -89,6 +89,12 @@ try {
     # We're already at medium integrity (this task was registered without
     # /RL HIGHEST), so the trigger Start-Process -Verb RunAs will fire real UAC.
     $localRepo = "C:\windows-mcp"
+    # Sync the test client from the share every run so harness edits land
+    # without re-running setup.ps1's full robocopy.
+    Copy-Item -Force `
+        (Join-Path $ResultsDir "mcp_client.py") `
+        (Join-Path $localRepo "tests\manual\vm_e2e\mcp_client.py") `
+        -ErrorAction SilentlyContinue
     Push-Location $localRepo
     try {
         $allowJson = Join-Path $ResultsDir "results-allow_all.json"
