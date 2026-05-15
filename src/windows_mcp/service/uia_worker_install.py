@@ -59,11 +59,29 @@ def _have_pyinstaller() -> bool:
 
 
 def _resolve_uv() -> str | None:
-    """Return the path to the ``uv`` binary, or None if not on PATH.
+    """Return the path to the ``uv`` binary, or None if not reachable.
 
-    Prefers ``uv.exe`` on Windows, falls back to ``uv``.
+    ``windows-mcp service secure-desktop install`` is normally invoked
+    under ``uv run`` -- but uv.exe itself isn't always on the wrapped
+    process's PATH (uv only adds the venv's ``Scripts`` dir, not its own
+    install dir). Check the common per-user install locations too.
     """
-    return shutil.which("uv.exe") or shutil.which("uv")
+    on_path = shutil.which("uv.exe") or shutil.which("uv")
+    if on_path:
+        return on_path
+    candidates: list[Path] = []
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        candidates.append(Path(userprofile) / ".local" / "bin" / "uv.exe")
+        candidates.append(Path(userprofile) / ".cargo" / "bin" / "uv.exe")
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if localappdata:
+        candidates.append(Path(localappdata) / "Programs" / "uv" / "uv.exe")
+        candidates.append(Path(localappdata) / "Microsoft" / "WinGet" / "Links" / "uv.exe")
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
 
 
 def ensure_pyinstaller(progress: callable | None = None) -> None:
