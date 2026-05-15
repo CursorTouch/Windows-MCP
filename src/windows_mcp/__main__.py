@@ -835,6 +835,95 @@ def _install_uia_worker(src_path: str) -> str:
     return dest
 
 
+_UIA_PROMPT = """\
+The Secure-Desktop helper can also be enabled, which lets the LLM agent
+SEE and CLICK Windows UAC consent dialogs (the "Do you want this app to
+make changes" prompts). Without it, the agent can detect that UAC fired
+but cannot read the publisher, find the Yes/No buttons, or dismiss the
+dialog -- every elevation has to be approved or denied by hand.
+
+This feature has limited value if the helper isn't enabled.
+
+Enabling it requires the helper binary to be Authenticode-signed,
+because Windows refuses to grant cross-integrity UI access to unsigned
+processes (otherwise any malware could declare uiAccess="true" and
+silently auto-approve elevations). The standard ways to satisfy that:
+
+  * Pay for a commercial code-signing cert (~$100/yr) and pass the
+    pre-signed binary via --uia-worker <path>.
+  * Or generate a one-shot self-signed cert on this machine only -- it
+    never leaves your computer, only this Windows install trusts it,
+    and `windows-mcp service secure-desktop uninstall` removes the cert
+    and binary together.
+
+Enabling will:
+  1. Install PyInstaller into the current Python env (~25 MB, one time).
+  2. Build the helper as windows-mcp-uia-worker.exe (~60-120 s).
+  3. Generate a self-signed code-signing cert (this machine only).
+  4. Add the cert to LocalMachine\\Root and \\TrustedPublisher.
+  5. Sign the helper and install it to %ProgramFiles%\\WindowsMCP\\.
+
+Build the signed helper now? (No installs in detect-only mode; you can
+re-run install later to enable.)
+"""
+
+
+def _resolve_uia_worker_choice(non_interactive: bool | None) -> bool:
+    """Decide whether to run the self-sign + build flow.
+
+    * ``--self-sign-uia-worker``  -> True
+    * ``--no-uia-worker``         -> False
+    * Neither flag, TTY available -> verbose prompt, default Yes
+    * Neither flag, no TTY        -> False (don't hang automation)
+    """
+    if non_interactive is not None:
+        return non_interactive
+    if not sys.stdin.isatty():
+        click.echo(
+            "No TTY detected; defaulting to --no-uia-worker. Re-run with "
+            "--self-sign-uia-worker to enable the consent-dialog helper."
+        )
+        return False
+    click.echo("")
+    click.echo(_UIA_PROMPT)
+    return click.confirm("Enable consent-dialog helper", default=True)
+
+
+_REMOVE_CERT_PS = r"""
+$ErrorActionPreference = 'Continue'
+$subject = $args[0]
+$removed = 0
+foreach ($store in @('My','Root','TrustedPublisher')) {
+    $items = Get-ChildItem "Cert:\LocalMachine\$store" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Subject -eq $subject }
+    foreach ($c in $items) {
+        try { Remove-Item -Path $c.PSPath -Force -ErrorAction Stop; $removed++ } catch {}
+    }
+}
+Write-Output $removed
+"""
+
+
+def _try_remove_self_signed_cert() -> None:
+    """Best-effort: remove our self-signed cert from LocalMachine cert stores
+    on uninstall. Silent on failure -- the uninstall succeeds regardless."""
+    try:
+        from windows_mcp.service.uia_worker_install import _CERT_SUBJECT
+        p = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", _REMOVE_CERT_PS, "--", _CERT_SUBJECT],
+            capture_output=True, text=True, check=False,
+        )
+        n = (p.stdout or "0").strip().splitlines()[-1] if p.stdout else "0"
+        if n != "0":
+            click.echo(f"Self-signed cert   : removed {n} entries from LocalMachine cert stores.")
+    except Exception as exc:
+        click.echo(f"Note: could not clean up self-signed cert ({exc}). "
+                   "You can remove it manually with certlm.msc -> "
+                   "Personal/Trusted Root/Trusted Publishers -> "
+                   "CN=WindowsMCP-Local-UiaWorker.")
+
+
 def _verify_install_paths_are_admin_only() -> None:
     """Raise ClickException if the Python interpreter or windows_mcp package live
     in a user-writable location.
@@ -956,14 +1045,23 @@ def service_secure_desktop():
     type=click.Path(exists=True, dir_okay=False, resolve_path=True),
     default=None,
     help=(
-        "Path to a UIAccess-signed worker .exe (built from "
-        "packaging/uia_worker.spec and Authenticode-signed). When provided, "
-        "the binary is copied to %ProgramFiles%\\WindowsMCP\\ (a trusted "
-        "path) and registered in HKLM so the LocalSystem service spawns it "
-        "in the user session for cross-integrity UIA against consent.exe. "
-        "Without this flag the service falls back to a plain python worker "
-        "that *cannot* walk the consent dialog tree -- see "
-        "docs/secure-desktop.md."
+        "Path to an already-signed UIAccess worker .exe (e.g. one signed "
+        "by your own commercial Authenticode cert in a release pipeline). "
+        "Skips the interactive prompt; the binary is copied to "
+        "%ProgramFiles%\\WindowsMCP\\ and registered in HKLM."
+    ),
+)
+@click.option(
+    "--self-sign-uia-worker/--no-uia-worker",
+    "self_sign_choice",
+    default=None,
+    help=(
+        "Non-interactive override of the UIA worker prompt. "
+        "--self-sign-uia-worker builds the worker via PyInstaller, "
+        "generates a local self-signed cert, signs and installs. "
+        "--no-uia-worker installs in detect-only mode (UAC is detected "
+        "but the dialog cannot be read or clicked). Without either flag, "
+        "the install command prompts interactively."
     ),
 )
 def service_secure_desktop_install(
@@ -972,6 +1070,7 @@ def service_secure_desktop_install(
     allow_publisher: tuple[str, ...],
     allow_user_binary_path: bool,
     uia_worker: str | None,
+    self_sign_choice: bool | None,
 ):
     """Install and start the Secure Desktop host service (requires elevation)."""
     _require_win32()
@@ -1088,21 +1187,43 @@ def service_secure_desktop_install(
         click.echo(f"Warning: could not persist UAC policy: {exc}")
         click.echo("         Service will refuse auto-clicks until policy is set.")
 
+    # ----- UIA worker -------------------------------------------------------
+    # Three input paths, in precedence order:
+    #   1. --uia-worker <path>   : user-supplied pre-signed binary (commercial Authenticode)
+    #   2. --self-sign-uia-worker / --no-uia-worker : non-interactive choice
+    #   3. interactive prompt    : default
     if uia_worker:
         try:
             installed = _install_uia_worker(uia_worker)
             policy_mod.write_uia_worker_path(installed)
-            click.echo(f"UIA worker         : {installed}")
+            click.echo(f"UIA worker         : {installed} (pre-signed)")
         except Exception as exc:
             click.echo(f"Warning: failed to install UIA worker: {exc}")
             click.echo("         Service will use the unsigned fallback; "
                        "consent.exe tree walking will return empty.")
     else:
-        click.echo(
-            "UIA worker         : (none) -- service will use the unsigned "
-            "python fallback; cross-integrity UIA against consent.exe will "
-            "return empty. Re-install with --uia-worker <path> to enable."
-        )
+        do_self_sign = _resolve_uia_worker_choice(self_sign_choice)
+        if do_self_sign:
+            try:
+                from windows_mcp.service import uia_worker_install
+                installed = uia_worker_install.build_sign_and_install(
+                    progress=lambda msg: click.echo(f"  · {msg}")
+                )
+                policy_mod.write_uia_worker_path(str(installed))
+                click.echo(f"UIA worker         : {installed} (self-signed, this machine only)")
+            except Exception as exc:
+                click.echo(f"Warning: self-sign UIA worker flow failed: {exc}")
+                click.echo("         Service will use the detect-only fallback; "
+                           "WaitForUACPrompt will report fired=True but the dialog "
+                           "tree will be empty. Re-run install to try again, or "
+                           "pass --uia-worker <path> with a pre-signed binary.")
+        else:
+            click.echo(
+                "UIA worker         : skipped -- service will run in detect-only "
+                "mode. WaitForUACPrompt will fire on UAC but the consent dialog's "
+                "UIA tree will be empty. Re-run install and answer 'y' (or pass "
+                "--self-sign-uia-worker) to enable."
+            )
 
     click.echo("\nThe host service is now running as NT AUTHORITY\\SYSTEM.")
     click.echo("It will restart automatically at each boot.")
@@ -1146,6 +1267,12 @@ def service_secure_desktop_uninstall():
             click.echo(f"UIA worker         : removed {installed}")
         except Exception as exc:
             click.echo(f"Warning: could not remove UIA worker: {exc}")
+
+    # Best-effort: remove the self-signed cert + LocalMachine trust entries.
+    # If the user signed with their own commercial cert via --uia-worker,
+    # there's nothing of ours in the cert stores; the lookup-by-subject
+    # below simply matches nothing and we exit cleanly.
+    _try_remove_self_signed_cert()
 
 
 @service_secure_desktop.command("set-policy")

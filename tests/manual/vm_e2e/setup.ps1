@@ -178,47 +178,20 @@ function Set-Uac-Config {
     Log "UAC: EnableLUA=1 ConsentPromptBehaviorAdmin=2 PromptOnSecureDesktop=1"
 }
 
-function Build-And-Sign-Uia-Worker {
-    # Builds the UIAccess-enabled worker .exe, self-signs it, plants the
-    # cert in the machine's trust store, flips EnableSecureUIAPaths=0.
-    # Returns the absolute path of the signed binary (or $null on failure).
-    $signer = Join-Path $Repo "tests\manual\vm_e2e\build-and-sign-uia-worker.ps1"
-    if (-not (Test-Path $signer)) {
-        Log "WARN: $signer missing — skipping signed-worker build."
-        return $null
-    }
-    Log "Building + self-signing UIA worker…"
-    $signedPath = $null
-    Invoke-Native "uia-worker-sign.log" {
-        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File $signer -LocalRepo $LocalRepo 2>&1
-        $output | Out-Host
-        # The signer prints the path of the final exe on its last stdout line.
-        $script:signedPath = ($output | Where-Object { $_ -is [string] } |
-            Select-Object -Last 1).ToString().Trim()
-    }
-    if ($signedPath -and (Test-Path $signedPath)) {
-        Log "UIA worker signed: $signedPath"
-        return $signedPath
-    }
-    Log "WARN: signed UIA worker not produced; install will use unsigned fallback."
-    return $null
-}
-
 function Install-Host-Service {
-    $signedWorker = Build-And-Sign-Uia-Worker
     Push-Location $LocalRepo
     try {
-        Log "Installing host service (allow-user-binary-path because this is a VM)…"
+        Log "Installing host service (allow-user-binary-path because this is a VM)..."
+        # --self-sign-uia-worker drives the production build+self-sign+install
+        # flow shipped in the wheel: ensures PyInstaller, freezes the worker
+        # with the embedded uiAccess manifest, generates a self-signed cert,
+        # plants it in LocalMachine\Root + \TrustedPublisher, signs the exe,
+        # and copies into %ProgramFiles%\WindowsMCP\. Same code path an end
+        # user gets when they answer 'y' to the interactive prompt.
         Invoke-Native "install-host.log" {
-            if ($signedWorker) {
-                & uv run windows-mcp service secure-desktop install `
-                    --policy allow_all --allow-user-binary-path `
-                    --uia-worker $signedWorker --force
-            } else {
-                & uv run windows-mcp service secure-desktop install `
-                    --policy allow_all --allow-user-binary-path --force
-            }
+            & uv run windows-mcp service secure-desktop install `
+                --policy allow_all --allow-user-binary-path `
+                --self-sign-uia-worker --force
         }
     } finally { Pop-Location }
 }
