@@ -740,7 +740,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
             dup = win32api.DuplicateHandle(
                 win32api.GetCurrentProcess(),
                 hdesk_winlogon,
-                int(proc_handle),
+                proc_handle,
                 0,            # ignored under DUPLICATE_SAME_ACCESS
                 False,        # bInheritHandle
                 2,            # DUPLICATE_SAME_ACCESS
