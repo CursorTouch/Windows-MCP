@@ -400,6 +400,62 @@ def install_signed_worker(exe_path: Path, progress: callable | None = None) -> P
     return dest
 
 
+def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
+                              progress: callable | None = None) -> None:
+    """Replace the PE EXE's embedded manifest (RT_MANIFEST id=1) with the
+    bytes of *manifest_path*.
+
+    PyInstaller's --manifest flag does NOT actually replace the bootloader
+    exe's embedded manifest — the resulting .exe still ships with the
+    asInvoker / uiAccess=false manifest baked into the run.exe bootloader.
+    Verified empirically: TokenUIAccess is 0 at runtime, OpenDesktopW
+    fails. Reading the resource section back via LoadResource confirms the
+    embedded manifest is the bootloader default, not ours.
+
+    This invalidates any existing Authenticode signature; caller must
+    re-sign after the update.
+    """
+    import ctypes
+    import ctypes.wintypes as wt
+
+    if progress:
+        progress(f"Replacing embedded manifest in {exe_path.name}…")
+    data = manifest_path.read_bytes()
+    kernel32 = ctypes.windll.kernel32
+    BeginUpdateResourceW = kernel32.BeginUpdateResourceW
+    BeginUpdateResourceW.argtypes = [wt.LPCWSTR, wt.BOOL]
+    BeginUpdateResourceW.restype = wt.HANDLE
+    UpdateResourceW = kernel32.UpdateResourceW
+    UpdateResourceW.argtypes = [wt.HANDLE, wt.LPCWSTR, wt.LPCWSTR,
+                                wt.WORD, ctypes.c_void_p, wt.DWORD]
+    UpdateResourceW.restype = wt.BOOL
+    EndUpdateResourceW = kernel32.EndUpdateResourceW
+    EndUpdateResourceW.argtypes = [wt.HANDLE, wt.BOOL]
+    EndUpdateResourceW.restype = wt.BOOL
+
+    h = BeginUpdateResourceW(str(exe_path), False)
+    if not h:
+        gle = ctypes.GetLastError()
+        raise RuntimeError(f"BeginUpdateResource failed (gle={gle})")
+    # RT_MANIFEST = 24, name id = 1 (CREATEPROCESS_MANIFEST_RESOURCE_ID).
+    # MAKEINTRESOURCE(n) is encoded as a small integer cast to LPCWSTR.
+    ok = UpdateResourceW(
+        h,
+        ctypes.cast(24, wt.LPCWSTR),
+        ctypes.cast(1, wt.LPCWSTR),
+        1033,  # LANG_ENGLISH_US — same locale PyInstaller's bootloader uses
+        data,
+        len(data),
+    )
+    if not ok:
+        gle = ctypes.GetLastError()
+        EndUpdateResourceW(h, True)  # discard
+        raise RuntimeError(f"UpdateResource(RT_MANIFEST) failed (gle={gle})")
+    if not EndUpdateResourceW(h, False):  # commit
+        gle = ctypes.GetLastError()
+        raise RuntimeError(f"EndUpdateResource failed (gle={gle})")
+
+
 # ---------------------------------------------------------------------------
 # Top-level orchestrator
 # ---------------------------------------------------------------------------
@@ -411,6 +467,9 @@ def build_sign_and_install(progress: callable | None = None) -> Path:
     progress = progress or (lambda _msg: None)
     with tempfile.TemporaryDirectory(prefix="windows-mcp-uia-build-") as tmpdir:
         exe = build_worker(Path(tmpdir), progress=progress)
+        # PyInstaller's --manifest flag doesn't actually override the
+        # bootloader's embedded manifest. Force the replace before signing.
+        replace_embedded_manifest(exe, _resolve_manifest(), progress=progress)
         thumbprint = generate_local_cert(progress=progress)
         sign_worker(exe, thumbprint, progress=progress)
         return install_signed_worker(exe, progress=progress)
