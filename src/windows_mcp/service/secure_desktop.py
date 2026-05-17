@@ -56,6 +56,12 @@ _DESKTOP_READ_ATTACH = _DESKTOP_SWITCHDESKTOP | _DESKTOP_ENUMERATE | _DESKTOP_RE
 _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
 
+# When set (by the user-session worker after reading from broker-passed
+# stdin), _input_desktop() attaches the thread to this handle instead of
+# trying to OpenDesktopW("Winlogon") itself — which fails for non-SYSTEM
+# tokens. See _spawn_in_user_session for the broker side.
+_preattached_winlogon_hdesk: int = 0
+
 # UIA constants
 _UIA_InvokePatternId = 10000
 _UIA_NamePropertyId = 30005
@@ -113,28 +119,39 @@ def _input_desktop(prefer_winlogon: bool = True):
     if hwinsta:
         _user32.SetProcessWindowStation(hwinsta)
     hdesk = 0
+    own_hdesk = True  # whether we should close this handle on exit
     attached_via = None
     attached_how = None
-    candidates: list[tuple[str, Any]] = []
-    if prefer_winlogon:
-        candidates.append(("Winlogon-by-name",
-                           lambda access: _open_desktop_by_name("Winlogon", access)))
-    candidates.append(("input-desktop", _open_input_desktop))
-    for how, opener in candidates:
-        for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
-            hdesk = opener(access)
-            if not hdesk:
-                continue
-            if _user32.SetThreadDesktop(hdesk):
-                attached_via = access
-                attached_how = how
+    # If the broker handed us a Winlogon desktop handle via stdin, use it
+    # directly. The handle belongs to the worker process for its lifetime —
+    # don't close it in finally.
+    if prefer_winlogon and _preattached_winlogon_hdesk:
+        if _user32.SetThreadDesktop(_preattached_winlogon_hdesk):
+            hdesk = _preattached_winlogon_hdesk
+            own_hdesk = False
+            attached_how = "broker-handoff"
+            attached_via = _DESKTOP_ALL_ACCESS
+    if not hdesk:
+        candidates: list[tuple[str, Any]] = []
+        if prefer_winlogon:
+            candidates.append(("Winlogon-by-name",
+                               lambda access: _open_desktop_by_name("Winlogon", access)))
+        candidates.append(("input-desktop", _open_input_desktop))
+        for how, opener in candidates:
+            for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
+                hdesk = opener(access)
+                if not hdesk:
+                    continue
+                if _user32.SetThreadDesktop(hdesk):
+                    attached_via = access
+                    attached_how = how
+                    break
+                # SetThreadDesktop failed even though we got a handle — drop
+                # it and try a narrower access mask.
+                _user32.CloseDesktop(hdesk)
+                hdesk = 0
+            if hdesk:
                 break
-            # SetThreadDesktop failed even though we got a handle — drop it
-            # and try a narrower access mask.
-            _user32.CloseDesktop(hdesk)
-            hdesk = 0
-        if hdesk:
-            break
     if hdesk:
         name = _get_desktop_name(hdesk) or "(unknown)"
         logger.info(
@@ -153,7 +170,8 @@ def _input_desktop(prefer_winlogon: bool = True):
     finally:
         if hdesk:
             _user32.SetThreadDesktop(hdesk_prev)
-            _user32.CloseDesktop(hdesk)
+            if own_hdesk:
+                _user32.CloseDesktop(hdesk)
         if hwinsta:
             _user32.SetProcessWindowStation(hwinsta_prev)
             _user32.CloseWindowStation(hwinsta)
@@ -624,9 +642,28 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     sa.bInheritHandle = True
     stdout_r, stdout_w = win32pipe.CreatePipe(sa, 0)
     stderr_r, stderr_w = win32pipe.CreatePipe(sa, 0)
+    stdin_r, stdin_w = win32pipe.CreatePipe(sa, 0)
     # Read ends stay in the service; do not let them leak into the child.
     win32api.SetHandleInformation(stdout_r, win32con.HANDLE_FLAG_INHERIT, 0)
     win32api.SetHandleInformation(stderr_r, win32con.HANDLE_FLAG_INHERIT, 0)
+    # Worker reads stdin; the broker's write end must stay non-inheritable.
+    win32api.SetHandleInformation(stdin_w, win32con.HANDLE_FLAG_INHERIT, 0)
+
+    # The user-session worker cannot OpenDesktopW("Winlogon") itself even
+    # with UIAccess + admin token (Winlogon's DACL denies non-SYSTEM). The
+    # broker is SYSTEM and *does* have access, so for read ops that need
+    # to walk consent.exe (tree, publisher) we open Winlogon here and
+    # duplicate the handle into the spawned worker. The worker reads the
+    # duplicated value from stdin and SetThreadDesktop's onto it directly.
+    hdesk_winlogon = 0
+    pass_winlogon = bool(op_args) and op_args[0] in ("tree", "publisher")
+    if pass_winlogon:
+        hdesk_winlogon = _open_desktop_by_name("Winlogon", _DESKTOP_ALL_ACCESS)
+        if not hdesk_winlogon:
+            logger.warning(
+                "broker could not open Winlogon — worker will fall back "
+                "to its own enumeration (likely returns wrong desktop)"
+            )
 
     # Prefer a UIAccess-signed worker installed in a trusted path. Without
     # it, the unsigned fallback (this Python module) cannot enumerate
@@ -647,7 +684,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
 
     startup = win32process.STARTUPINFO()
     startup.dwFlags = win32con.STARTF_USESTDHANDLES
-    startup.hStdInput = None
+    startup.hStdInput = stdin_r
     startup.hStdOutput = stdout_w
     startup.hStdError = stderr_w
     # Spawn on the interactive Default desktop; the worker re-binds its own
@@ -685,15 +722,48 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
         except Exception: pass
         try: win32file.CloseHandle(stderr_w)
         except Exception: pass
+        try: win32file.CloseHandle(stdin_r)
+        except Exception: pass
         try: win32api.CloseHandle(user_token)
         except Exception: pass
         if elevated_token:
             try: win32api.CloseHandle(elevated_token)
             except Exception: pass
 
+    # Hand the worker a Winlogon desktop handle it can't open itself.
+    # DuplicateHandle into the child with the same access mask we used,
+    # then write the duplicated value to its stdin so it can SetThreadDesktop
+    # before any UIA call. Worker reads exactly one line of stdin at boot.
+    handoff_line = "\n"  # default: no handoff
+    if hdesk_winlogon and proc_handle:
+        try:
+            dup = win32api.DuplicateHandle(
+                win32api.GetCurrentProcess(),
+                hdesk_winlogon,
+                int(proc_handle),
+                0,            # ignored under DUPLICATE_SAME_ACCESS
+                False,        # bInheritHandle
+                2,            # DUPLICATE_SAME_ACCESS
+            )
+            handoff_line = f"WINLOGON_HDESK={int(dup)}\n"
+        except Exception as exc:
+            logger.warning("Winlogon DuplicateHandle into worker failed: %s", exc)
+    try:
+        win32file.WriteFile(stdin_w, handoff_line.encode("utf-8"))
+    except Exception as exc:
+        logger.warning("writing winlogon handoff to worker stdin failed: %s", exc)
+    finally:
+        try: win32file.CloseHandle(stdin_w)
+        except Exception: pass
+        if hdesk_winlogon:
+            try: _user32.CloseDesktop(hdesk_winlogon)
+            except Exception: pass
+
     logger.info(
-        "spawned user-session worker pid=? session=%d elevated=%s op=%s",
+        "spawned user-session worker pid=? session=%d elevated=%s op=%s "
+        "winlogon_handoff=%s",
         session_id, using_elevated, " ".join(op_args),
+        handoff_line.strip() or "<none>",
     )
 
     stdout_chunks: list[bytes] = []

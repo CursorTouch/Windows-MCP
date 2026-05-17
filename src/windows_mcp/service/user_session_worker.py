@@ -86,6 +86,41 @@ def _log_token_diag() -> None:
         logger.warning("token diagnostics failed: %s", exc)
 
 
+def _accept_winlogon_handoff() -> None:
+    """Broker may pre-pass a Winlogon desktop handle via stdin to work around
+    the user-session worker's lack of access to OpenDesktopW("Winlogon").
+    Always reads exactly one line; if it starts with WINLOGON_HDESK=, attach
+    this thread to that desktop and stash the handle on secure_desktop so
+    the rest of the module skips its own (failing) open attempt."""
+    try:
+        import os
+        import ctypes
+        data = os.read(0, 128)
+    except OSError as exc:
+        logger.info("no winlogon handoff (stdin read failed: %s)", exc)
+        return
+    line = data.decode("utf-8", errors="replace").strip()
+    if not line.startswith("WINLOGON_HDESK="):
+        return
+    try:
+        value = int(line.split("=", 1)[1])
+    except ValueError:
+        logger.warning("malformed winlogon handoff: %r", line)
+        return
+    if value <= 0:
+        return
+    if not ctypes.windll.user32.SetThreadDesktop(value):
+        err = ctypes.get_last_error()
+        logger.warning(
+            "SetThreadDesktop(broker-passed handle %d) failed (gle=%d)",
+            value, err,
+        )
+        return
+    from windows_mcp.service import secure_desktop
+    secure_desktop._preattached_winlogon_hdesk = value
+    logger.info("attached to broker-passed Winlogon handle %d", value)
+
+
 def main() -> int:
     # Worker diagnostics go to stderr; stdout is reserved for the JSON payload
     # the parent service reads back.
@@ -95,6 +130,7 @@ def main() -> int:
         format="[user-session-worker pid=%(process)d] %(message)s",
     )
     _log_token_diag()
+    _accept_winlogon_handoff()
     args = _build_parser().parse_args()
 
     # Import lazily so a failed import surfaces as JSON instead of a Python
