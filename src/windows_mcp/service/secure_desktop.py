@@ -638,6 +638,37 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     spawn_token = elevated_token or user_token
     using_elevated = bool(elevated_token)
 
+    # Set TokenUIAccess=1 on the token *before* CreateProcessAsUser. Without
+    # this the spawned process always boots with TokenUIAccess=0 — Windows
+    # only checks the manifest's uiAccess attribute as a *request*, the
+    # privilege itself comes from this flag on the primary token, and
+    # CreateProcessAsUser does not set it for us based on the exe's manifest.
+    # SetTokenInformation(TokenUIAccess) from a SYSTEM caller bypasses the
+    # signature + trusted-path checks the AppInfo path normally enforces;
+    # see https://learn.microsoft.com/en-us/answers/questions/1009084/
+    # and Tyranid's notes at https://www.tiraniddo.dev/2019/02/
+    try:
+        TOKEN_UI_ACCESS = 26
+        ui_access = ctypes.c_uint32(1)
+        ok = ctypes.windll.advapi32.SetTokenInformation(
+            int(spawn_token),
+            TOKEN_UI_ACCESS,
+            ctypes.byref(ui_access),
+            ctypes.sizeof(ui_access),
+        )
+        if not ok:
+            gle = ctypes.GetLastError()
+            logger.warning(
+                "SetTokenInformation(TokenUIAccess=1) failed (gle=%d) — "
+                "worker will spawn without UIAccess and won't be able to "
+                "walk Winlogon",
+                gle,
+            )
+        else:
+            logger.info("SetTokenInformation(TokenUIAccess=1) on spawn token OK")
+    except Exception as exc:
+        logger.warning("SetTokenInformation(TokenUIAccess) raised: %s", exc)
+
     sa = win32security.SECURITY_ATTRIBUTES()
     sa.bInheritHandle = True
     stdout_r, stdout_w = win32pipe.CreatePipe(sa, 0)
