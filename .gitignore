@@ -176,6 +176,7 @@ elevated-run.bat
 
 # vm_e2e dev helpers (untracked, never shipped)
 /r.bat
+/d.bat
 /vm-screen.png
 /vm-screen.ppm
 tests/manual/vm_e2e/.work/
