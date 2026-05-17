@@ -483,11 +483,24 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
         raise RuntimeError(f"BeginUpdateResource failed (gle={gle})")
     # RT_MANIFEST = 24, name id = 1 (CREATEPROCESS_MANIFEST_RESOURCE_ID).
     # MAKEINTRESOURCE(n) is encoded as a small integer cast to LPCWSTR.
+    # First delete any existing manifest at the common language IDs
+    # (0=neutral, 1033=en-us, 0x0409=en-us) — without this, our new
+    # resource is added alongside the existing one and Windows picks the
+    # original. Verified empirically: PyInstaller embeds at lang=0.
+    for lang in (0, 0x0409, 1033):
+        UpdateResourceW(
+            h,
+            ctypes.cast(24, wt.LPCWSTR),
+            ctypes.cast(1, wt.LPCWSTR),
+            lang,
+            None,
+            0,
+        )
     ok = UpdateResourceW(
         h,
         ctypes.cast(24, wt.LPCWSTR),
         ctypes.cast(1, wt.LPCWSTR),
-        1033,  # LANG_ENGLISH_US — same locale PyInstaller's bootloader uses
+        0,            # neutral — matches what PyInstaller uses by default
         new_manifest,
         len(new_manifest),
     )
