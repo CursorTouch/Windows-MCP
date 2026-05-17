@@ -400,27 +400,71 @@ def install_signed_worker(exe_path: Path, progress: callable | None = None) -> P
     return dest
 
 
+def _pe_image_end(pe_bytes: bytes) -> int:
+    """Return the offset where the PE image *file* ends (start of the
+    appended PyInstaller PKG overlay)."""
+    import struct
+    if pe_bytes[:2] != b"MZ":
+        raise RuntimeError("not a PE: missing MZ signature")
+    e_lfanew = struct.unpack_from("<I", pe_bytes, 0x3C)[0]
+    if pe_bytes[e_lfanew:e_lfanew + 4] != b"PE\x00\x00":
+        raise RuntimeError("not a PE: missing PE signature")
+    # IMAGE_FILE_HEADER at e_lfanew+4; NumberOfSections at +6.
+    num_sections = struct.unpack_from("<H", pe_bytes, e_lfanew + 6)[0]
+    size_opt_header = struct.unpack_from("<H", pe_bytes, e_lfanew + 20)[0]
+    sec_table = e_lfanew + 24 + size_opt_header
+    end = 0
+    # Each IMAGE_SECTION_HEADER = 40 bytes; SizeOfRawData @ +16, PointerToRawData @ +20.
+    for i in range(num_sections):
+        base = sec_table + i * 40
+        raw_size = struct.unpack_from("<I", pe_bytes, base + 16)[0]
+        raw_ptr = struct.unpack_from("<I", pe_bytes, base + 20)[0]
+        end = max(end, raw_ptr + raw_size)
+    return end
+
+
 def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
                               progress: callable | None = None) -> None:
     """Replace the PE EXE's embedded manifest (RT_MANIFEST id=1) with the
-    bytes of *manifest_path*.
+    bytes of *manifest_path*, *preserving the PyInstaller PKG overlay* that
+    lives past the end of the PE image.
 
     PyInstaller's --manifest flag does NOT actually replace the bootloader
-    exe's embedded manifest — the resulting .exe still ships with the
-    asInvoker / uiAccess=false manifest baked into the run.exe bootloader.
-    Verified empirically: TokenUIAccess is 0 at runtime, OpenDesktopW
-    fails. Reading the resource section back via LoadResource confirms the
-    embedded manifest is the bootloader default, not ours.
+    exe's embedded manifest — the resulting --onefile exe still ships with
+    the asInvoker / uiAccess=false manifest baked into the run.exe
+    bootloader. Verified empirically by extracting RT_MANIFEST id=1 from
+    the installed exe: it's the bootloader default.
 
-    This invalidates any existing Authenticode signature; caller must
-    re-sign after the update.
+    Naive UpdateResource() on the final exe truncates the appended PKG
+    overlay (the bundled Python interpreter + bytecode + assets), so the
+    bootloader fails at runtime with
+        [PYI-ERROR] Could not load PyInstaller's embedded PKG archive
+    Save the overlay first, run UpdateResource on the bare PE, then
+    reattach the overlay.
+
+    Invalidates any existing Authenticode signature; caller must re-sign
+    after the update.
     """
     import ctypes
     import ctypes.wintypes as wt
 
     if progress:
-        progress(f"Replacing embedded manifest in {exe_path.name}…")
-    data = manifest_path.read_bytes()
+        progress(f"Replacing embedded manifest in {exe_path.name} "
+                 "(preserving PyInstaller overlay)…")
+    new_manifest = manifest_path.read_bytes()
+    full = exe_path.read_bytes()
+    pe_end = _pe_image_end(full)
+    if pe_end >= len(full):
+        # No appended overlay (would be unusual for a onefile build). Still
+        # safe to UpdateResource directly.
+        overlay = b""
+    else:
+        overlay = full[pe_end:]
+
+    # Truncate the file to just the PE before calling UpdateResource —
+    # Windows will rewrite the PE in place, dropping anything past it.
+    exe_path.write_bytes(full[:pe_end])
+
     kernel32 = ctypes.windll.kernel32
     BeginUpdateResourceW = kernel32.BeginUpdateResourceW
     BeginUpdateResourceW.argtypes = [wt.LPCWSTR, wt.BOOL]
@@ -444,8 +488,8 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
         ctypes.cast(24, wt.LPCWSTR),
         ctypes.cast(1, wt.LPCWSTR),
         1033,  # LANG_ENGLISH_US — same locale PyInstaller's bootloader uses
-        data,
-        len(data),
+        new_manifest,
+        len(new_manifest),
     )
     if not ok:
         gle = ctypes.GetLastError()
@@ -454,6 +498,10 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
     if not EndUpdateResourceW(h, False):  # commit
         gle = ctypes.GetLastError()
         raise RuntimeError(f"EndUpdateResource failed (gle={gle})")
+
+    if overlay:
+        with open(exe_path, "ab") as fh:
+            fh.write(overlay)
 
 
 # ---------------------------------------------------------------------------
