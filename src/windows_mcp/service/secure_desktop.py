@@ -1173,8 +1173,36 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                 # blocks the LocalSystem service from walking its UIA tree even
                 # though we're attached to the right desktop. Route the walk
                 # through a user-session helper instead (CreateProcessAsUser
-                # into the active console session), retrying briefly to absorb
-                # consent.exe's paint delay.
+                # into the active console session).
+                #
+                # Winlogon becomes the input desktop slightly *before*
+                # consent.exe has finished painting its window, so retry the
+                # broker-side enumeration of consent.exe's top HWND a few
+                # times here. Without this we race the dialog: the worker
+                # spawn succeeds, falls back to its Default-desktop root
+                # walk (because _find_consent_hwnd_on returned 0), and
+                # returns a non-empty-but-wrong tree (Taskbar + whatever
+                # else is on the user's desktop) -- the outer 8-retry loop
+                # then thinks it has a "tree" and stops looking.
+                consent_hwnd = 0
+                wl_hdesk = _open_desktop_by_name("Winlogon", _DESKTOP_ALL_ACCESS)
+                if wl_hdesk:
+                    try:
+                        for _ in range(20):  # ~5s at 0.25s intervals
+                            consent_hwnd = _find_consent_hwnd_on(wl_hdesk)
+                            if consent_hwnd:
+                                break
+                            time.sleep(0.25)
+                    finally:
+                        try: _user32.CloseDesktop(wl_hdesk)
+                        except Exception: pass
+                if not consent_hwnd:
+                    logger.warning(
+                        "wait_for_uac_prompt: Winlogon active but consent.exe "
+                        "didn't show a top-level window in 5s -- worker will "
+                        "fall back to desktop-root walk (likely wrong desktop)"
+                    )
+
                 tree: list[dict] = []
                 publisher = None
                 for attempt in range(8):
@@ -1188,9 +1216,23 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                     except Exception as exc:
                         logger.warning("user-session publisher spawn failed: %s", exc)
                         publisher = None
-                    if tree:
+                    # Only accept the tree if either (a) we found consent.exe
+                    # and the worker used ElementFromHandle on it, or (b) we
+                    # gave up trying and the desktop-root walk returned
+                    # something. Without this check, attempt 0 happily
+                    # accepts the worker's Default-desktop fallback.
+                    if tree and consent_hwnd:
                         logger.info(
-                            "wait_for_uac_prompt: tree captured after %d retries (%d top windows)",
+                            "wait_for_uac_prompt: tree captured after %d retries (%d top windows, hwnd=0x%x)",
+                            attempt, len(tree), consent_hwnd,
+                        )
+                        break
+                    if tree and attempt >= 4:
+                        # consent.exe never appeared; accept whatever the
+                        # worker returned so the caller at least sees fired=True.
+                        logger.warning(
+                            "wait_for_uac_prompt: returning desktop-root tree "
+                            "after %d retries (%d top windows) -- no consent.exe HWND found",
                             attempt, len(tree),
                         )
                         break
