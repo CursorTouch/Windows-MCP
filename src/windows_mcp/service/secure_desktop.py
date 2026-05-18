@@ -101,6 +101,18 @@ _kernel32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
 # tokens. See _spawn_in_user_session for the broker side.
 _preattached_winlogon_hdesk: int = 0
 
+# When set (by the user-session worker after reading from broker-passed
+# stdin), uia_get_tree uses IUIAutomation.ElementFromHandle on this HWND
+# instead of walking the thread desktop's root. This is the fallback path
+# when the worker can't attach to Winlogon (Winlogon's DACL denies
+# OpenDesktopW even to UIAccess processes -- empirically gle=5 ACCESS_DENIED
+# on Win11 with TokenUIAccess=1). The SYSTEM broker can open Winlogon and
+# enumerate its windows, so it walks Winlogon, finds consent.exe's top HWND,
+# and hands it to the worker via stdin. ElementFromHandle works cross-desktop
+# for UIAccess processes, so the worker can then walk the dialog without
+# ever switching desktops.
+_preattached_consent_hwnd: int = 0
+
 # UIA constants
 _UIA_InvokePatternId = 10000
 _UIA_NamePropertyId = 30005
@@ -130,6 +142,76 @@ def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
             name, access, gle,
         )
     return handle or 0
+
+
+def _find_consent_hwnd_on(hdesk: int) -> int:
+    """Walk *hdesk* (a Winlogon desktop handle the broker can open as SYSTEM)
+    and return the top-level HWND owned by consent.exe -- or 0 if none.
+
+    The user-session worker can't open Winlogon (the desktop DACL denies
+    UIAccess processes), so it can't EnumDesktopWindows itself either.
+    The SYSTEM broker can, so we do it here and hand the worker just the
+    HWND -- ElementFromHandle is cross-desktop with UIAccess.
+    """
+    _user32.EnumDesktopWindows.argtypes = [
+        ctypes.wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    _user32.EnumDesktopWindows.restype = ctypes.wintypes.BOOL
+    _user32.GetWindowThreadProcessId.argtypes = [
+        ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    _user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
+    _user32.IsWindowVisible.argtypes = [ctypes.wintypes.HANDLE]
+    _user32.IsWindowVisible.restype = ctypes.wintypes.BOOL
+    _kernel32.OpenProcess.argtypes = [
+        ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD,
+    ]
+    _kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    _kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+    QueryFullProcessImageNameW = _kernel32.QueryFullProcessImageNameW
+    QueryFullProcessImageNameW.argtypes = [
+        ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.LPWSTR,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(
+        ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM,
+    )
+
+    found = [0]
+
+    @WNDENUMPROC
+    def _on_window(hwnd, _lparam):
+        if not _user32.IsWindowVisible(hwnd):
+            return True
+        pid = ctypes.wintypes.DWORD(0)
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return True
+        h_proc = _kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value,
+        )
+        if not h_proc:
+            return True
+        try:
+            buf = ctypes.create_unicode_buffer(260)
+            size = ctypes.wintypes.DWORD(260)
+            if QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+                if buf.value.lower().endswith("\\consent.exe"):
+                    found[0] = int(hwnd)
+                    return False
+        finally:
+            _kernel32.CloseHandle(h_proc)
+        return True
+
+    _user32.EnumDesktopWindows(
+        hdesk, ctypes.cast(_on_window, ctypes.c_void_p), 0,
+    )
+    return found[0]
 
 
 def _get_desktop_name(hdesk: int) -> str:
@@ -409,22 +491,47 @@ def uia_get_tree() -> list[dict]:
 
     Runs on a fresh thread so COM initialises *after* SetThreadDesktop, binding
     IUIAutomation to the correct desktop (Winlogon during UAC).
+
+    If the broker passed a consent.exe HWND via stdin (the worker can't open
+    Winlogon itself; the broker enumerated it as SYSTEM), use
+    ElementFromHandle on that HWND -- it's the only path that crosses the
+    desktop boundary without SetThreadDesktop, which Winlogon's DACL blocks
+    even for UIAccess processes.
     """
     def _work() -> list[dict]:
         nodes: list[dict] = []
         with _input_desktop():
             iuia, _ = _create_uia()
-            root = iuia.GetRootElement()
             walker = iuia.RawViewWalker
-            child = walker.GetFirstChildElement(root)
-            while child:
-                node = _serialize_element(child, walker)
+            roots = []
+            if _preattached_consent_hwnd:
+                try:
+                    elem = iuia.ElementFromHandle(_preattached_consent_hwnd)
+                    if elem is not None:
+                        logger.info(
+                            "uia_get_tree: walking via ElementFromHandle(0x%x)",
+                            _preattached_consent_hwnd,
+                        )
+                        roots.append(elem)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "ElementFromHandle(0x%x) failed: %s; falling back to "
+                        "desktop-root walk",
+                        _preattached_consent_hwnd, exc,
+                    )
+            if not roots:
+                root = iuia.GetRootElement()
+                child = walker.GetFirstChildElement(root)
+                while child:
+                    roots.append(child)
+                    try:
+                        child = walker.GetNextSiblingElement(child)
+                    except Exception:
+                        break
+            for r in roots:
+                node = _serialize_element(r, walker)
                 if node:
                     nodes.append(node)
-                try:
-                    child = walker.GetNextSiblingElement(child)
-                except Exception:
-                    break
         return nodes
 
     try:
@@ -815,6 +922,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     # duplicate the handle into the spawned worker. The worker reads the
     # duplicated value from stdin and SetThreadDesktop's onto it directly.
     hdesk_winlogon = 0
+    consent_hwnd = 0
     pass_winlogon = bool(op_args) and op_args[0] in ("tree", "publisher")
     if pass_winlogon:
         hdesk_winlogon = _open_desktop_by_name("Winlogon", _DESKTOP_ALL_ACCESS)
@@ -823,6 +931,19 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
                 "broker could not open Winlogon — worker will fall back "
                 "to its own enumeration (likely returns wrong desktop)"
             )
+        else:
+            # The worker can't attach to Winlogon itself, so it can't walk
+            # the desktop root. Find consent.exe's top HWND here and pass it
+            # to the worker -- ElementFromHandle works cross-desktop with
+            # UIAccess and bypasses the SetThreadDesktop requirement.
+            try:
+                consent_hwnd = _find_consent_hwnd_on(hdesk_winlogon)
+                logger.info(
+                    "broker enumerated Winlogon: consent.exe hwnd=0x%x",
+                    consent_hwnd,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("_find_consent_hwnd_on failed: %s", exc)
 
     # Prefer a UIAccess-signed worker installed in a trusted path. Without
     # it, the unsigned fallback (this Python module) cannot enumerate
@@ -889,11 +1010,16 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
             try: win32api.CloseHandle(elevated_token)
             except Exception: pass
 
-    # Hand the worker a Winlogon desktop handle it can't open itself.
-    # DuplicateHandle into the child with the same access mask we used,
-    # then write the duplicated value to its stdin so it can SetThreadDesktop
-    # before any UIA call. Worker reads exactly one line of stdin at boot.
-    handoff_line = "\n"  # default: no handoff
+    # Hand the worker:
+    #   1. (best effort) a duplicated Winlogon desktop handle so it can
+    #      SetThreadDesktop directly. HDESK isn't a real kernel handle so
+    #      DuplicateHandle almost always fails here with ACCESS_DENIED;
+    #      kept as the preferred path in case a future Windows build relaxes
+    #      it.
+    #   2. (real fallback) the HWND of consent.exe on Winlogon that we
+    #      enumerated above. The worker uses ElementFromHandle on this HWND,
+    #      which crosses the desktop boundary as long as it has UIAccess.
+    handoff_parts: list[str] = []
     if hdesk_winlogon and proc_handle:
         try:
             dup = win32api.DuplicateHandle(
@@ -904,9 +1030,12 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
                 False,        # bInheritHandle
                 2,            # DUPLICATE_SAME_ACCESS
             )
-            handoff_line = f"WINLOGON_HDESK={int(dup)}\n"
+            handoff_parts.append(f"WINLOGON_HDESK={int(dup)}")
         except Exception as exc:
             logger.warning("Winlogon DuplicateHandle into worker failed: %s", exc)
+    if consent_hwnd:
+        handoff_parts.append(f"CONSENT_HWND={consent_hwnd}")
+    handoff_line = (" ".join(handoff_parts) + "\n") if handoff_parts else "\n"
     try:
         win32file.WriteFile(stdin_w, handoff_line.encode("utf-8"))
     except Exception as exc:

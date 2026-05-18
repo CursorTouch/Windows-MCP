@@ -129,11 +129,17 @@ def _log_token_diag() -> None:
 
 
 def _accept_winlogon_handoff() -> None:
-    """Broker may pre-pass a Winlogon desktop handle via stdin to work around
-    the user-session worker's lack of access to OpenDesktopW("Winlogon").
-    Always reads exactly one line; if it starts with WINLOGON_HDESK=, attach
-    this thread to that desktop and stash the handle on secure_desktop so
-    the rest of the module skips its own (failing) open attempt."""
+    """Broker may pre-pass two things via stdin to work around the worker's
+    lack of access to Winlogon:
+      1. WINLOGON_HDESK=<int>  -- a Winlogon desktop handle the worker can
+         SetThreadDesktop onto directly. Best-effort path; usually fails
+         because HDESK can't actually be DuplicateHandle'd across processes.
+      2. CONSENT_HWND=<int>    -- consent.exe's top-level HWND on Winlogon.
+         The worker uses IUIAutomation.ElementFromHandle on this HWND in
+         uia_get_tree, which crosses the desktop boundary as long as the
+         worker has UIAccess on its token.
+    The two come space-separated on a single line; either may be omitted.
+    """
     try:
         import os
         import ctypes
@@ -142,25 +148,35 @@ def _accept_winlogon_handoff() -> None:
         logger.info("no winlogon handoff (stdin read failed: %s)", exc)
         return
     line = data.decode("utf-8", errors="replace").strip()
-    if not line.startswith("WINLOGON_HDESK="):
-        return
-    try:
-        value = int(line.split("=", 1)[1])
-    except ValueError:
-        logger.warning("malformed winlogon handoff: %r", line)
-        return
-    if value <= 0:
-        return
-    if not ctypes.windll.user32.SetThreadDesktop(value):
-        err = ctypes.get_last_error()
-        logger.warning(
-            "SetThreadDesktop(broker-passed handle %d) failed (gle=%d)",
-            value, err,
-        )
+    if not line:
         return
     from windows_mcp.service import secure_desktop
-    secure_desktop._preattached_winlogon_hdesk = value
-    logger.info("attached to broker-passed Winlogon handle %d", value)
+    for token in line.split():
+        if "=" not in token:
+            continue
+        key, _, raw = token.partition("=")
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("malformed winlogon handoff token: %r", token)
+            continue
+        if value <= 0:
+            continue
+        if key == "WINLOGON_HDESK":
+            if ctypes.windll.user32.SetThreadDesktop(value):
+                secure_desktop._preattached_winlogon_hdesk = value
+                logger.info("attached to broker-passed Winlogon hdesk %d", value)
+            else:
+                err = ctypes.get_last_error()
+                logger.info(
+                    "SetThreadDesktop(broker-passed hdesk %d) failed (gle=%d)",
+                    value, err,
+                )
+        elif key == "CONSENT_HWND":
+            secure_desktop._preattached_consent_hwnd = value
+            logger.info(
+                "received broker-enumerated consent.exe hwnd=0x%x", value,
+            )
 
 
 def main() -> int:
