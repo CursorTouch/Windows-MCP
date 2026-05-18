@@ -144,7 +144,48 @@ def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
     return handle or 0
 
 
-def _find_consent_hwnd_on(hdesk: int) -> int:
+def _get_elevated_user_token_for_impersonation() -> int:
+    """Return a token handle the broker can ImpersonateLoggedOnUser with so
+    EnumDesktopWindows on Winlogon sees the call from the session-1 admin
+    user instead of from SYSTEM session 0. Returns 0 on failure (caller
+    skips impersonation and EnumDesktopWindows will return 0 windows due
+    to session-isolation, but the rest of the flow still works in the
+    degraded path).
+    """
+    try:
+        import win32ts
+        import win32security
+    except Exception:
+        return 0
+    try:
+        session_id = win32ts.WTSGetActiveConsoleSessionId()
+        if session_id in (0xFFFFFFFF, 0):
+            return 0
+        user_token = win32ts.WTSQueryUserToken(session_id)
+        try:
+            elevated = win32security.GetTokenInformation(
+                user_token, win32security.TokenLinkedToken,
+            )
+        except Exception:
+            elevated = None
+        # We want to KEEP the elevated handle and CLOSE user_token.
+        # win32ts returns PyHANDLE -- int() extracts the underlying handle.
+        if elevated:
+            try:
+                import win32api
+                win32api.CloseHandle(user_token)
+            except Exception:
+                pass
+            return int(elevated)
+        return int(user_token)
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "_get_elevated_user_token_for_impersonation failed: %s", exc,
+        )
+        return 0
+
+
+def _find_consent_hwnd_on(hdesk: int, impersonate_token: int = 0) -> int:
     """Walk *hdesk* (a Winlogon desktop handle the broker can open as SYSTEM)
     and return the top-level HWND owned by consent.exe -- or 0 if none.
 
@@ -213,14 +254,32 @@ def _find_consent_hwnd_on(hdesk: int) -> int:
             found[0] = int(hwnd)
         return True  # keep enumerating so we capture the full list for diag
 
-    ok = _user32.EnumDesktopWindows(
-        hdesk, ctypes.cast(_on_window, ctypes.c_void_p), 0,
-    )
-    enum_gle = ctypes.GetLastError() if not ok else 0
+    advapi32 = ctypes.windll.advapi32
+    advapi32.ImpersonateLoggedOnUser.argtypes = [ctypes.wintypes.HANDLE]
+    advapi32.ImpersonateLoggedOnUser.restype = ctypes.wintypes.BOOL
+    advapi32.RevertToSelf.restype = ctypes.wintypes.BOOL
+
+    impersonated = False
+    if impersonate_token:
+        if advapi32.ImpersonateLoggedOnUser(impersonate_token):
+            impersonated = True
+        else:
+            logger.info(
+                "_find_consent_hwnd_on: ImpersonateLoggedOnUser failed (gle=%d)",
+                ctypes.GetLastError(),
+            )
+    try:
+        ok = _user32.EnumDesktopWindows(
+            hdesk, ctypes.cast(_on_window, ctypes.c_void_p), 0,
+        )
+        enum_gle = ctypes.GetLastError() if not ok else 0
+    finally:
+        if impersonated:
+            advapi32.RevertToSelf()
     logger.info(
         "_find_consent_hwnd_on: EnumDesktopWindows ok=%s gle=%d "
-        "windows_seen=%d match=0x%x",
-        bool(ok), enum_gle, len(enumerated), found[0],
+        "windows_seen=%d match=0x%x impersonated=%s",
+        bool(ok), enum_gle, len(enumerated), found[0], impersonated,
     )
     # Dump up to 20 windows so we can see what was on Winlogon when we looked.
     for hwnd, cls, exe in enumerated[:20]:
@@ -953,8 +1012,16 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
             # the desktop root. Find consent.exe's top HWND here and pass it
             # to the worker -- ElementFromHandle works cross-desktop with
             # UIAccess and bypasses the SetThreadDesktop requirement.
+            #
+            # ImpersonateLoggedOnUser with the user's elevated linked token
+            # so EnumDesktopWindows on Winlogon doesn't trip session-0/-1
+            # isolation (broker is SYSTEM in session 0; without
+            # impersonation the kernel refuses to enumerate session-1
+            # Winlogon and returns FALSE with windows_seen=0).
             try:
-                consent_hwnd = _find_consent_hwnd_on(hdesk_winlogon)
+                consent_hwnd = _find_consent_hwnd_on(
+                    hdesk_winlogon, impersonate_token=int(spawn_token),
+                )
                 logger.info(
                     "broker enumerated Winlogon: consent.exe hwnd=0x%x",
                     consent_hwnd,
@@ -984,19 +1051,13 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     startup.hStdInput = stdin_r
     startup.hStdOutput = stdout_w
     startup.hStdError = stderr_w
-    # For read ops that need to walk consent.exe (tree, publisher), try to
-    # spawn the worker directly on the Winlogon desktop. The OS opens the
-    # named desktop on behalf of the new process at creation time and
-    # checks the spawn token's UIAccess flag against the desktop DACL --
-    # whereas OpenDesktopW("Winlogon", ...) from a running user-session
-    # process returns gle=5 even with UIAccess=1. Fall back to Default if
-    # that path itself fails (e.g. STATUS_DLL_INIT_FAILED when uiAccess
-    # isn't actually granted because the exe isn't signed or isn't in a
-    # trusted path).
-    if pass_winlogon:
-        startup.lpDesktop = r"winsta0\winlogon"
-    else:
-        startup.lpDesktop = r"winsta0\default"
+    # Spawn on the interactive Default desktop. Tried lpDesktop="winsta0\winlogon"
+    # for read ops: even with TokenUIAccess=1 + signed worker in
+    # %ProgramFiles%, the OS rejects user32.dll init against Winlogon's
+    # DACL and the worker crashes with STATUS_DLL_INIT_FAILED
+    # (exit=-1073741502). The worker's _input_desktop later attaches to
+    # whichever desktop it can.
+    startup.lpDesktop = r"winsta0\default"
 
     user_env = win32profile.CreateEnvironmentBlock(spawn_token, False)
 
@@ -1176,33 +1237,37 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
             seen[name] = seen.get(name, 0) + 1
             if name.lower() == "winlogon":
                 logger.info("wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values()))
-                # consent.exe is a user-session process — Session 0 isolation
-                # blocks the LocalSystem service from walking its UIA tree even
-                # though we're attached to the right desktop. Route the walk
-                # through a user-session helper instead (CreateProcessAsUser
-                # into the active console session).
-                #
-                # Winlogon becomes the input desktop slightly *before*
-                # consent.exe has finished painting its window, so retry the
-                # broker-side enumeration of consent.exe's top HWND a few
-                # times here. Without this we race the dialog: the worker
-                # spawn succeeds, falls back to its Default-desktop root
-                # walk (because _find_consent_hwnd_on returned 0), and
-                # returns a non-empty-but-wrong tree (Taskbar + whatever
-                # else is on the user's desktop) -- the outer 8-retry loop
-                # then thinks it has a "tree" and stops looking.
+                # consent.exe is a user-session process. Session 0 isolation
+                # blocks the SYSTEM broker from EnumDesktopWindows-ing the
+                # session-1 Winlogon desktop even when we successfully open
+                # its hdesk (kernel returns FALSE with windows_seen=0 and
+                # gle=0). Workaround: pull the user's elevated linked token
+                # (already has UIAccess from our earlier SetTokenInformation
+                # in _spawn_in_user_session) and ImpersonateLoggedOnUser
+                # around the EnumDesktopWindows call so the kernel sees the
+                # call as coming from the session-1 admin user, not from
+                # SYSTEM session 0.
                 consent_hwnd = 0
                 wl_hdesk = _open_desktop_by_name("Winlogon", _DESKTOP_ALL_ACCESS)
-                if wl_hdesk:
-                    try:
+                impersonate_token = _get_elevated_user_token_for_impersonation()
+                try:
+                    if wl_hdesk:
                         for _ in range(20):  # ~5s at 0.25s intervals
-                            consent_hwnd = _find_consent_hwnd_on(wl_hdesk)
+                            consent_hwnd = _find_consent_hwnd_on(
+                                wl_hdesk, impersonate_token=impersonate_token,
+                            )
                             if consent_hwnd:
                                 break
                             time.sleep(0.25)
-                    finally:
+                finally:
+                    if wl_hdesk:
                         try: _user32.CloseDesktop(wl_hdesk)
                         except Exception: pass
+                    if impersonate_token:
+                        try:
+                            ctypes.windll.kernel32.CloseHandle(impersonate_token)
+                        except Exception:
+                            pass
                 if not consent_hwnd:
                     logger.warning(
                         "wait_for_uac_prompt: Winlogon active but consent.exe "
