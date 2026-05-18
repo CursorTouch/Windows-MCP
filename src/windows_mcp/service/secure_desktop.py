@@ -161,8 +161,10 @@ def _find_consent_hwnd_on(hdesk: int) -> int:
         ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.wintypes.DWORD),
     ]
     _user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
-    _user32.IsWindowVisible.argtypes = [ctypes.wintypes.HANDLE]
-    _user32.IsWindowVisible.restype = ctypes.wintypes.BOOL
+    _user32.GetClassNameW.argtypes = [
+        ctypes.wintypes.HANDLE, ctypes.wintypes.LPWSTR, ctypes.c_int,
+    ]
+    _user32.GetClassNameW.restype = ctypes.c_int
     _kernel32.OpenProcess.argtypes = [
         ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD,
     ]
@@ -183,34 +185,49 @@ def _find_consent_hwnd_on(hdesk: int) -> int:
     )
 
     found = [0]
+    enumerated: list[tuple[int, str, str]] = []  # (hwnd, class, exe)
 
     @WNDENUMPROC
     def _on_window(hwnd, _lparam):
-        if not _user32.IsWindowVisible(hwnd):
-            return True
         pid = ctypes.wintypes.DWORD(0)
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not pid.value:
-            return True
-        h_proc = _kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value,
-        )
-        if not h_proc:
-            return True
-        try:
-            buf = ctypes.create_unicode_buffer(260)
-            size = ctypes.wintypes.DWORD(260)
-            if QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
-                if buf.value.lower().endswith("\\consent.exe"):
-                    found[0] = int(hwnd)
-                    return False
-        finally:
-            _kernel32.CloseHandle(h_proc)
-        return True
+        cls = ctypes.create_unicode_buffer(128)
+        _user32.GetClassNameW(hwnd, cls, 128)
+        exe_name = ""
+        if pid.value:
+            h_proc = _kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value,
+            )
+            if h_proc:
+                try:
+                    buf = ctypes.create_unicode_buffer(260)
+                    size = ctypes.wintypes.DWORD(260)
+                    if QueryFullProcessImageNameW(
+                        h_proc, 0, buf, ctypes.byref(size)
+                    ):
+                        exe_name = buf.value
+                finally:
+                    _kernel32.CloseHandle(h_proc)
+        enumerated.append((int(hwnd), cls.value, exe_name))
+        if exe_name.lower().endswith("\\consent.exe") and found[0] == 0:
+            found[0] = int(hwnd)
+        return True  # keep enumerating so we capture the full list for diag
 
-    _user32.EnumDesktopWindows(
+    ok = _user32.EnumDesktopWindows(
         hdesk, ctypes.cast(_on_window, ctypes.c_void_p), 0,
     )
+    enum_gle = ctypes.GetLastError() if not ok else 0
+    logger.info(
+        "_find_consent_hwnd_on: EnumDesktopWindows ok=%s gle=%d "
+        "windows_seen=%d match=0x%x",
+        bool(ok), enum_gle, len(enumerated), found[0],
+    )
+    # Dump up to 20 windows so we can see what was on Winlogon when we looked.
+    for hwnd, cls, exe in enumerated[:20]:
+        logger.info(
+            "_find_consent_hwnd_on:   hwnd=0x%x class=%r exe=%r",
+            hwnd, cls, exe,
+        )
     return found[0]
 
 
