@@ -638,14 +638,57 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     spawn_token = elevated_token or user_token
     using_elevated = bool(elevated_token)
 
+    # Enable SeTcbPrivilege on the broker's process token. SYSTEM has it,
+    # but it isn't enabled by default. SetTokenInformation(TokenUIAccess)
+    # requires this privilege to be ENABLED on the caller, not just held.
+    try:
+        TOKEN_ADJUST_PRIVILEGES = 0x0020
+        TOKEN_QUERY = 0x0008
+        SE_PRIVILEGE_ENABLED = 0x00000002
+
+        h_proc_token = ctypes.wintypes.HANDLE()
+        ok = ctypes.windll.advapi32.OpenProcessToken(
+            ctypes.windll.kernel32.GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            ctypes.byref(h_proc_token),
+        )
+        if ok:
+            luid = (ctypes.c_uint32 * 2)()
+            if ctypes.windll.advapi32.LookupPrivilegeValueW(
+                None, "SeTcbPrivilege", ctypes.byref(luid)
+            ):
+                # TOKEN_PRIVILEGES { DWORD count; LUID_AND_ATTRIBUTES privs[1]; }
+                # LUID_AND_ATTRIBUTES { LUID(8 bytes); DWORD attrs; }
+                tp_buf = (ctypes.c_uint32 * 4)()
+                tp_buf[0] = 1                          # PrivilegeCount
+                tp_buf[1] = luid[0]                    # LUID.LowPart
+                tp_buf[2] = luid[1]                    # LUID.HighPart
+                tp_buf[3] = SE_PRIVILEGE_ENABLED       # Attributes
+                ok2 = ctypes.windll.advapi32.AdjustTokenPrivileges(
+                    h_proc_token, False, ctypes.byref(tp_buf), 0, None, None
+                )
+                gle = ctypes.GetLastError() if not ok2 else 0
+                logger.info(
+                    "AdjustTokenPrivileges(SeTcbPrivilege=ENABLED) ok=%s gle=%d",
+                    bool(ok2), gle,
+                )
+            else:
+                logger.warning("LookupPrivilegeValueW(SeTcbPrivilege) failed gle=%d",
+                               ctypes.GetLastError())
+            ctypes.windll.kernel32.CloseHandle(h_proc_token)
+        else:
+            logger.warning("OpenProcessToken failed gle=%d", ctypes.GetLastError())
+    except Exception as exc:
+        logger.warning("SeTcbPrivilege enable raised: %s", exc)
+
     # Set TokenUIAccess=1 on the token *before* CreateProcessAsUser. Without
     # this the spawned process always boots with TokenUIAccess=0 — Windows
     # only checks the manifest's uiAccess attribute as a *request*, the
     # privilege itself comes from this flag on the primary token, and
     # CreateProcessAsUser does not set it for us based on the exe's manifest.
-    # SetTokenInformation(TokenUIAccess) from a SYSTEM caller bypasses the
-    # signature + trusted-path checks the AppInfo path normally enforces;
-    # see https://learn.microsoft.com/en-us/answers/questions/1009084/
+    # SetTokenInformation(TokenUIAccess) from a SYSTEM caller with
+    # SeTcbPrivilege enabled bypasses the signature + trusted-path checks
+    # AppInfo normally enforces; see https://learn.microsoft.com/en-us/answers/questions/1009084/
     # and Tyranid's notes at https://www.tiraniddo.dev/2019/02/
     try:
         TOKEN_UI_ACCESS = 26
@@ -659,7 +702,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
         if not ok:
             gle = ctypes.GetLastError()
             logger.warning(
-                "SetTokenInformation(TokenUIAccess=1) failed (gle=%d) — "
+                "SetTokenInformation(TokenUIAccess=1) failed (gle=%d) - "
                 "worker will spawn without UIAccess and won't be able to "
                 "walk Winlogon",
                 gle,
