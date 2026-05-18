@@ -445,76 +445,86 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
     Invalidates any existing Authenticode signature; caller must re-sign
     after the update.
     """
-    import ctypes
-    import ctypes.wintypes as wt
+    import win32api
 
-    if progress:
-        progress(f"Replacing embedded manifest in {exe_path.name} "
-                 "(preserving PyInstaller overlay)…")
     new_manifest = manifest_path.read_bytes()
     full = exe_path.read_bytes()
     pe_end = _pe_image_end(full)
-    if pe_end >= len(full):
-        # No appended overlay (would be unusual for a onefile build). Still
-        # safe to UpdateResource directly.
-        overlay = b""
-    else:
-        overlay = full[pe_end:]
+    overlay = full[pe_end:] if pe_end < len(full) else b""
+
+    msg = (
+        f"Replacing embedded manifest in {exe_path.name}: "
+        f"pe_end={pe_end} total={len(full)} overlay={len(overlay)} "
+        f"new_manifest={len(new_manifest)}"
+    )
+    logger.info(msg)
+    if progress:
+        progress(msg)
 
     # Truncate the file to just the PE before calling UpdateResource —
     # Windows will rewrite the PE in place, dropping anything past it.
     exe_path.write_bytes(full[:pe_end])
 
-    kernel32 = ctypes.windll.kernel32
-    BeginUpdateResourceW = kernel32.BeginUpdateResourceW
-    BeginUpdateResourceW.argtypes = [wt.LPCWSTR, wt.BOOL]
-    BeginUpdateResourceW.restype = wt.HANDLE
-    UpdateResourceW = kernel32.UpdateResourceW
-    UpdateResourceW.argtypes = [wt.HANDLE, wt.LPCWSTR, wt.LPCWSTR,
-                                wt.WORD, ctypes.c_void_p, wt.DWORD]
-    UpdateResourceW.restype = wt.BOOL
-    EndUpdateResourceW = kernel32.EndUpdateResourceW
-    EndUpdateResourceW.argtypes = [wt.HANDLE, wt.BOOL]
-    EndUpdateResourceW.restype = wt.BOOL
+    RT_MANIFEST = 24
+    name_id = 1  # CREATEPROCESS_MANIFEST_RESOURCE_ID
 
-    h = BeginUpdateResourceW(str(exe_path), False)
-    if not h:
-        gle = ctypes.GetLastError()
-        raise RuntimeError(f"BeginUpdateResource failed (gle={gle})")
-    # RT_MANIFEST = 24, name id = 1 (CREATEPROCESS_MANIFEST_RESOURCE_ID).
-    # MAKEINTRESOURCE(n) is encoded as a small integer cast to LPCWSTR.
-    # First delete any existing manifest at the common language IDs
-    # (0=neutral, 1033=en-us, 0x0409=en-us) — without this, our new
-    # resource is added alongside the existing one and Windows picks the
-    # original. Verified empirically: PyInstaller embeds at lang=0.
-    for lang in (0, 0x0409, 1033):
-        UpdateResourceW(
-            h,
-            ctypes.cast(24, wt.LPCWSTR),
-            ctypes.cast(1, wt.LPCWSTR),
-            lang,
-            None,
-            0,
-        )
-    ok = UpdateResourceW(
-        h,
-        ctypes.cast(24, wt.LPCWSTR),
-        ctypes.cast(1, wt.LPCWSTR),
-        0,            # neutral — matches what PyInstaller uses by default
-        new_manifest,
-        len(new_manifest),
-    )
-    if not ok:
-        gle = ctypes.GetLastError()
-        EndUpdateResourceW(h, True)  # discard
-        raise RuntimeError(f"UpdateResource(RT_MANIFEST) failed (gle={gle})")
-    if not EndUpdateResourceW(h, False):  # commit
-        gle = ctypes.GetLastError()
-        raise RuntimeError(f"EndUpdateResource failed (gle={gle})")
+    h = win32api.BeginUpdateResource(str(exe_path), False)
+    try:
+        # Delete any pre-existing manifest at the common language IDs
+        # (0=neutral, 1033=en-us, 0x0409=en-us). Without this, the new
+        # resource is added alongside the existing one and Windows picks
+        # the original. PyInstaller's bootloader embeds at lang=0.
+        for lang in (0, 0x0409, 1033):
+            try:
+                win32api.UpdateResource(h, RT_MANIFEST, name_id, None, lang)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("delete RT_MANIFEST lang=%s skipped: %s", lang, e)
+        # Add at neutral (lang=0) — matches PyInstaller's default.
+        win32api.UpdateResource(h, RT_MANIFEST, name_id, new_manifest, 0)
+    except Exception:
+        win32api.EndUpdateResource(h, True)  # discard
+        raise
+    win32api.EndUpdateResource(h, False)  # commit
 
     if overlay:
         with open(exe_path, "ab") as fh:
             fh.write(overlay)
+
+    # Verify what we just wrote — re-open the PE and read RT_MANIFEST back.
+    # This catches the case where UpdateResource silently no-ops or writes
+    # to the wrong language ID.
+    try:
+        hmod = win32api.LoadLibraryEx(
+            str(exe_path), 0,
+            0x00000020,  # LOAD_LIBRARY_AS_IMAGE_RESOURCE
+        )
+        try:
+            embedded = win32api.LoadResource(hmod, RT_MANIFEST, name_id)
+        finally:
+            win32api.FreeLibrary(hmod)
+        if isinstance(embedded, str):
+            embedded_bytes = embedded.encode("utf-8")
+        else:
+            embedded_bytes = bytes(embedded)
+        if b'uiAccess="true"' not in embedded_bytes:
+            raise RuntimeError(
+                f"replace_embedded_manifest: post-write verification failed — "
+                f"RT_MANIFEST in {exe_path.name} does not contain "
+                f'uiAccess="true". Length={len(embedded_bytes)}; first 200 '
+                f"bytes: {embedded_bytes[:200]!r}"
+            )
+        logger.info(
+            "replace_embedded_manifest: verified uiAccess=\"true\" in "
+            "embedded RT_MANIFEST (%d bytes)",
+            len(embedded_bytes),
+        )
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "replace_embedded_manifest: verification step failed "
+            "(non-fatal): %s", e
+        )
 
 
 # ---------------------------------------------------------------------------
