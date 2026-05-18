@@ -54,34 +54,76 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _log_token_diag() -> None:
     """Log uiAccess + integrity level + current desktop. Drives diagnosis when
-    the worker silently enumerates the wrong UIA tree."""
+    the worker silently enumerates the wrong UIA tree.
+
+    Declares ctypes argtypes/restype on the Win32 functions used here -- on
+    64-bit Windows the GetCurrentProcess pseudo-handle (-1) gets silently
+    truncated to a 4-byte int without an explicit restype, so OpenProcessToken
+    fails with ERROR_INVALID_HANDLE and TokenUIAccess always reads back as 0,
+    masking whether the broker's SetTokenInformation(TokenUIAccess=1) on the
+    spawn token actually stuck.
+    """
     try:
         import ctypes
         import ctypes.wintypes as wt
         TokenUIAccess = 26
-        TokenIntegrityLevel = 25
+
+        kernel32 = ctypes.windll.kernel32
+        advapi32 = ctypes.windll.advapi32
+        user32 = ctypes.windll.user32
+
+        kernel32.GetCurrentProcess.restype = wt.HANDLE
+        kernel32.GetCurrentThreadId.restype = wt.DWORD
+        advapi32.OpenProcessToken.argtypes = [
+            wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE),
+        ]
+        advapi32.OpenProcessToken.restype = wt.BOOL
+        advapi32.GetTokenInformation.argtypes = [
+            wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
+            ctypes.POINTER(wt.DWORD),
+        ]
+        advapi32.GetTokenInformation.restype = wt.BOOL
+        user32.GetThreadDesktop.argtypes = [wt.DWORD]
+        user32.GetThreadDesktop.restype = wt.HANDLE
+        user32.GetUserObjectInformationW.argtypes = [
+            wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
+            ctypes.POINTER(wt.DWORD),
+        ]
+        user32.GetUserObjectInformationW.restype = wt.BOOL
+
         h_token = wt.HANDLE()
-        ctypes.windll.advapi32.OpenProcessToken(
-            ctypes.windll.kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(h_token)
+        ok_open = advapi32.OpenProcessToken(
+            kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(h_token),
         )
+        open_gle = ctypes.GetLastError() if not ok_open else 0
+
         ui_access = wt.DWORD(0)
         rlen = wt.DWORD(0)
-        ctypes.windll.advapi32.GetTokenInformation(
-            h_token, TokenUIAccess, ctypes.byref(ui_access), 4, ctypes.byref(rlen)
+        ok_get = advapi32.GetTokenInformation(
+            h_token, TokenUIAccess,
+            ctypes.cast(ctypes.byref(ui_access), ctypes.c_void_p),
+            4, ctypes.byref(rlen),
         )
-        # Current desktop name
+        get_gle = ctypes.GetLastError() if not ok_get else 0
+
         buf = ctypes.create_unicode_buffer(256)
         needed = wt.DWORD()
-        hdesk = ctypes.windll.user32.GetThreadDesktop(
-            ctypes.windll.kernel32.GetCurrentThreadId()
-        )
-        ctypes.windll.user32.GetUserObjectInformationW(
-            hdesk, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed)
+        hdesk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+        user32.GetUserObjectInformationW(
+            hdesk, 2,
+            ctypes.cast(buf, ctypes.c_void_p),
+            ctypes.sizeof(buf), ctypes.byref(needed),
         )
         logger.info(
-            "diag: TokenUIAccess=%d initial-desktop=%r",
-            ui_access.value, buf.value,
+            "diag: TokenUIAccess=%d (open_ok=%s gle=%d, get_ok=%s gle=%d) "
+            "initial-desktop=%r",
+            ui_access.value, bool(ok_open), open_gle,
+            bool(ok_get), get_gle, buf.value,
         )
+        try:
+            kernel32.CloseHandle(h_token)
+        except Exception:
+            pass
     except Exception as exc:
         logger.warning("token diagnostics failed: %s", exc)
 

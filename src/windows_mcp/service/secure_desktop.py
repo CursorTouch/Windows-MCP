@@ -714,11 +714,26 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     # and Tyranid's notes at https://www.tiraniddo.dev/2019/02/
     try:
         TOKEN_UI_ACCESS = 26
+        # Declare argtypes -- without them, ctypes treats the HANDLE arg as
+        # c_int (4 bytes) and truncates the high 32 bits of the 8-byte
+        # PyHANDLE. The call then operates on a corrupted handle (which on
+        # this box happened to "succeed" -- gle=0, ok=1 -- presumably because
+        # the truncated value collided with some other open handle), so the
+        # real spawn token never gets its UIAccess bit set and the spawned
+        # worker boots with TokenUIAccess=0.
+        advapi32.SetTokenInformation.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.c_int,           # TOKEN_INFORMATION_CLASS enum
+            ctypes.c_void_p,        # LPVOID TokenInformation
+            ctypes.wintypes.DWORD,  # TokenInformationLength
+        ]
+        advapi32.SetTokenInformation.restype = ctypes.wintypes.BOOL
+
         ui_access = ctypes.c_uint32(1)
-        ok = ctypes.windll.advapi32.SetTokenInformation(
+        ok = advapi32.SetTokenInformation(
             int(spawn_token),
             TOKEN_UI_ACCESS,
-            ctypes.byref(ui_access),
+            ctypes.cast(ctypes.byref(ui_access), ctypes.c_void_p),
             ctypes.sizeof(ui_access),
         )
         if not ok:
@@ -730,7 +745,10 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
                 gle,
             )
         else:
-            logger.info("SetTokenInformation(TokenUIAccess=1) on spawn token OK")
+            logger.info(
+                "SetTokenInformation(TokenUIAccess=1) on spawn token "
+                "(handle=0x%x) OK", int(spawn_token),
+            )
     except Exception as exc:
         logger.warning("SetTokenInformation(TokenUIAccess) raised: %s", exc)
 
