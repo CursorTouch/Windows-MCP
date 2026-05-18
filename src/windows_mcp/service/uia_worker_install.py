@@ -468,18 +468,17 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
     RT_MANIFEST = 24
     name_id = 1  # CREATEPROCESS_MANIFEST_RESOURCE_ID
 
+    # UpdateResource replaces an existing resource if one already exists with
+    # the same {type, name, language} key, so a plain Update at lang=0 (the
+    # language PyInstaller's bootloader uses) overwrites the bootloader's
+    # asInvoker/uiAccess=false manifest with ours. An earlier version tried
+    # to UpdateResource(..., None, lang) first to explicitly delete at
+    # several language IDs — that call returned ERROR_INTERNAL_ERROR (1359)
+    # on Windows 11, presumably because deleting a resource that doesn't
+    # exist at that language is treated as a poisoning event for the
+    # in-progress update handle. The single Update at lang=0 is enough.
     h = win32api.BeginUpdateResource(str(exe_path), False)
     try:
-        # Delete any pre-existing manifest at the common language IDs
-        # (0=neutral, 1033=en-us, 0x0409=en-us). Without this, the new
-        # resource is added alongside the existing one and Windows picks
-        # the original. PyInstaller's bootloader embeds at lang=0.
-        for lang in (0, 0x0409, 1033):
-            try:
-                win32api.UpdateResource(h, RT_MANIFEST, name_id, None, lang)
-            except Exception as e:  # noqa: BLE001
-                logger.debug("delete RT_MANIFEST lang=%s skipped: %s", lang, e)
-        # Add at neutral (lang=0) — matches PyInstaller's default.
         win32api.UpdateResource(h, RT_MANIFEST, name_id, new_manifest, 0)
     except Exception:
         win32api.EndUpdateResource(h, True)  # discard
