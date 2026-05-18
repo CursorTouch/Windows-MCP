@@ -56,6 +56,45 @@ _DESKTOP_READ_ATTACH = _DESKTOP_SWITCHDESKTOP | _DESKTOP_ENUMERATE | _DESKTOP_RE
 _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
 
+# Declare argtypes/restype on the user32 desktop/window-station functions
+# we call. Without these, ctypes passes Python str as a c_char_p (ASCII
+# bytes) but the *W APIs expect LPCWSTR (UTF-16) -- the call sees garbled
+# wide characters and returns NULL, so OpenDesktopW('Winlogon', ...) always
+# fails for the user-session worker and _input_desktop falls back to
+# OpenInputDesktop which (from inside a user session) returns the user's
+# Default desktop instead of Winlogon, leaving consent.exe outside the UIA
+# enumeration scope.
+_user32.OpenWindowStationW.argtypes = [
+    ctypes.wintypes.LPCWSTR, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD,
+]
+_user32.OpenWindowStationW.restype = ctypes.wintypes.HANDLE
+_user32.OpenDesktopW.argtypes = [
+    ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD, ctypes.wintypes.BOOL,
+    ctypes.wintypes.DWORD,
+]
+_user32.OpenDesktopW.restype = ctypes.wintypes.HANDLE
+_user32.OpenInputDesktop.argtypes = [
+    ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD,
+]
+_user32.OpenInputDesktop.restype = ctypes.wintypes.HANDLE
+_user32.SetThreadDesktop.argtypes = [ctypes.wintypes.HANDLE]
+_user32.SetThreadDesktop.restype = ctypes.wintypes.BOOL
+_user32.SetProcessWindowStation.argtypes = [ctypes.wintypes.HANDLE]
+_user32.SetProcessWindowStation.restype = ctypes.wintypes.BOOL
+_user32.GetProcessWindowStation.restype = ctypes.wintypes.HANDLE
+_user32.GetThreadDesktop.argtypes = [ctypes.wintypes.DWORD]
+_user32.GetThreadDesktop.restype = ctypes.wintypes.HANDLE
+_user32.CloseDesktop.argtypes = [ctypes.wintypes.HANDLE]
+_user32.CloseDesktop.restype = ctypes.wintypes.BOOL
+_user32.CloseWindowStation.argtypes = [ctypes.wintypes.HANDLE]
+_user32.CloseWindowStation.restype = ctypes.wintypes.BOOL
+_user32.GetUserObjectInformationW.argtypes = [
+    ctypes.wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+    ctypes.wintypes.DWORD, ctypes.POINTER(ctypes.wintypes.DWORD),
+]
+_user32.GetUserObjectInformationW.restype = ctypes.wintypes.BOOL
+_kernel32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
+
 # When set (by the user-session worker after reading from broker-passed
 # stdin), _input_desktop() attaches the thread to this handle instead of
 # trying to OpenDesktopW("Winlogon") itself — which fails for non-SYSTEM
@@ -84,6 +123,12 @@ def _open_input_desktop(access: int = _DESKTOP_ALL_ACCESS) -> int:
 
 def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
     handle = _user32.OpenDesktopW(name, 0, False, access)
+    if not handle:
+        gle = ctypes.GetLastError()
+        logger.debug(
+            "OpenDesktopW(%r, access=0x%04x) failed (gle=%d)",
+            name, access, gle,
+        )
     return handle or 0
 
 
