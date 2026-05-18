@@ -125,7 +125,7 @@ def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
     handle = _user32.OpenDesktopW(name, 0, False, access)
     if not handle:
         gle = ctypes.GetLastError()
-        logger.debug(
+        logger.info(
             "OpenDesktopW(%r, access=0x%04x) failed (gle=%d)",
             name, access, gle,
         )
