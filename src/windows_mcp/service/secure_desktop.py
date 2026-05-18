@@ -646,25 +646,47 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
         TOKEN_QUERY = 0x0008
         SE_PRIVILEGE_ENABLED = 0x00000002
 
+        # Declare argtypes so ctypes doesn't truncate the GetCurrentProcess
+        # pseudo-handle (-1) into ERROR_INVALID_HANDLE on 64-bit.
+        kernel32 = ctypes.windll.kernel32
+        advapi32 = ctypes.windll.advapi32
+        kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
+        advapi32.OpenProcessToken.argtypes = [
+            ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.wintypes.HANDLE),
+        ]
+        advapi32.OpenProcessToken.restype = ctypes.wintypes.BOOL
+        advapi32.LookupPrivilegeValueW.argtypes = [
+            ctypes.wintypes.LPCWSTR, ctypes.wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_uint64),
+        ]
+        advapi32.LookupPrivilegeValueW.restype = ctypes.wintypes.BOOL
+        advapi32.AdjustTokenPrivileges.argtypes = [
+            ctypes.wintypes.HANDLE, ctypes.wintypes.BOOL,
+            ctypes.c_void_p, ctypes.wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        advapi32.AdjustTokenPrivileges.restype = ctypes.wintypes.BOOL
+
         h_proc_token = ctypes.wintypes.HANDLE()
-        ok = ctypes.windll.advapi32.OpenProcessToken(
-            ctypes.windll.kernel32.GetCurrentProcess(),
+        ok = advapi32.OpenProcessToken(
+            kernel32.GetCurrentProcess(),
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
             ctypes.byref(h_proc_token),
         )
         if ok:
-            luid = (ctypes.c_uint32 * 2)()
-            if ctypes.windll.advapi32.LookupPrivilegeValueW(
+            luid = ctypes.c_uint64(0)
+            if advapi32.LookupPrivilegeValueW(
                 None, "SeTcbPrivilege", ctypes.byref(luid)
             ):
                 # TOKEN_PRIVILEGES { DWORD count; LUID_AND_ATTRIBUTES privs[1]; }
                 # LUID_AND_ATTRIBUTES { LUID(8 bytes); DWORD attrs; }
                 tp_buf = (ctypes.c_uint32 * 4)()
                 tp_buf[0] = 1                          # PrivilegeCount
-                tp_buf[1] = luid[0]                    # LUID.LowPart
-                tp_buf[2] = luid[1]                    # LUID.HighPart
+                tp_buf[1] = luid.value & 0xFFFFFFFF    # LUID.LowPart
+                tp_buf[2] = (luid.value >> 32) & 0xFFFFFFFF  # LUID.HighPart
                 tp_buf[3] = SE_PRIVILEGE_ENABLED       # Attributes
-                ok2 = ctypes.windll.advapi32.AdjustTokenPrivileges(
+                ok2 = advapi32.AdjustTokenPrivileges(
                     h_proc_token, False, ctypes.byref(tp_buf), 0, None, None
                 )
                 gle = ctypes.GetLastError() if not ok2 else 0
@@ -675,7 +697,7 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
             else:
                 logger.warning("LookupPrivilegeValueW(SeTcbPrivilege) failed gle=%d",
                                ctypes.GetLastError())
-            ctypes.windll.kernel32.CloseHandle(h_proc_token)
+            kernel32.CloseHandle(h_proc_token)
         else:
             logger.warning("OpenProcessToken failed gle=%d", ctypes.GetLastError())
     except Exception as exc:
