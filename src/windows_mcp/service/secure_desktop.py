@@ -984,12 +984,19 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     startup.hStdInput = stdin_r
     startup.hStdOutput = stdout_w
     startup.hStdError = stderr_w
-    # Spawn on the interactive Default desktop; the worker re-binds its own
-    # thread to whichever desktop it needs via _input_desktop() before
-    # touching UIA. (Specifying lpDesktop="winsta0\winlogon" here trips
-    # STATUS_DLL_INIT_FAILED because the user token has no rights on the
-    # Winlogon desktop — verified against the host log.)
-    startup.lpDesktop = r"winsta0\default"
+    # For read ops that need to walk consent.exe (tree, publisher), try to
+    # spawn the worker directly on the Winlogon desktop. The OS opens the
+    # named desktop on behalf of the new process at creation time and
+    # checks the spawn token's UIAccess flag against the desktop DACL --
+    # whereas OpenDesktopW("Winlogon", ...) from a running user-session
+    # process returns gle=5 even with UIAccess=1. Fall back to Default if
+    # that path itself fails (e.g. STATUS_DLL_INIT_FAILED when uiAccess
+    # isn't actually granted because the exe isn't signed or isn't in a
+    # trusted path).
+    if pass_winlogon:
+        startup.lpDesktop = r"winsta0\winlogon"
+    else:
+        startup.lpDesktop = r"winsta0\default"
 
     user_env = win32profile.CreateEnvironmentBlock(spawn_token, False)
 
