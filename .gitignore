@@ -178,6 +178,14 @@ elevated-run.bat
 /r.bat
 /d.bat
 /q.bat
+/e.bat
+/test-trigger.bat
+/trigger-diag.ps1
+/r-bat-diag.log
+/e-log.txt
+/test-trigger.log
+/trigger-diag.log
+/trigger-elev-fired.log
 /vm-screen.png
 /vm-screen.ppm
 tests/manual/vm_e2e/.work/
