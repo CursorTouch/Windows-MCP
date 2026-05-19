@@ -144,6 +144,113 @@ def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
     return handle or 0
 
 
+def _grant_winlogon_access_to_console_user() -> tuple | None:
+    """Temporarily add an ACE granting the active console user
+    DESKTOP_ALL_ACCESS to the Winlogon desktop, so the spawned worker can
+    OpenDesktopW("Winlogon") + SetThreadDesktop + walk consent.exe.
+
+    Returns a state tuple suitable for handing to _restore_winlogon_dacl,
+    or None on failure (caller proceeds without the loosening; tree
+    capture will likely return the worker's Default-desktop fallback).
+    """
+    try:
+        import win32api
+        import win32security
+        import win32ts
+    except Exception as exc:  # noqa: BLE001
+        logger.info("DACL loosen import failed: %s", exc)
+        return None
+
+    DESKTOP_ALL_ACCESS = 0xF01FF  # STANDARD_RIGHTS_REQUIRED | desktop bits
+    DACL_SECURITY_INFORMATION = 0x4
+    READ_CONTROL = 0x00020000
+    WRITE_DAC = 0x00040000
+    open_access = DESKTOP_ALL_ACCESS | READ_CONTROL | WRITE_DAC
+
+    try:
+        session_id = win32ts.WTSGetActiveConsoleSessionId()
+        if session_id in (0xFFFFFFFF, 0):
+            logger.info("DACL loosen: no console session")
+            return None
+        user_token = win32ts.WTSQueryUserToken(session_id)
+        user_sid_struct = win32security.GetTokenInformation(
+            user_token, win32security.TokenUser,
+        )
+        user_sid = user_sid_struct[0]
+        try: win32api.CloseHandle(user_token)
+        except Exception: pass
+    except Exception as exc:  # noqa: BLE001
+        logger.info("DACL loosen: WTSQueryUserToken/TokenUser failed: %s", exc)
+        return None
+
+    hdesk = _user32.OpenDesktopW("Winlogon", 0, False, open_access)
+    if not hdesk:
+        logger.info(
+            "DACL loosen: OpenDesktopW('Winlogon', WRITE_DAC) failed gle=%d",
+            ctypes.GetLastError(),
+        )
+        return None
+
+    try:
+        original_sd = win32security.GetUserObjectSecurity(
+            hdesk, DACL_SECURITY_INFORMATION,
+        )
+        original_dacl = original_sd.GetSecurityDescriptorDacl()
+        new_dacl = win32security.ACL()
+        if original_dacl:
+            for i in range(original_dacl.GetAceCount()):
+                ace = original_dacl.GetAce(i)
+                ace_type_flags, mask, sid = ace
+                ace_type, _ace_flags = ace_type_flags
+                if ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE:
+                    new_dacl.AddAccessAllowedAce(
+                        win32security.ACL_REVISION, mask, sid,
+                    )
+                elif ace_type == win32security.ACCESS_DENIED_ACE_TYPE:
+                    new_dacl.AddAccessDeniedAce(
+                        win32security.ACL_REVISION, mask, sid,
+                    )
+                # Skip audit/object ACEs -- they don't affect access decisions.
+        new_dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, DESKTOP_ALL_ACCESS, user_sid,
+        )
+        new_sd = win32security.SECURITY_DESCRIPTOR()
+        new_sd.SetSecurityDescriptorDacl(True, new_dacl, False)
+        win32security.SetUserObjectSecurity(
+            hdesk, DACL_SECURITY_INFORMATION, new_sd,
+        )
+        logger.info(
+            "DACL loosen: granted user SID %s DESKTOP_ALL_ACCESS on Winlogon",
+            win32security.ConvertSidToStringSid(user_sid),
+        )
+        return (hdesk, original_sd)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DACL loosen: SetUserObjectSecurity failed: %s", exc)
+        try: _user32.CloseDesktop(hdesk)
+        except Exception: pass
+        return None
+
+
+def _restore_winlogon_dacl(state: tuple) -> None:
+    """Restore the original Winlogon DACL after _grant_winlogon_access_to_console_user."""
+    try:
+        import win32security
+    except Exception:
+        return
+    hdesk, original_sd = state
+    DACL_SECURITY_INFORMATION = 0x4
+    try:
+        win32security.SetUserObjectSecurity(
+            hdesk, DACL_SECURITY_INFORMATION, original_sd,
+        )
+        logger.info("DACL restore: original Winlogon DACL re-applied")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DACL restore failed: %s", exc)
+    finally:
+        try: _user32.CloseDesktop(hdesk)
+        except Exception: pass
+
+
 def _get_elevated_user_token_for_impersonation() -> int:
     """Return a token handle the broker can ImpersonateLoggedOnUser with so
     EnumDesktopWindows on Winlogon sees the call from the session-1 admin
@@ -1237,82 +1344,49 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
             seen[name] = seen.get(name, 0) + 1
             if name.lower() == "winlogon":
                 logger.info("wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values()))
-                # consent.exe is a user-session process. Session 0 isolation
-                # blocks the SYSTEM broker from EnumDesktopWindows-ing the
-                # session-1 Winlogon desktop even when we successfully open
-                # its hdesk (kernel returns FALSE with windows_seen=0 and
-                # gle=0). Workaround: pull the user's elevated linked token
-                # (already has UIAccess from our earlier SetTokenInformation
-                # in _spawn_in_user_session) and ImpersonateLoggedOnUser
-                # around the EnumDesktopWindows call so the kernel sees the
-                # call as coming from the session-1 admin user, not from
-                # SYSTEM session 0.
-                consent_hwnd = 0
-                wl_hdesk = _open_desktop_by_name("Winlogon", _DESKTOP_ALL_ACCESS)
-                impersonate_token = _get_elevated_user_token_for_impersonation()
-                try:
-                    if wl_hdesk:
-                        for _ in range(20):  # ~5s at 0.25s intervals
-                            consent_hwnd = _find_consent_hwnd_on(
-                                wl_hdesk, impersonate_token=impersonate_token,
-                            )
-                            if consent_hwnd:
-                                break
-                            time.sleep(0.25)
-                finally:
-                    if wl_hdesk:
-                        try: _user32.CloseDesktop(wl_hdesk)
-                        except Exception: pass
-                    if impersonate_token:
-                        try:
-                            ctypes.windll.kernel32.CloseHandle(impersonate_token)
-                        except Exception:
-                            pass
-                if not consent_hwnd:
-                    logger.warning(
-                        "wait_for_uac_prompt: Winlogon active but consent.exe "
-                        "didn't show a top-level window in 5s -- worker will "
-                        "fall back to desktop-root walk (likely wrong desktop)"
-                    )
+                # Winlogon's DACL blocks user-session worker from
+                # OpenDesktop() even with TokenUIAccess=1, and cross-session
+                # isolation blocks session-0 broker from enumerating its
+                # windows. Workaround: temporarily add an ACE granting the
+                # active console user DESKTOP_ALL_ACCESS, then spawn the
+                # worker (which can now OpenDesktop+SetThreadDesktop+walk
+                # consent.exe), then restore the original DACL.
+                #
+                # Loosening Winlogon's DACL is a real security regression
+                # for the window of time it's open -- we narrow that window
+                # by doing the modify/restore around just the spawn calls,
+                # and only when WaitForUACPrompt is actually awaiting a
+                # dialog (i.e. the user is *expecting* this).
+                dacl_state = _grant_winlogon_access_to_console_user()
 
                 tree: list[dict] = []
                 publisher = None
-                for attempt in range(8):
-                    try:
-                        tree = _spawn_in_user_session("tree", timeout=20.0) or []
-                    except Exception as exc:
-                        logger.warning("user-session tree spawn failed: %s", exc)
-                        tree = []
-                    try:
-                        publisher = _spawn_in_user_session("publisher", timeout=15.0)
-                    except Exception as exc:
-                        logger.warning("user-session publisher spawn failed: %s", exc)
-                        publisher = None
-                    # Only accept the tree if either (a) we found consent.exe
-                    # and the worker used ElementFromHandle on it, or (b) we
-                    # gave up trying and the desktop-root walk returned
-                    # something. Without this check, attempt 0 happily
-                    # accepts the worker's Default-desktop fallback.
-                    if tree and consent_hwnd:
-                        logger.info(
-                            "wait_for_uac_prompt: tree captured after %d retries (%d top windows, hwnd=0x%x)",
-                            attempt, len(tree), consent_hwnd,
-                        )
-                        break
-                    if tree and attempt >= 4:
-                        # consent.exe never appeared; accept whatever the
-                        # worker returned so the caller at least sees fired=True.
+                try:
+                    for attempt in range(8):
+                        try:
+                            tree = _spawn_in_user_session("tree", timeout=20.0) or []
+                        except Exception as exc:
+                            logger.warning("user-session tree spawn failed: %s", exc)
+                            tree = []
+                        try:
+                            publisher = _spawn_in_user_session("publisher", timeout=15.0)
+                        except Exception as exc:
+                            logger.warning("user-session publisher spawn failed: %s", exc)
+                            publisher = None
+                        if tree:
+                            logger.info(
+                                "wait_for_uac_prompt: tree captured after %d retries (%d top windows)",
+                                attempt, len(tree),
+                            )
+                            break
+                        time.sleep(0.3)
+                    else:
                         logger.warning(
-                            "wait_for_uac_prompt: returning desktop-root tree "
-                            "after %d retries (%d top windows) -- no consent.exe HWND found",
-                            attempt, len(tree),
+                            "wait_for_uac_prompt: Winlogon active but user-session UIA tree stayed empty after 8 retries"
                         )
-                        break
-                    time.sleep(0.3)
-                else:
-                    logger.warning(
-                        "wait_for_uac_prompt: Winlogon active but user-session UIA tree stayed empty after 8 retries"
-                    )
+                finally:
+                    if dacl_state:
+                        _restore_winlogon_dacl(dacl_state)
                 return {
                     "desktop": "Winlogon",
                     "publisher": publisher,
