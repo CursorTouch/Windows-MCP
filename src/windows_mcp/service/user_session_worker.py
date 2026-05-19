@@ -35,6 +35,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tree", help="Walk the input desktop's UIA tree.")
     sub.add_parser("publisher", help="Extract the UAC consent publisher string.")
     sub.add_parser("windows", help="List top-level window titles on the input desktop.")
+    tu = sub.add_parser(
+        "tree_uiaccess",
+        help="Cross-desktop UAC tree fetch via UIAccess (no SetThreadDesktop).",
+    )
+    tu.add_argument(
+        "--wait-ms", type=int, default=3000,
+        help="Time to wait for cross-desktop UIA events before giving up.",
+    )
     iv = sub.add_parser("invoke", help="Invoke the named UIA element.")
     iv.add_argument("name")
     cl = sub.add_parser("click_at", help="Invoke the UIA element at (x, y).")
@@ -205,6 +213,8 @@ def main() -> int:
     try:
         if args.op == "tree":
             result = secure_desktop.uia_get_tree()
+        elif args.op == "tree_uiaccess":
+            result = secure_desktop.uia_get_tree_uiaccess(wait_ms=args.wait_ms)
         elif args.op == "publisher":
             result = secure_desktop.get_uac_publisher()
         elif args.op == "windows":

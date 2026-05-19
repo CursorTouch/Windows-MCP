@@ -577,6 +577,304 @@ def _serialize_element(element: Any, walker: Any, depth: int = 0) -> dict | None
         return None
 
 
+def _diagnose_uia_element(elem: Any, label: str) -> dict:
+    """Best-effort metadata dump for one UIA element. Used by the UIAccess
+    cross-desktop probes -- the worker's stderr is the only way to see what
+    UIA returns for elements that live on Winlogon, so we log enough to
+    distinguish consent.exe from the user's Default-desktop fallback.
+    """
+    info: dict[str, Any] = {"label": label}
+    for key, attr in (
+        ("name", "CurrentName"),
+        ("ctrl", "CurrentLocalizedControlType"),
+        ("cls", "CurrentClassName"),
+        ("pid", "CurrentProcessId"),
+    ):
+        try:
+            info[key] = getattr(elem, attr)
+        except Exception:
+            pass
+    try:
+        hwnd = elem.CurrentNativeWindowHandle
+        info["hwnd"] = f"0x{hwnd:x}" if hwnd else "0"
+    except Exception:
+        pass
+    logger.info("uiaccess-probe: %s", info)
+    return info
+
+
+def _walk_to_window_ancestor(elem: Any, walker: Any) -> Any:
+    """Walk up an element's ancestors until we hit a Window control (50032)
+    or run out of parents. Returns the original element if no Window ancestor
+    is reachable -- which is what we want to serialise either way.
+    """
+    cur = elem
+    for _ in range(30):
+        try:
+            parent = walker.GetParentElement(cur)
+        except Exception:
+            return cur
+        if parent is None:
+            return cur
+        try:
+            ct = parent.CurrentControlType
+        except Exception:
+            ct = 0
+        if ct == 50032:  # UIA_WindowControlTypeId
+            return parent
+        cur = parent
+    return cur
+
+
+def uia_get_tree_uiaccess(wait_ms: int = 3000) -> list[dict]:
+    """Cross-desktop UAC tree fetch using only UIAccess + UIA -- no DACL
+    munging, no SetThreadDesktop.
+
+    UIAccess processes receive UIA elements/events from any desktop (this is
+    the documented mechanism Narrator/Magnifier use to read UAC). We try, in
+    cost order:
+
+      A. ``IUIAutomation.GetFocusedElement`` -- UAC steals focus, so the
+         focused element belongs to consent.exe. Walk up to its top-level
+         window and serialise.
+      B. ``AddFocusChangedEventHandler`` -- subscribe with no element filter
+         and wait briefly. Any focus change inside consent.exe (e.g. the OS
+         re-focusing the default button) hands us a live element.
+      C. ``AddAutomationEventHandler(Window_WindowOpenedEventId)`` -- catches
+         new windows. Won't catch the already-open consent dialog, but does
+         catch transient dialogs that appear during the wait.
+      D. ``AddStructureChangedEventHandler`` -- catches any UIA tree mutation
+         in the dialog (e.g. focus-rect repaint inside consent.exe).
+
+    The function returns the first non-trivial serialised tree any strategy
+    yields, or an empty list if none of them recover the dialog (caller
+    should then fall back to the desktop-attach path).
+    """
+    import comtypes
+
+    def _accept_node(node: dict | None) -> bool:
+        # A "real" UAC dialog has children. The Default-desktop fallback
+        # paths return either None (no element) or a leaf with no children;
+        # we filter those out so the caller can decide to fall back.
+        if not node:
+            return False
+        return bool(node.get("children"))
+
+    def _work() -> list[dict]:
+        iuia, uia_core = _create_uia()
+        walker = iuia.RawViewWalker
+
+        # ---- Strategy A: GetFocusedElement ----
+        try:
+            focused = iuia.GetFocusedElement()
+        except Exception as exc:
+            focused = None
+            logger.info("uiaccess A: GetFocusedElement raised: %s", exc)
+        if focused is not None:
+            _diagnose_uia_element(focused, "A.focused")
+            top = _walk_to_window_ancestor(focused, walker)
+            _diagnose_uia_element(top, "A.top")
+            node = _serialize_element(top, walker)
+            if _accept_node(node):
+                logger.info(
+                    "uiaccess A captured tree: name=%r children=%d",
+                    node.get("name"), len(node.get("children") or []),
+                )
+                return [node]
+            logger.info("uiaccess A node empty or leaf -- trying events")
+        else:
+            logger.info("uiaccess A: GetFocusedElement returned None")
+
+        # ---- Strategies B/C/D: event-based ----
+        UIA = uia_core
+        cap_lock = threading.Lock()
+        captured: list[tuple[str, Any]] = []
+        cap_event = threading.Event()
+
+        class _FocusH(comtypes.COMObject):
+            _com_interfaces_ = [UIA.IUIAutomationFocusChangedEventHandler]
+
+            def HandleFocusChangedEvent(self, sender):
+                try:
+                    name = ""
+                    try:
+                        name = sender.CurrentName or ""
+                    except Exception:
+                        pass
+                    logger.info("uiaccess B focus-event: name=%r", name)
+                    with cap_lock:
+                        captured.append(("focus", sender))
+                    cap_event.set()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("focus handler raised: %s", exc)
+                return 0
+
+        class _AutoH(comtypes.COMObject):
+            _com_interfaces_ = [UIA.IUIAutomationEventHandler]
+
+            def HandleAutomationEvent(self, sender, event_id):
+                try:
+                    name = ""
+                    try:
+                        name = sender.CurrentName or ""
+                    except Exception:
+                        pass
+                    logger.info(
+                        "uiaccess C auto-event: id=%d name=%r", event_id, name,
+                    )
+                    with cap_lock:
+                        captured.append(("auto", sender))
+                    cap_event.set()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("auto handler raised: %s", exc)
+                return 0
+
+        class _StructH(comtypes.COMObject):
+            _com_interfaces_ = [UIA.IUIAutomationStructureChangedEventHandler]
+
+            def HandleStructureChangedEvent(self, sender, change_type, runtime_id):
+                try:
+                    name = ""
+                    try:
+                        name = sender.CurrentName or ""
+                    except Exception:
+                        pass
+                    logger.info(
+                        "uiaccess D struct-event: change=%d name=%r",
+                        change_type, name,
+                    )
+                    with cap_lock:
+                        captured.append(("struct", sender))
+                    cap_event.set()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("struct handler raised: %s", exc)
+                return 0
+
+        focus_h = _FocusH()
+        auto_h = _AutoH()
+        struct_h = _StructH()
+
+        root = iuia.GetRootElement()
+        focus_added = auto_added = struct_added = False
+        # 4 = TreeScope_Descendants
+        TREE_SCOPE_DESCENDANTS = 4
+        # 20016 = UIA_Window_WindowOpenedEventId
+        WIN_OPENED_EVENT_ID = 20016
+
+        try:
+            try:
+                iuia.AddFocusChangedEventHandler(None, focus_h)
+                focus_added = True
+                logger.info("uiaccess B: AddFocusChangedEventHandler registered")
+            except Exception as exc:
+                logger.warning("AddFocusChangedEventHandler failed: %s", exc)
+            try:
+                iuia.AddAutomationEventHandler(
+                    WIN_OPENED_EVENT_ID, root, TREE_SCOPE_DESCENDANTS, None, auto_h,
+                )
+                auto_added = True
+                logger.info(
+                    "uiaccess C: AddAutomationEventHandler(WindowOpened) registered"
+                )
+            except Exception as exc:
+                logger.warning("AddAutomationEventHandler failed: %s", exc)
+            try:
+                iuia.AddStructureChangedEventHandler(
+                    root, TREE_SCOPE_DESCENDANTS, None, struct_h,
+                )
+                struct_added = True
+                logger.info(
+                    "uiaccess D: AddStructureChangedEventHandler registered"
+                )
+            except Exception as exc:
+                logger.warning("AddStructureChangedEventHandler failed: %s", exc)
+
+            # UIA may deliver events from an MTA worker pool. Our COMObject
+            # handlers are STA-registered (via _create_uia's CoInitialize),
+            # so the cross-apartment proxy needs the registering thread to
+            # pump messages or the call queues forever. We poll cap_event in
+            # short slices and pump waiting COM messages between checks --
+            # if UIA happens to be in our apartment, this is harmless extra
+            # work; if it's cross-apartment, the pump is what makes the
+            # handler actually fire.
+            try:
+                import pythoncom
+                pump = pythoncom.PumpWaitingMessages
+            except Exception:
+                pump = None
+            deadline = time.monotonic() + (wait_ms / 1000.0)
+            fired = False
+            while time.monotonic() < deadline:
+                if pump is not None:
+                    try:
+                        pump()
+                    except Exception:
+                        pass
+                if cap_event.wait(timeout=0.05):
+                    fired = True
+                    # Keep pumping briefly so subsequent events also land --
+                    # callers benefit from a few captured candidates so the
+                    # walk_to_window step can pick the most promising one.
+                    for _ in range(10):
+                        if pump is not None:
+                            try:
+                                pump()
+                            except Exception:
+                                pass
+                        time.sleep(0.02)
+                    break
+            with cap_lock:
+                logger.info(
+                    "uiaccess events: fired=%s captured=%d",
+                    fired, len(captured),
+                )
+                candidates = list(reversed(captured))
+
+            for kind, elem in candidates:
+                _diagnose_uia_element(elem, f"event-{kind}")
+                top = _walk_to_window_ancestor(elem, walker)
+                _diagnose_uia_element(top, f"event-{kind}.top")
+                node = _serialize_element(top, walker)
+                if _accept_node(node):
+                    logger.info(
+                        "uiaccess strategy %s captured tree: name=%r children=%d",
+                        kind, node.get("name"), len(node.get("children") or []),
+                    )
+                    return [node]
+        finally:
+            try:
+                if focus_added:
+                    iuia.RemoveFocusChangedEventHandler(focus_h)
+            except Exception:
+                pass
+            try:
+                if auto_added:
+                    iuia.RemoveAutomationEventHandler(
+                        WIN_OPENED_EVENT_ID, root, auto_h,
+                    )
+            except Exception:
+                pass
+            try:
+                if struct_added:
+                    iuia.RemoveStructureChangedEventHandler(root, struct_h)
+            except Exception:
+                pass
+            try:
+                iuia.RemoveAllEventHandlers()
+            except Exception:
+                pass
+
+        logger.info("uia_get_tree_uiaccess: all strategies returned empty")
+        return []
+
+    try:
+        # Give the thread enough headroom for the event wait plus COM teardown.
+        return _run_on_fresh_thread(_work, timeout=(wait_ms / 1000.0) + 5.0) or []
+    except Exception as exc:
+        logger.error("uia_get_tree_uiaccess raised: %s", exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -1344,23 +1642,53 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
             seen[name] = seen.get(name, 0) + 1
             if name.lower() == "winlogon":
                 logger.info("wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values()))
-                # Winlogon's DACL blocks user-session worker from
-                # OpenDesktop() even with TokenUIAccess=1, and cross-session
-                # isolation blocks session-0 broker from enumerating its
-                # windows. Workaround: temporarily add an ACE granting the
-                # active console user DESKTOP_ALL_ACCESS, then spawn the
-                # worker (which can now OpenDesktop+SetThreadDesktop+walk
-                # consent.exe), then restore the original DACL.
+                # Two paths to recover the consent.exe tree:
                 #
-                # Loosening Winlogon's DACL is a real security regression
-                # for the window of time it's open -- we narrow that window
-                # by doing the modify/restore around just the spawn calls,
-                # and only when WaitForUACPrompt is actually awaiting a
-                # dialog (i.e. the user is *expecting* this).
-                dacl_state = _grant_winlogon_access_to_console_user()
-
+                #   1. UIAccess-only via UIA events / GetFocusedElement -- no
+                #      desktop attach, no DACL change. Cheap and the only
+                #      path that gets to 4/4 on Win11 without weakening
+                #      Winlogon's DACL. Documented behaviour: a UIAccess
+                #      process receives UIA elements cross-desktop, which is
+                #      how Narrator reads UAC.
+                #
+                #   2. DACL-loosening fallback -- temporarily ACE the console
+                #      user onto Winlogon's DACL, spawn the worker which can
+                #      now OpenDesktopW("Winlogon") + SetThreadDesktop + walk
+                #      consent.exe, then restore. Path of last resort; opens
+                #      a brief security regression and we only take it if (1)
+                #      fails.
                 tree: list[dict] = []
                 publisher = None
+                try:
+                    tree = _spawn_in_user_session(
+                        "tree_uiaccess", "--wait-ms=5000", timeout=15.0,
+                    ) or []
+                except Exception as exc:
+                    logger.warning(
+                        "wait_for_uac_prompt: tree_uiaccess raised: %s", exc,
+                    )
+                    tree = []
+                if tree:
+                    logger.info(
+                        "wait_for_uac_prompt: UIAccess strategy returned %d top windows -- skipping DACL loosen",
+                        len(tree),
+                    )
+                    try:
+                        publisher = _spawn_in_user_session("publisher", timeout=10.0)
+                    except Exception as exc:
+                        logger.warning("publisher spawn failed: %s", exc)
+                        publisher = None
+                    return {
+                        "desktop": "Winlogon",
+                        "publisher": publisher,
+                        "tree": tree,
+                    }
+
+                logger.info(
+                    "wait_for_uac_prompt: UIAccess strategy empty -- falling "
+                    "back to DACL-loosen + desktop-attach"
+                )
+                dacl_state = _grant_winlogon_access_to_console_user()
                 try:
                     for attempt in range(8):
                         try:
