@@ -126,3 +126,34 @@ If you're packaging windows-mcp for redistribution to many machines,
 sign the worker once with a commercial cert at CI time and ship the
 binary; users pass it via `--uia-worker <path>` and skip the self-sign
 flow.
+
+## Known limitation: Win11 Winlogon DACL
+
+On Windows 11 (verified against Win11 24H2 build) the worker still can't
+walk `consent.exe`'s UIA tree, even with everything above in place
+(uiAccess=true + Authenticode-signed + Program Files +
+`SetTokenInformation(TokenUIAccess=1)` on the spawn token + correctly
+declared ctypes argtypes on every Win32 API we call). The block is the
+Winlogon desktop DACL itself: `OpenDesktopW("Winlogon", ...)` returns
+`ERROR_ACCESS_DENIED` (gle=5) from the user-session worker, and the
+session-0 SYSTEM broker can't enumerate the session-1 Winlogon either
+(`EnumDesktopWindows` returns FALSE with `windows_seen=0` regardless of
+impersonation; Win11's kernel refuses cross-session window enumeration
+even from SYSTEM). The DACL the broker *can* modify is its own session-0
+Winlogon, which is a different desktop object than the one the worker
+needs.
+
+End-to-end effect: `WaitForUACPrompt` still detects UAC, returns
+`fired=True` with the correct desktop name and policy, but the `tree`
+field returns the user's Default-desktop windows (Taskbar, Start menu)
+because the worker can't attach to Winlogon and so its `GetRootElement`
+sees Default. `Click(loc=...)` against a UAC dialog therefore still
+needs user input.
+
+Microsoft's first-party accessibility tools (Magnifier, Narrator) work
+around this by running as a service in session 1 with
+`SeCreateGlobalPrivilege`. A future fix would either (a) ship a
+session-1 SYSTEM helper that modifies session-1 Winlogon's DACL before
+the worker spawn, or (b) use the Windows 11 24H2+ "Access to
+notifications" RPC interface that consent.exe exposes. Both are
+non-trivial.
