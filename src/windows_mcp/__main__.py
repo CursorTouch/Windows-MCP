@@ -1016,35 +1016,53 @@ def _try_remove_self_signed_cert() -> None:
 
 
 _UAC_POLICY_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-_UAC_POLICY_VALUE = "PromptOnSecureDesktop"
 
 
-def _set_prompt_on_secure_desktop(enabled: bool) -> int:
-    """Toggle the ``PromptOnSecureDesktop`` UAC policy (HKLM, requires admin).
+def _set_uac_secure_desktop_off(off: bool) -> tuple[int, int]:
+    """Toggle the UAC secure-desktop policy values (HKLM, requires admin).
 
-    Disabling it (enabled=False) makes UAC render on the user's Default desktop
-    instead of switching to Winlogon. The iter-1-4 investigation found that
-    Win11 blocks every cross-desktop route into consent.exe (UIA queries,
-    EnumDesktopWindows, even BitBlt), so the policy toggle is the only
-    documented mechanism that exposes the dialog to the agent.
+    Win 11 routes UAC to the Secure Desktop based on TWO registry values, and
+    they can disagree -- iter-6 saw ``PromptOnSecureDesktop=0`` but UAC still
+    went to Winlogon because ``ConsentPromptBehaviorAdmin=2`` ("Prompt for
+    consent **on the secure desktop**") forced it.
 
-    Restored to 1 on ``service secure-desktop uninstall``.
+    The CPB values whose Microsoft-documented description references the
+    secure desktop are 1 ("Prompt for credentials on the secure desktop") and
+    2 ("Prompt for consent on the secure desktop"). Values 3, 4, and 5
+    describe the same prompts without the secure desktop. Win 11 ships with
+    5 as the default, but the dockur image we test against ships with 2.
 
-    Returns the integer value read back from the registry immediately after
-    the write -- iter 5 test came back with ``desktop: Winlogon`` even after
-    this function returned successfully, so callers verify the readback.
+    To actually keep UAC off the secure desktop we have to set BOTH:
+      PromptOnSecureDesktop = 0
+      ConsentPromptBehaviorAdmin = 5  (== Microsoft default for Win 11)
+
+    Restored on ``service secure-desktop uninstall``: both go back to 1, 5.
+
+    Returns the (PromptOnSecureDesktop, ConsentPromptBehaviorAdmin) readback
+    tuple so the caller can verify the writes stuck. The iter-5 surprise
+    where the write succeeded but the live value differed was the reason for
+    threading the readback through here.
     """
     import winreg
 
-    target = 1 if enabled else 0
+    posd_target = 0 if off else 1
+    # Microsoft's documented "default" CPB for both off and on is 5. Win 11
+    # always means 5; pre-Win 10 defaulted to 2. We restore to 5 because (a)
+    # that's the modern default and (b) restoring to 2 while leaving POSD=1
+    # would just reproduce the secure-desktop-pinning behaviour we observed
+    # in iter 6.
+    cpba_target = 5
+
     with winreg.OpenKey(
         winreg.HKEY_LOCAL_MACHINE,
         _UAC_POLICY_KEY,
         access=winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
     ) as key:
-        winreg.SetValueEx(key, _UAC_POLICY_VALUE, 0, winreg.REG_DWORD, target)
-        readback, _ = winreg.QueryValueEx(key, _UAC_POLICY_VALUE)
-    return int(readback)
+        winreg.SetValueEx(key, "PromptOnSecureDesktop", 0, winreg.REG_DWORD, posd_target)
+        winreg.SetValueEx(key, "ConsentPromptBehaviorAdmin", 0, winreg.REG_DWORD, cpba_target)
+        posd, _ = winreg.QueryValueEx(key, "PromptOnSecureDesktop")
+        cpba, _ = winreg.QueryValueEx(key, "ConsentPromptBehaviorAdmin")
+    return int(posd), int(cpba)
 
 
 def _verify_install_paths_are_admin_only() -> None:
@@ -1359,19 +1377,20 @@ def service_secure_desktop_install(
     # toggle is the only documented Microsoft mechanism that makes this
     # scenario tractable. Restored on uninstall.
     try:
-        readback = _set_prompt_on_secure_desktop(False)
-        if readback == 0:
+        posd, cpba = _set_uac_secure_desktop_off(True)
+        if posd == 0 and cpba == 5:
             click.echo(
-                "UAC policy         : PromptOnSecureDesktop=0 (UAC will render on Default desktop)."
+                "UAC policy         : PromptOnSecureDesktop=0, ConsentPromptBehaviorAdmin=5 "
+                "(UAC will render on Default desktop)."
             )
         else:
             click.echo(
-                f"Warning: wrote PromptOnSecureDesktop=0 but readback returned {readback}. "
-                "Group Policy or another layer is overriding the registry value -- "
-                "check `gpresult /h` for 'Switch to the secure desktop' policy."
+                f"Warning: UAC policy writes did not stick: readback PromptOnSecureDesktop={posd}, "
+                f"ConsentPromptBehaviorAdmin={cpba}. Group Policy or another layer is "
+                "overriding the registry values."
             )
     except Exception as exc:
-        click.echo(f"Warning: could not disable PromptOnSecureDesktop: {exc}")
+        click.echo(f"Warning: could not disable secure-desktop UAC policy: {exc}")
         click.echo(
             "         UAC will continue to render on the Secure Desktop, where the "
             "dialog is unreachable from user-mode UIA on Win11. WaitForUACPrompt "
@@ -1414,10 +1433,13 @@ def service_secure_desktop_uninstall():
         click.echo(f"Warning: could not clear UAC policy registry key: {exc}")
 
     try:
-        _set_prompt_on_secure_desktop(True)
-        click.echo("UAC policy         : PromptOnSecureDesktop restored to 1 (Secure Desktop on).")
+        _set_uac_secure_desktop_off(False)
+        click.echo(
+            "UAC policy         : PromptOnSecureDesktop=1, ConsentPromptBehaviorAdmin=5 "
+            "(Secure Desktop restored)."
+        )
     except Exception as exc:
-        click.echo(f"Warning: could not restore PromptOnSecureDesktop: {exc}")
+        click.echo(f"Warning: could not restore UAC secure-desktop policy: {exc}")
 
     # Best-effort: remove the installed UIA worker binary. The registry
     # entry is gone with the parent key above, so even if the .exe lingers

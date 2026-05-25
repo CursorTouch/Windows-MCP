@@ -166,8 +166,18 @@ trust relationship between Winlogon and signed-by-Microsoft binaries.
 ## The fix we shipped
 
 `windows-mcp service secure-desktop install` now writes
-`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
-\PromptOnSecureDesktop = 0` (DWORD).
+`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`:
+
+* `PromptOnSecureDesktop = 0` (DWORD)
+* `ConsentPromptBehaviorAdmin = 5` (DWORD)
+
+Both are required. Iter 6 set only the first one, confirmed the readback
+returned 0, and then watched UAC fire on Winlogon anyway because the Win 11
+test environment ships with `ConsentPromptBehaviorAdmin = 2`
+("Prompt for consent **on the secure desktop**") -- a value whose
+documented description explicitly pins UAC to the secure desktop regardless
+of `PromptOnSecureDesktop`. Values 3, 4, and 5 describe the same prompts
+without the secure desktop; 5 is the Win 11 default.
 
 With that policy:
 
