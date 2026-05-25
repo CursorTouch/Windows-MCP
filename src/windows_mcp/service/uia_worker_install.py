@@ -235,12 +235,13 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
         "fuzzywuzzy",
         "--exclude-module",
         "dxcam",
-        # PIL.ImageGrab is required by screenshot_uac_synthetic_tree (the
-        # final cross-desktop UAC fallback on Win11 -- nothing else
-        # reaches consent.exe). Keep both forms in case the wheel uses
-        # either capitalisation.
-        # "--exclude-module", "PIL",
-        # "--exclude-module", "pillow",
+        # PIL stays excluded -- the screenshot fallback runs in the BROKER
+        # (which gets PIL from the venv), not in this frozen worker, so
+        # bundling it just bloats build time and exe size.
+        "--exclude-module",
+        "PIL",
+        "--exclude-module",
+        "pillow",
         "--exclude-module",
         "click",
         "--exclude-module",

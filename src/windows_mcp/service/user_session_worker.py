@@ -45,11 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3000,
         help="Time to wait for cross-desktop UIA events before giving up.",
     )
-    sub.add_parser(
-        "tree_uac_screenshot",
-        help="Capture the secure desktop and emit a synthetic UAC tree by "
-        "locating the focused button via Microsoft-Blue pixels.",
-    )
+    # Note: the screenshot-based UAC fallback runs in the BROKER (which has
+    # SetThreadDesktop access to Winlogon) -- no worker op is needed.
     iv = sub.add_parser("invoke", help="Invoke the named UIA element.")
     iv.add_argument("name")
     cl = sub.add_parser("click_at", help="Invoke the UIA element at (x, y).")
@@ -244,8 +241,6 @@ def main() -> int:
             result = secure_desktop.uia_get_tree()
         elif args.op == "tree_uiaccess":
             result = secure_desktop.uia_get_tree_uiaccess(wait_ms=args.wait_ms)
-        elif args.op == "tree_uac_screenshot":
-            result = secure_desktop.screenshot_uac_synthetic_tree()
         elif args.op == "publisher":
             result = secure_desktop.get_uac_publisher()
         elif args.op == "windows":

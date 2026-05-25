@@ -1288,15 +1288,21 @@ def screenshot_uac_synthetic_tree() -> list[dict]:
     because the secure desktop is the currently-active input desktop.
     """
     try:
-        from PIL import ImageGrab
+        from PIL import Image
     except ImportError as exc:
         logger.warning("screenshot_uac_synthetic_tree: PIL unavailable: %s", exc)
         return []
 
+    # Use the broker's capture_screenshot() rather than ImageGrab directly.
+    # capture_screenshot wraps SetThreadDesktop(Winlogon) -- a plain
+    # ImageGrab.grab() from the user-session worker captures Default's DC
+    # and returns "screen grab failed" while UAC is up.
     try:
-        img = ImageGrab.grab(all_screens=False)
+        png_bytes = capture_screenshot()
+        img = Image.open(io.BytesIO(png_bytes))
+        img.load()
     except Exception as exc:
-        logger.warning("ImageGrab.grab failed: %s", exc)
+        logger.warning("screenshot_uac: capture_screenshot raised: %s", exc)
         return []
 
     w, h = img.size
@@ -1304,10 +1310,7 @@ def screenshot_uac_synthetic_tree() -> list[dict]:
 
     # Save the capture for offline diagnostics.
     try:
-        share = (
-            r"\\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\.work"
-            r"\uac-shot.png"
-        )
+        share = r"\\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\.work\uac-shot.png"
         img.save(share)
         logger.info("screenshot_uac: dumped to %s", share)
     except Exception as exc:
@@ -2272,22 +2275,17 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
 
                 # Iteration 3 fallback: every UIA/Win32 cross-desktop query
                 # we know of returns nothing from a UIAccess worker on Win11.
-                # Capture the rendered secure desktop and locate the dialog
-                # buttons by colour.
+                # Capture the rendered secure desktop in the BROKER (its
+                # SetThreadDesktop attaches to Winlogon; the worker can't)
+                # and locate the dialog buttons by colour.
                 logger.info(
                     "wait_for_uac_prompt: UIAccess strategy empty -- trying screenshot fallback"
                 )
                 try:
-                    tree = (
-                        _spawn_in_user_session(
-                            "tree_uac_screenshot",
-                            timeout=15.0,
-                        )
-                        or []
-                    )
+                    tree = screenshot_uac_synthetic_tree() or []
                 except Exception as exc:
                     logger.warning(
-                        "wait_for_uac_prompt: tree_uac_screenshot raised: %s",
+                        "wait_for_uac_prompt: screenshot_uac_synthetic_tree raised: %s",
                         exc,
                     )
                     tree = []
