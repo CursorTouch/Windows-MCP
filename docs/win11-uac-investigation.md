@@ -187,13 +187,33 @@ on this build short of disabling UAC entirely (`EnableLUA = 0`), which
 breaks modern UWP/Store apps and is therefore not viable as a default
 install behaviour.
 
+## Iter 8: trying CPB=4 instead of CPB=5
+
+Hypothesis from iter 7's failure: if Win 11 25H2's dispatch layer is
+checking the CPB value as an enum (rather than honouring
+`PromptOnSecureDesktop`), the CPB value description matters. Of the
+three off-secure-desktop CPB values (3, 4, 5), value 4 ("Prompt for
+consent" with no Windows-binary carve-out wording) has the strictest
+description against ever touching the secure desktop. Iter 7 used 5
+("Prompt for consent for non-Windows binaries", the Microsoft default),
+which is what the dockur image upgraded itself to and the OS still
+routed to Winlogon. Iter 8 swaps the install target to CPB=4 to see
+whether the kernel-side enforcement changes. The restore-on-uninstall
+target stays at CPB=5 (the modern Win 11 default), so a clean
+install/uninstall cycle still leaves the machine on Microsoft defaults.
+
+This may or may not survive the OS check. If it does not, the
+Microsoft-documented surface is exhausted and the only remaining
+escape hatches (`EnableLUA=0`, a fully signed accessibility helper,
+or a virtual-input driver) are too costly to ship as defaults.
+
 ## The fix we shipped
 
 `windows-mcp service secure-desktop install` now writes
 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`:
 
 * `PromptOnSecureDesktop = 0` (DWORD)
-* `ConsentPromptBehaviorAdmin = 5` (DWORD)
+* `ConsentPromptBehaviorAdmin = 4` (DWORD) -- iter-8 candidate
 
 Both are required. Iter 6 set only the first one, confirmed the readback
 returned 0, and then watched UAC fire on Winlogon anyway because the Win 11

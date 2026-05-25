@@ -1032,11 +1032,22 @@ def _set_uac_secure_desktop_off(off: bool) -> tuple[int, int]:
     describe the same prompts without the secure desktop. Win 11 ships with
     5 as the default, but the dockur image we test against ships with 2.
 
+    Iter 7 shipped CPB=5 (Microsoft default) and observed Win 11 25H2 route
+    UAC to Winlogon anyway. Iter 8 tries CPB=4 ("Prompt for consent for
+    non-Windows binaries") whose documented description is the strictest
+    of the off-secure-desktop values -- no "secure desktop" wording at all,
+    and the policy explicitly names non-Windows binaries (consent.exe is
+    invoked *for* a non-Windows binary, our installer). If the dispatch
+    layer is checking the CPB value as an enum rather than honoring
+    PromptOnSecureDesktop, CPB=4 is the next-most-likely candidate to
+    actually keep UAC on Default.
+
     To actually keep UAC off the secure desktop we have to set BOTH:
       PromptOnSecureDesktop = 0
-      ConsentPromptBehaviorAdmin = 5  (== Microsoft default for Win 11)
+      ConsentPromptBehaviorAdmin = 4  (iter-8 candidate)
 
-    Restored on ``service secure-desktop uninstall``: both go back to 1, 5.
+    Restored on ``service secure-desktop uninstall``: both go back to 1, 5
+    (Microsoft default).
 
     Returns the (PromptOnSecureDesktop, ConsentPromptBehaviorAdmin) readback
     tuple so the caller can verify the writes stuck. The iter-5 surprise
@@ -1046,12 +1057,13 @@ def _set_uac_secure_desktop_off(off: bool) -> tuple[int, int]:
     import winreg
 
     posd_target = 0 if off else 1
-    # Microsoft's documented "default" CPB for both off and on is 5. Win 11
-    # always means 5; pre-Win 10 defaulted to 2. We restore to 5 because (a)
-    # that's the modern default and (b) restoring to 2 while leaving POSD=1
-    # would just reproduce the secure-desktop-pinning behaviour we observed
-    # in iter 6.
-    cpba_target = 5
+    # When disabling secure-desktop UAC, iter-8 targets CPB=4 (strictest
+    # off-secure-desktop value) instead of iter-7's CPB=5. When restoring,
+    # go back to 5 -- the modern Win 11 default. We deliberately do not
+    # restore to 2 (the dockur image's shipping value) because POSD=1 +
+    # CPB=2 is the secure-desktop-pinning combination we want to leave
+    # behind.
+    cpba_target = 4 if off else 5
 
     with winreg.OpenKey(
         winreg.HKEY_LOCAL_MACHINE,
@@ -1378,9 +1390,9 @@ def service_secure_desktop_install(
     # scenario tractable. Restored on uninstall.
     try:
         posd, cpba = _set_uac_secure_desktop_off(True)
-        if posd == 0 and cpba == 5:
+        if posd == 0 and cpba == 4:
             click.echo(
-                "UAC policy         : PromptOnSecureDesktop=0, ConsentPromptBehaviorAdmin=5 "
+                "UAC policy         : PromptOnSecureDesktop=0, ConsentPromptBehaviorAdmin=4 "
                 "(UAC will render on Default desktop)."
             )
         else:
