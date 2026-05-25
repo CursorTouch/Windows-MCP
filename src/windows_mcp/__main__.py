@@ -67,7 +67,9 @@ def _http_middleware(
     if ip_allowlist:
         middleware.append(Middleware(IPAllowlistMiddleware, allowlist=ip_allowlist))
     if auth_key:
-        middleware.append(Middleware(AuthKeyMiddleware, auth_key=auth_key, oauth_validator=oauth_validator))
+        middleware.append(
+            Middleware(AuthKeyMiddleware, auth_key=auth_key, oauth_validator=oauth_validator)
+        )
     elif oauth_validator:
         middleware.append(Middleware(OAuthOnlyMiddleware, oauth_validator=oauth_validator))
     return middleware
@@ -169,8 +171,6 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-
-
 class Transport(Enum):
     STDIO = "stdio"
     SSE = "sse"
@@ -180,7 +180,9 @@ class Transport(Enum):
         return self.value
 
 
-def _apply_tool_filter(mcp, explicit_tools: list[str] | None, exclude_tools: list[str] | None) -> None:
+def _apply_tool_filter(
+    mcp, explicit_tools: list[str] | None, exclude_tools: list[str] | None
+) -> None:
     """Remove disabled tools from the MCP registry."""
     tool_mgr = getattr(mcp, "_tool_manager", None)
     tools_dict = getattr(tool_mgr, "_tools", None)
@@ -192,14 +194,27 @@ def _apply_tool_filter(mcp, explicit_tools: list[str] | None, exclude_tools: lis
             for k, v in components.items()
             if isinstance(k, str) and k.startswith("tool:")
         }
+
         def _remove(name):
-            keys = [k for k, v in components.items() if isinstance(k, str) and k.startswith("tool:") and (getattr(components[k], "name", None) == name or k.split(":", 1)[1].split("@", 1)[0] == name)]
+            keys = [
+                k
+                for k, v in components.items()
+                if isinstance(k, str)
+                and k.startswith("tool:")
+                and (
+                    getattr(components[k], "name", None) == name
+                    or k.split(":", 1)[1].split("@", 1)[0] == name
+                )
+            ]
             for k in keys:
                 components.pop(k, None)
+
         registered = set(tools_dict.keys())
     else:
+
         def _remove(name):
             tools_dict.pop(name, None)
+
         registered = set(tools_dict.keys())
 
     if explicit_tools:
@@ -366,7 +381,23 @@ def main():
     type=str,
     show_default=False,
 )
-def serve(ctx, transport, host, port, debug, config, auth_key, allow_insecure_remote, ip_allowlist, tools, exclude_tools, ssl_certfile, ssl_keyfile, oauth_client_id, oauth_client_secret):
+def serve(
+    ctx,
+    transport,
+    host,
+    port,
+    debug,
+    config,
+    auth_key,
+    allow_insecure_remote,
+    ip_allowlist,
+    tools,
+    exclude_tools,
+    ssl_certfile,
+    ssl_keyfile,
+    oauth_client_id,
+    oauth_client_secret,
+):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if transport == Transport.STDIO.value:
         os.environ.setdefault("NO_COLOR", "1")
@@ -388,24 +419,42 @@ def serve(ctx, transport, host, port, debug, config, auth_key, allow_insecure_re
     port = int(_choose_value(ctx, "port", port, cfg.server.port, 8000))
     auth_key = _choose_value(ctx, "auth_key", auth_key, cfg.server.auth_key, None)
     allow_insecure_remote = bool(
-        _choose_value(ctx, "allow_insecure_remote", allow_insecure_remote, cfg.server.allow_insecure_remote, False)
+        _choose_value(
+            ctx,
+            "allow_insecure_remote",
+            allow_insecure_remote,
+            cfg.server.allow_insecure_remote,
+            False,
+        )
     )
     ssl_certfile = _choose_value(ctx, "ssl_certfile", ssl_certfile, cfg.server.ssl_certfile, None)
     ssl_keyfile = _choose_value(ctx, "ssl_keyfile", ssl_keyfile, cfg.server.ssl_keyfile, None)
-    oauth_client_id = _choose_value(ctx, "oauth_client_id", oauth_client_id, cfg.security.oauth_client_id, None)
+    oauth_client_id = _choose_value(
+        ctx, "oauth_client_id", oauth_client_id, cfg.security.oauth_client_id, None
+    )
     oauth_client_secret = _choose_value(
         ctx, "oauth_client_secret", oauth_client_secret, cfg.security.oauth_client_secret, None
     )
 
     cli_tools = [t.strip() for t in tools.split(",") if t.strip()] if tools else []
-    cli_exclude = [t.strip() for t in exclude_tools.split(",") if t.strip()] if _param_explicit(ctx, "exclude_tools") and exclude_tools else list(cfg.tools.exclude)
-    cli_allowlist = [e.strip() for e in ip_allowlist.split(",")] if ip_allowlist and _param_explicit(ctx, "ip_allowlist") else cfg.security.ip_allowlist
+    cli_exclude = (
+        [t.strip() for t in exclude_tools.split(",") if t.strip()]
+        if _param_explicit(ctx, "exclude_tools") and exclude_tools
+        else list(cfg.tools.exclude)
+    )
+    cli_allowlist = (
+        [e.strip() for e in ip_allowlist.split(",")]
+        if ip_allowlist and _param_explicit(ctx, "ip_allowlist")
+        else cfg.security.ip_allowlist
+    )
 
     if bool(ssl_certfile) != bool(ssl_keyfile):
         raise click.ClickException("--ssl-certfile and --ssl-keyfile must be provided together.")
 
     if bool(oauth_client_id) != bool(oauth_client_secret):
-        raise click.ClickException("OAuth requires both --oauth-client-id and --oauth-client-secret.")
+        raise click.ClickException(
+            "OAuth requires both --oauth-client-id and --oauth-client-secret."
+        )
 
     parsed_allowlist = None
     if cli_allowlist:
@@ -498,11 +547,14 @@ def _gen_tls(host: str, cert_path, key_path) -> None:
         result = subprocess.run(
             [
                 "mkcert",
-                "-cert-file", str(cert_path),
-                "-key-file", str(key_path),
+                "-cert-file",
+                str(cert_path),
+                "-key-file",
+                str(key_path),
                 *sans,
             ],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             raise click.ClickException(f"mkcert failed:\n{result.stderr.strip()}")
@@ -512,18 +564,30 @@ def _gen_tls(host: str, cert_path, key_path) -> None:
         click.echo("  Tip: winget install FiloSottile.mkcert  for auto-trusted certs next time.")
         result = subprocess.run(
             [
-                "openssl", "req", "-x509", "-newkey", "rsa:4096",
-                "-keyout", str(key_path),
-                "-out", str(cert_path),
-                "-days", "365", "-nodes",
-                "-subj", f"/CN={host or 'windows-mcp'}",
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:4096",
+                "-keyout",
+                str(key_path),
+                "-out",
+                str(cert_path),
+                "-days",
+                "365",
+                "-nodes",
+                "-subj",
+                f"/CN={host or 'windows-mcp'}",
             ],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             raise click.ClickException(f"openssl failed:\n{result.stderr.strip()}")
         click.echo("  To make Windows trust this cert, run in an elevated PowerShell:")
-        click.echo(f'    Import-Certificate -FilePath "{cert_path}" -CertStoreLocation Cert:\\LocalMachine\\Root')
+        click.echo(
+            f'    Import-Certificate -FilePath "{cert_path}" -CertStoreLocation Cert:\\LocalMachine\\Root'
+        )
 
     click.echo(f"  cert -> {cert_path}")
     click.echo(f"  key  -> {key_path}")
@@ -553,11 +617,7 @@ def _build_start_script(program_args: list[str]) -> str:
     log_out = CONFIG_DIR / "server.log"
     log_err = CONFIG_DIR / "server.error.log"
     command = subprocess.list2cmdline(program_args)
-    return (
-        "@echo off\n"
-        "setlocal\n"
-        f"{command} 1>>\"{log_out}\" 2>>\"{log_err}\"\n"
-    )
+    return f'@echo off\nsetlocal\n{command} 1>>"{log_out}" 2>>"{log_err}"\n'
 
 
 def _schtasks(*args: str) -> subprocess.CompletedProcess:
@@ -604,11 +664,15 @@ def install(transport: str, host: str, port: int, force: bool) -> None:
         "/F",
     )
     if result.returncode != 0:
-        raise click.ClickException(f"schtasks /Create failed:\n{result.stderr.strip() or result.stdout.strip()}")
+        raise click.ClickException(
+            f"schtasks /Create failed:\n{result.stderr.strip() or result.stdout.strip()}"
+        )
 
     run_result = _schtasks("/Run", "/TN", _TASK_NAME)
     if run_result.returncode != 0:
-        raise click.ClickException(f"schtasks /Run failed:\n{run_result.stderr.strip() or run_result.stdout.strip()}")
+        raise click.ClickException(
+            f"schtasks /Run failed:\n{run_result.stderr.strip() or run_result.stdout.strip()}"
+        )
 
     click.echo("Scheduled task installed -- server is starting now.")
     click.echo(f"  Task      : {_TASK_NAME}")
@@ -758,8 +822,7 @@ def _require_win32():
         import win32serviceutil  # noqa: F401
     except ImportError:
         raise click.ClickException(
-            "pywin32 is required for service management.  "
-            "Install it with: pip install pywin32"
+            "pywin32 is required for service management.  Install it with: pip install pywin32"
         )
 
 
@@ -825,7 +888,7 @@ def _install_uia_worker(src_path: str) -> str:
     # binary is still functional, just less defensively ACLed.
     for cmd in (
         ["icacls", _UIA_WORKER_INSTALL_DIR, "/inheritance:r"],
-        ["icacls", _UIA_WORKER_INSTALL_DIR, "/grant", "*S-1-5-18:(OI)(CI)F"],   # SYSTEM
+        ["icacls", _UIA_WORKER_INSTALL_DIR, "/grant", "*S-1-5-18:(OI)(CI)F"],  # SYSTEM
         ["icacls", _UIA_WORKER_INSTALL_DIR, "/grant", "*S-1-5-32-544:(OI)(CI)F"],  # Administrators
     ):
         try:
@@ -909,8 +972,10 @@ def _try_remove_self_signed_cert() -> None:
     """Best-effort: remove our self-signed cert from LocalMachine cert stores
     on uninstall. Silent on failure -- the uninstall succeeds regardless."""
     import tempfile
+
     try:
         from windows_mcp.service.uia_worker_install import _CERT_SUBJECT
+
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".ps1", delete=False, encoding="utf-8"
         ) as tmp:
@@ -918,21 +983,61 @@ def _try_remove_self_signed_cert() -> None:
             script_path = tmp.name
         try:
             p = subprocess.run(
-                ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", script_path, "-Subject", _CERT_SUBJECT],
-                capture_output=True, text=True, check=False,
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    script_path,
+                    "-Subject",
+                    _CERT_SUBJECT,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
             )
         finally:
-            try: os.unlink(script_path)
-            except OSError: pass
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
         n = (p.stdout or "0").strip().splitlines()[-1] if p.stdout else "0"
         if n != "0":
             click.echo(f"Self-signed cert   : removed {n} entries from LocalMachine cert stores.")
     except Exception as exc:
-        click.echo(f"Note: could not clean up self-signed cert ({exc}). "
-                   "You can remove it manually with certlm.msc -> "
-                   "Personal/Trusted Root/Trusted Publishers -> "
-                   "CN=WindowsMCP-Local-UiaWorker.")
+        click.echo(
+            f"Note: could not clean up self-signed cert ({exc}). "
+            "You can remove it manually with certlm.msc -> "
+            "Personal/Trusted Root/Trusted Publishers -> "
+            "CN=WindowsMCP-Local-UiaWorker."
+        )
+
+
+_UAC_POLICY_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+_UAC_POLICY_VALUE = "PromptOnSecureDesktop"
+
+
+def _set_prompt_on_secure_desktop(enabled: bool) -> None:
+    """Toggle the ``PromptOnSecureDesktop`` UAC policy (HKLM, requires admin).
+
+    Disabling it (enabled=False) makes UAC render on the user's Default desktop
+    instead of switching to Winlogon. The iter-1-4 investigation found that
+    Win11 blocks every cross-desktop route into consent.exe (UIA queries,
+    EnumDesktopWindows, even BitBlt), so the policy toggle is the only
+    documented mechanism that exposes the dialog to the agent.
+
+    Restored to 1 on ``service secure-desktop uninstall``.
+    """
+    import winreg
+
+    with winreg.OpenKey(
+        winreg.HKEY_LOCAL_MACHINE,
+        _UAC_POLICY_KEY,
+        access=winreg.KEY_SET_VALUE,
+    ) as key:
+        winreg.SetValueEx(key, _UAC_POLICY_VALUE, 0, winreg.REG_DWORD, 1 if enabled else 0)
 
 
 def _verify_install_paths_are_admin_only() -> None:
@@ -962,9 +1067,7 @@ def _verify_install_paths_are_admin_only() -> None:
     raise click.ClickException(
         "Refusing to install the LocalSystem service: the binary path lives in a\n"
         "user-writable location.  Anyone who can write to that path will obtain\n"
-        "SYSTEM the next time the service starts.\n\n"
-        + "\n".join(unsafe)
-        + "\n\n"
+        "SYSTEM the next time the service starts.\n\n" + "\n".join(unsafe) + "\n\n"
         "Install Python system-wide (e.g. `winget install Python.Python.3.13`,\n"
         "which lands under %ProgramFiles%) and then `pip install windows-mcp`\n"
         "into that system Python.  Re-run this command.\n\n"
@@ -975,6 +1078,7 @@ def _verify_install_paths_are_admin_only() -> None:
 
 def _sc_state_name(state: int) -> str:
     import win32service
+
     return {
         win32service.SERVICE_STOPPED: "STOPPED",
         win32service.SERVICE_START_PENDING: "START_PENDING",
@@ -1157,11 +1261,11 @@ def service_secure_desktop_install(
             win32service.SERVICE_AUTO_START,
             win32service.SERVICE_ERROR_NORMAL,
             binary_path,
-            None,   # load order group
-            0,      # tag id
-            None,   # dependencies
-            None,   # service account -> LocalSystem
-            None,   # password
+            None,  # load order group
+            0,  # tag id
+            None,  # dependencies
+            None,  # service account -> LocalSystem
+            None,  # password
         )
         win32service.ChangeServiceConfig2(
             hs,
@@ -1210,13 +1314,16 @@ def service_secure_desktop_install(
             click.echo(f"UIA worker         : {installed} (pre-signed)")
         except Exception as exc:
             click.echo(f"Warning: failed to install UIA worker: {exc}")
-            click.echo("         Service will use the unsigned fallback; "
-                       "consent.exe tree walking will return empty.")
+            click.echo(
+                "         Service will use the unsigned fallback; "
+                "consent.exe tree walking will return empty."
+            )
     else:
         do_self_sign = _resolve_uia_worker_choice(self_sign_choice)
         if do_self_sign:
             try:
                 from windows_mcp.service import uia_worker_install
+
                 installed = uia_worker_install.build_sign_and_install(
                     progress=lambda msg: click.echo(f"  · {msg}")
                 )
@@ -1224,10 +1331,12 @@ def service_secure_desktop_install(
                 click.echo(f"UIA worker         : {installed} (self-signed, this machine only)")
             except Exception as exc:
                 click.echo(f"Warning: self-sign UIA worker flow failed: {exc}")
-                click.echo("         Service will use the detect-only fallback; "
-                           "WaitForUACPrompt will report fired=True but the dialog "
-                           "tree will be empty. Re-run install to try again, or "
-                           "pass --uia-worker <path> with a pre-signed binary.")
+                click.echo(
+                    "         Service will use the detect-only fallback; "
+                    "WaitForUACPrompt will report fired=True but the dialog "
+                    "tree will be empty. Re-run install to try again, or "
+                    "pass --uia-worker <path> with a pre-signed binary."
+                )
         else:
             click.echo(
                 "UIA worker         : skipped -- service will run in detect-only "
@@ -1236,9 +1345,30 @@ def service_secure_desktop_install(
                 "--self-sign-uia-worker) to enable."
             )
 
+    # Disable PromptOnSecureDesktop so UAC renders on the user's Default
+    # desktop. The iter-1-4 investigation in docs/win11-uac-investigation.md
+    # confirms cross-desktop access to consent.exe is unreachable on Win11
+    # (UIA, Win32 enumeration, AND BitBlt are all blocked); the policy
+    # toggle is the only documented Microsoft mechanism that makes this
+    # scenario tractable. Restored on uninstall.
+    try:
+        _set_prompt_on_secure_desktop(False)
+        click.echo(
+            "UAC policy         : PromptOnSecureDesktop=0 (UAC will render on Default desktop)."
+        )
+    except Exception as exc:
+        click.echo(f"Warning: could not disable PromptOnSecureDesktop: {exc}")
+        click.echo(
+            "         UAC will continue to render on the Secure Desktop, where the "
+            "dialog is unreachable from user-mode UIA on Win11. WaitForUACPrompt "
+            "will return an empty tree."
+        )
+
     click.echo("\nThe host service is now running as NT AUTHORITY\\SYSTEM.")
     click.echo("It will restart automatically at each boot.")
-    click.echo("Run `windows-mcp service secure-desktop set-policy <policy>` to change without reinstalling.")
+    click.echo(
+        "Run `windows-mcp service secure-desktop set-policy <policy>` to change without reinstalling."
+    )
     click.echo("Run `windows-mcp service secure-desktop uninstall` to remove it.")
 
 
@@ -1263,10 +1393,17 @@ def service_secure_desktop_uninstall():
 
     try:
         from windows_mcp.service import policy as policy_mod
+
         policy_mod.delete_from_registry()
         click.echo("UAC consent policy : cleared from registry.")
     except Exception as exc:
         click.echo(f"Warning: could not clear UAC policy registry key: {exc}")
+
+    try:
+        _set_prompt_on_secure_desktop(True)
+        click.echo("UAC policy         : PromptOnSecureDesktop restored to 1 (Secure Desktop on).")
+    except Exception as exc:
+        click.echo(f"Warning: could not restore PromptOnSecureDesktop: {exc}")
 
     # Best-effort: remove the installed UIA worker binary. The registry
     # entry is gone with the parent key above, so even if the .exe lingers
@@ -1302,9 +1439,7 @@ def service_secure_desktop_set_policy(policy_name: str, allow_publisher: tuple[s
     allowlist: list[str] = []
     for raw in allow_publisher:
         allowlist.extend(s.strip() for s in raw.split(",") if s.strip())
-    new_policy = policy_mod.SecureDesktopPolicy(
-        policy=policy_name, publishers_allowlist=allowlist
-    )
+    new_policy = policy_mod.SecureDesktopPolicy(policy=policy_name, publishers_allowlist=allowlist)
     try:
         policy_mod.write_to_registry(new_policy)
     except PermissionError as exc:
@@ -1323,6 +1458,7 @@ def service_secure_desktop_start():
     """Start the Secure Desktop host service."""
     _require_win32()
     import win32serviceutil
+
     try:
         win32serviceutil.StartService(_SERVICE_NAME)
         click.echo(f"Service '{_SERVICE_NAME}' started.")
@@ -1335,6 +1471,7 @@ def service_secure_desktop_stop():
     """Stop the Secure Desktop host service."""
     _require_win32()
     import win32serviceutil
+
     try:
         win32serviceutil.StopService(_SERVICE_NAME)
         click.echo(f"Service '{_SERVICE_NAME}' stopped.")
@@ -1360,6 +1497,7 @@ def service_secure_desktop_status():
         if status[1] == win32service.SERVICE_RUNNING:
             try:
                 from windows_mcp.service.pipe import get_client
+
                 client = get_client()
                 client.invalidate_cache()
                 if client.is_available():

@@ -2221,6 +2221,41 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                 finally:
                     _user32.CloseDesktop(hdesk)
             seen[name] = seen.get(name, 0) + 1
+
+            # Primary path: PromptOnSecureDesktop=0 (set by `service
+            # secure-desktop install`) makes UAC render on the user's
+            # Default desktop. consent.exe is then a regular top-level
+            # window reachable via plain UIA from a same-session worker --
+            # no UIAccess, no DACL loosening, no screenshot trickery.
+            # Detect by polling for consent.exe in the process list; the
+            # input-desktop name stays "Default" so we can't use it as the
+            # trigger here.
+            if name.lower() != "winlogon":
+                consent_pid = _find_consent_pid()
+                if consent_pid:
+                    logger.info(
+                        "wait_for_uac_prompt: consent.exe pid=%d on desktop=%r -- using Default-desktop UIA path",
+                        consent_pid,
+                        name,
+                    )
+                    tree: list[dict] = []
+                    publisher = None
+                    try:
+                        tree = _spawn_in_user_session("tree", timeout=10.0) or []
+                    except Exception as exc:
+                        logger.warning("Default-desktop tree spawn failed: %s", exc)
+                        tree = []
+                    try:
+                        publisher = _spawn_in_user_session("publisher", timeout=10.0)
+                    except Exception as exc:
+                        logger.warning("publisher spawn failed: %s", exc)
+                        publisher = None
+                    return {
+                        "desktop": name or "Default",
+                        "publisher": publisher,
+                        "tree": tree,
+                    }
+
             if name.lower() == "winlogon":
                 logger.info(
                     "wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values())
