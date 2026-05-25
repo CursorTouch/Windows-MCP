@@ -2210,6 +2210,31 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
         timeout_ms,
         hwinsta,
     )
+    # Diagnostic: log the current PromptOnSecureDesktop registry value so
+    # we can tell whether iter-5's "policy was set but UAC still went to
+    # Winlogon" is the registry read returning 0 (Windows ignoring the
+    # value) or returning 1 (the write didn't actually stick).
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            access=winreg.KEY_QUERY_VALUE,
+        ) as _key:
+            posd, _ = winreg.QueryValueEx(_key, "PromptOnSecureDesktop")
+            elua, _ = winreg.QueryValueEx(_key, "EnableLUA")
+            cpba, _ = winreg.QueryValueEx(_key, "ConsentPromptBehaviorAdmin")
+        logger.info(
+            "wait_for_uac_prompt: registry policy: "
+            "PromptOnSecureDesktop=%s EnableLUA=%s ConsentPromptBehaviorAdmin=%s",
+            posd,
+            elua,
+            cpba,
+        )
+    except Exception as exc:
+        logger.warning("wait_for_uac_prompt: could not read UAC policy registry: %s", exc)
+
     seen: dict[str, int] = {}
     try:
         while time.monotonic() < deadline:

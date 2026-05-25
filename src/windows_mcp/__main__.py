@@ -1019,7 +1019,7 @@ _UAC_POLICY_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 _UAC_POLICY_VALUE = "PromptOnSecureDesktop"
 
 
-def _set_prompt_on_secure_desktop(enabled: bool) -> None:
+def _set_prompt_on_secure_desktop(enabled: bool) -> int:
     """Toggle the ``PromptOnSecureDesktop`` UAC policy (HKLM, requires admin).
 
     Disabling it (enabled=False) makes UAC render on the user's Default desktop
@@ -1029,15 +1029,22 @@ def _set_prompt_on_secure_desktop(enabled: bool) -> None:
     documented mechanism that exposes the dialog to the agent.
 
     Restored to 1 on ``service secure-desktop uninstall``.
+
+    Returns the integer value read back from the registry immediately after
+    the write -- iter 5 test came back with ``desktop: Winlogon`` even after
+    this function returned successfully, so callers verify the readback.
     """
     import winreg
 
+    target = 1 if enabled else 0
     with winreg.OpenKey(
         winreg.HKEY_LOCAL_MACHINE,
         _UAC_POLICY_KEY,
-        access=winreg.KEY_SET_VALUE,
+        access=winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
     ) as key:
-        winreg.SetValueEx(key, _UAC_POLICY_VALUE, 0, winreg.REG_DWORD, 1 if enabled else 0)
+        winreg.SetValueEx(key, _UAC_POLICY_VALUE, 0, winreg.REG_DWORD, target)
+        readback, _ = winreg.QueryValueEx(key, _UAC_POLICY_VALUE)
+    return int(readback)
 
 
 def _verify_install_paths_are_admin_only() -> None:
@@ -1352,10 +1359,17 @@ def service_secure_desktop_install(
     # toggle is the only documented Microsoft mechanism that makes this
     # scenario tractable. Restored on uninstall.
     try:
-        _set_prompt_on_secure_desktop(False)
-        click.echo(
-            "UAC policy         : PromptOnSecureDesktop=0 (UAC will render on Default desktop)."
-        )
+        readback = _set_prompt_on_secure_desktop(False)
+        if readback == 0:
+            click.echo(
+                "UAC policy         : PromptOnSecureDesktop=0 (UAC will render on Default desktop)."
+            )
+        else:
+            click.echo(
+                f"Warning: wrote PromptOnSecureDesktop=0 but readback returned {readback}. "
+                "Group Policy or another layer is overriding the registry value -- "
+                "check `gpresult /h` for 'Switch to the secure desktop' policy."
+            )
     except Exception as exc:
         click.echo(f"Warning: could not disable PromptOnSecureDesktop: {exc}")
         click.echo(
