@@ -40,15 +40,14 @@ logger = logging.getLogger(__name__)
 # Lives next to this module; copied in as package_data via pyproject.toml.
 _MANIFEST_NAME = "_uia_worker.manifest"
 _WORKER_EXE_NAME = "windows-mcp-uia-worker.exe"
-_INSTALL_DIR = Path(
-    os.environ.get("ProgramFiles", r"C:\Program Files")
-) / "WindowsMCP"
+_INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WindowsMCP"
 _CERT_SUBJECT = "CN=WindowsMCP-Local-UiaWorker"
 
 
 # ---------------------------------------------------------------------------
 # PyInstaller bootstrap
 # ---------------------------------------------------------------------------
+
 
 def _have_pyinstaller() -> bool:
     try:
@@ -118,7 +117,8 @@ def ensure_pyinstaller(progress: callable | None = None) -> None:
             progress("pip is missing in this venv (uv-managed?); bootstrapping via ensurepip…")
         rc = subprocess.run(
             [sys.executable, "-m", "ensurepip", "--upgrade"],
-            env=env, check=False,
+            env=env,
+            check=False,
         ).returncode
         if rc != 0 or not _have_pip():
             raise RuntimeError(
@@ -140,6 +140,7 @@ def ensure_pyinstaller(progress: callable | None = None) -> None:
 # Build
 # ---------------------------------------------------------------------------
 
+
 def _resolve_manifest() -> Path:
     """Return the absolute path to ``_uia_worker.manifest`` shipped with this package."""
     here = Path(__file__).resolve().parent
@@ -154,6 +155,7 @@ def _resolve_manifest() -> Path:
 
 def _resolve_worker_script() -> Path:
     from windows_mcp.service import user_session_worker
+
     return Path(user_session_worker.__file__).resolve()
 
 
@@ -173,65 +175,116 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
     build_dir = workdir / "build"
 
     cmd = [
-        sys.executable, "-m", "PyInstaller",
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "--onefile",
         "--noconfirm",
         "--clean",
-        "--log-level", "INFO",
-        "--distpath", str(dist_dir),
-        "--workpath", str(build_dir),
-        "--specpath", str(workdir),
-        "--name", "windows-mcp-uia-worker",
-        "--manifest", str(manifest),
-        "--paths", str(src_root),
+        "--log-level",
+        "INFO",
+        "--distpath",
+        str(dist_dir),
+        "--workpath",
+        str(build_dir),
+        "--specpath",
+        str(workdir),
+        "--name",
+        "windows-mcp-uia-worker",
+        "--manifest",
+        str(manifest),
+        "--paths",
+        str(src_root),
         # Explicit hidden imports — comtypes uses dynamic imports we have
         # to spell out for the static analyzer.
-        "--hidden-import", "windows_mcp.service.secure_desktop",
-        "--hidden-import", "comtypes",
-        "--hidden-import", "comtypes.client",
+        "--hidden-import",
+        "windows_mcp.service.secure_desktop",
+        "--hidden-import",
+        "comtypes",
+        "--hidden-import",
+        "comtypes.client",
         # Aggressive exclusion. The worker only needs secure_desktop and
         # its direct deps (comtypes, ctypes, pywin32). Pulling in any of
         # the MCP / FastMCP / tool surface during analysis on a slow VM
         # tipped PyInstaller into a 10+ minute scan it never recovered
         # from. Excluding by top-level module trims the analysis graph
         # before it explodes.
-        "--exclude-module", "fastmcp",
-        "--exclude-module", "mcp",
-        "--exclude-module", "starlette",
-        "--exclude-module", "uvicorn",
-        "--exclude-module", "sse_starlette",
-        "--exclude-module", "pydantic",
-        "--exclude-module", "pydantic_core",
-        "--exclude-module", "pydantic_settings",
-        "--exclude-module", "posthog",
-        "--exclude-module", "rapidfuzz",
-        "--exclude-module", "thefuzz",
-        "--exclude-module", "fuzzywuzzy",
-        "--exclude-module", "dxcam",
-        "--exclude-module", "PIL",
-        "--exclude-module", "pillow",
-        "--exclude-module", "click",
-        "--exclude-module", "watchfiles",
-        "--exclude-module", "websockets",
-        "--exclude-module", "httpx",
-        "--exclude-module", "httpcore",
-        "--exclude-module", "anyio",
-        "--exclude-module", "h11",
-        "--exclude-module", "markdownify",
-        "--exclude-module", "beautifulsoup4",
-        "--exclude-module", "bs4",
-        "--exclude-module", "tabulate",
-        "--exclude-module", "psutil",
-        "--exclude-module", "pygments",
-        "--exclude-module", "requests",
-        "--exclude-module", "windows_mcp.tools",
-        "--exclude-module", "windows_mcp.desktop",
-        "--exclude-module", "windows_mcp.tree",
-        "--exclude-module", "windows_mcp.uia",
-        "--exclude-module", "windows_mcp.watchdog",
-        "--exclude-module", "windows_mcp.vdm",
-        "--exclude-module", "windows_mcp.infrastructure",
-        "--exclude-module", "windows_mcp.config",
+        "--exclude-module",
+        "fastmcp",
+        "--exclude-module",
+        "mcp",
+        "--exclude-module",
+        "starlette",
+        "--exclude-module",
+        "uvicorn",
+        "--exclude-module",
+        "sse_starlette",
+        "--exclude-module",
+        "pydantic",
+        "--exclude-module",
+        "pydantic_core",
+        "--exclude-module",
+        "pydantic_settings",
+        "--exclude-module",
+        "posthog",
+        "--exclude-module",
+        "rapidfuzz",
+        "--exclude-module",
+        "thefuzz",
+        "--exclude-module",
+        "fuzzywuzzy",
+        "--exclude-module",
+        "dxcam",
+        # PIL.ImageGrab is required by screenshot_uac_synthetic_tree (the
+        # final cross-desktop UAC fallback on Win11 -- nothing else
+        # reaches consent.exe). Keep both forms in case the wheel uses
+        # either capitalisation.
+        # "--exclude-module", "PIL",
+        # "--exclude-module", "pillow",
+        "--exclude-module",
+        "click",
+        "--exclude-module",
+        "watchfiles",
+        "--exclude-module",
+        "websockets",
+        "--exclude-module",
+        "httpx",
+        "--exclude-module",
+        "httpcore",
+        "--exclude-module",
+        "anyio",
+        "--exclude-module",
+        "h11",
+        "--exclude-module",
+        "markdownify",
+        "--exclude-module",
+        "beautifulsoup4",
+        "--exclude-module",
+        "bs4",
+        "--exclude-module",
+        "tabulate",
+        "--exclude-module",
+        "psutil",
+        "--exclude-module",
+        "pygments",
+        "--exclude-module",
+        "requests",
+        "--exclude-module",
+        "windows_mcp.tools",
+        "--exclude-module",
+        "windows_mcp.desktop",
+        "--exclude-module",
+        "windows_mcp.tree",
+        "--exclude-module",
+        "windows_mcp.uia",
+        "--exclude-module",
+        "windows_mcp.watchdog",
+        "--exclude-module",
+        "windows_mcp.vdm",
+        "--exclude-module",
+        "windows_mcp.infrastructure",
+        "--exclude-module",
+        "windows_mcp.config",
         str(script),
     ]
     if progress:
@@ -249,9 +302,7 @@ def build_worker(workdir: Path, progress: callable | None = None) -> Path:
         ) from None
     exe = dist_dir / _WORKER_EXE_NAME
     if rc != 0 or not exe.is_file():
-        raise RuntimeError(
-            f"PyInstaller build failed (exit={rc}). See output above for details."
-        )
+        raise RuntimeError(f"PyInstaller build failed (exit={rc}). See output above for details.")
     return exe
 
 
@@ -335,9 +386,12 @@ def _run_powershell(script: str, *params: tuple[str, str]) -> str:
     try:
         cmd = [
             "powershell.exe",
-            "-NoLogo", "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", script_path,
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script_path,
         ]
         for name, value in params:
             cmd.extend([f"-{name}", value])
@@ -375,6 +429,7 @@ def sign_worker(exe_path: Path, thumbprint: str, progress: callable | None = Non
 # Install to Program Files
 # ---------------------------------------------------------------------------
 
+
 def install_signed_worker(exe_path: Path, progress: callable | None = None) -> Path:
     """Copy the signed exe into ``%ProgramFiles%\\WindowsMCP\\`` and lock the
     directory's ACL to Administrators + SYSTEM. Returns the installed path.
@@ -390,8 +445,13 @@ def install_signed_worker(exe_path: Path, progress: callable | None = None) -> P
     # write to Program Files.
     for cmd in (
         ["icacls", str(_INSTALL_DIR), "/inheritance:r"],
-        ["icacls", str(_INSTALL_DIR), "/grant", "*S-1-5-18:(OI)(CI)F"],     # NT AUTHORITY\SYSTEM
-        ["icacls", str(_INSTALL_DIR), "/grant", "*S-1-5-32-544:(OI)(CI)F"], # BUILTIN\Administrators
+        ["icacls", str(_INSTALL_DIR), "/grant", "*S-1-5-18:(OI)(CI)F"],  # NT AUTHORITY\SYSTEM
+        [
+            "icacls",
+            str(_INSTALL_DIR),
+            "/grant",
+            "*S-1-5-32-544:(OI)(CI)F",
+        ],  # BUILTIN\Administrators
     ):
         try:
             subprocess.run(cmd, capture_output=True, check=False)
@@ -404,10 +464,11 @@ def _pe_image_end(pe_bytes: bytes) -> int:
     """Return the offset where the PE image *file* ends (start of the
     appended PyInstaller PKG overlay)."""
     import struct
+
     if pe_bytes[:2] != b"MZ":
         raise RuntimeError("not a PE: missing MZ signature")
     e_lfanew = struct.unpack_from("<I", pe_bytes, 0x3C)[0]
-    if pe_bytes[e_lfanew:e_lfanew + 4] != b"PE\x00\x00":
+    if pe_bytes[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
         raise RuntimeError("not a PE: missing PE signature")
     # IMAGE_FILE_HEADER at e_lfanew+4; NumberOfSections at +6.
     num_sections = struct.unpack_from("<H", pe_bytes, e_lfanew + 6)[0]
@@ -423,8 +484,9 @@ def _pe_image_end(pe_bytes: bytes) -> int:
     return end
 
 
-def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
-                              progress: callable | None = None) -> None:
+def replace_embedded_manifest(
+    exe_path: Path, manifest_path: Path, progress: callable | None = None
+) -> None:
     """Replace the PE EXE's embedded manifest (RT_MANIFEST id=1) with the
     bytes of *manifest_path*, *preserving the PyInstaller PKG overlay* that
     lives past the end of the PE image.
@@ -494,7 +556,8 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
     # to the wrong language ID.
     try:
         hmod = win32api.LoadLibraryEx(
-            str(exe_path), 0,
+            str(exe_path),
+            0,
             0x00000020,  # LOAD_LIBRARY_AS_IMAGE_RESOURCE
         )
         try:
@@ -513,22 +576,20 @@ def replace_embedded_manifest(exe_path: Path, manifest_path: Path,
                 f"bytes: {embedded_bytes[:200]!r}"
             )
         logger.info(
-            "replace_embedded_manifest: verified uiAccess=\"true\" in "
+            'replace_embedded_manifest: verified uiAccess="true" in '
             "embedded RT_MANIFEST (%d bytes)",
             len(embedded_bytes),
         )
     except RuntimeError:
         raise
     except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "replace_embedded_manifest: verification step failed "
-            "(non-fatal): %s", e
-        )
+        logger.warning("replace_embedded_manifest: verification step failed (non-fatal): %s", e)
 
 
 # ---------------------------------------------------------------------------
 # Top-level orchestrator
 # ---------------------------------------------------------------------------
+
 
 def build_sign_and_install(progress: callable | None = None) -> Path:
     """One-shot: ensure PyInstaller, build, generate cert, sign, install. Returns the
