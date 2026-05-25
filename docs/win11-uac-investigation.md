@@ -163,6 +163,30 @@ paths we cannot reach from a third-party process — either a registered
 accessibility callback baked into the kernel input path, or an undocumented
 trust relationship between Winlogon and signed-by-Microsoft binaries.
 
+## Iter 7: Win 11 25H2 ignores even the dual-flag fix
+
+After iter 6 caught the `ConsentPromptBehaviorAdmin = 2` trap, iter 7
+shipped the dual-write (`PromptOnSecureDesktop = 0` AND
+`ConsentPromptBehaviorAdmin = 5`). The broker's diagnostic log at the
+exact moment UAC fired:
+
+```
+2026-05-25 21:01:03,160 INFO ... wait_for_uac_prompt: registry policy:
+  PromptOnSecureDesktop=0 EnableLUA=1 ConsentPromptBehaviorAdmin=5
+2026-05-25 21:01:03,165 INFO ... wait_for_uac_prompt: Winlogon detected
+  after 1 polls
+```
+
+Both writes stuck. The live values matched what Microsoft's docs say
+should keep UAC off the secure desktop. The OS routed UAC to Winlogon
+anyway. Conclusion: on Win 11 25H2 (build 10.0.26200) the
+secure-desktop-disable policy is honored at the documentation layer but
+ignored at the dispatch layer. There is no documented Microsoft registry
+or GPO setting we've found that will expose the UAC dialog to the agent
+on this build short of disabling UAC entirely (`EnableLUA = 0`), which
+breaks modern UWP/Store apps and is therefore not viable as a default
+install behaviour.
+
 ## The fix we shipped
 
 `windows-mcp service secure-desktop install` now writes
