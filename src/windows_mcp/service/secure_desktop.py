@@ -1271,6 +1271,152 @@ def uia_get_tree_uiaccess(wait_ms: int = 3000) -> list[dict]:
         return []
 
 
+def screenshot_uac_synthetic_tree() -> list[dict]:
+    """Capture the secure desktop, locate the UAC dialog by pixel colour,
+    return a synthetic UIA tree pinpointing the Yes/No buttons.
+
+    Iteration-3 fallback. Win11 hides consent.exe from every cross-desktop
+    UIA / Win32 query we can issue from a UIAccess worker on Default; the
+    only thing we *can* observe is what's rendered on the input desktop.
+    BitBlt + colour-segmentation finds the focused button by its Microsoft
+    Blue (#0067C0) fill, then mirrors across the dialog centre to recover
+    the unfocused button. Yes is left, No is right in every Win10/11 UAC.
+
+    Returns ``[]`` if no UAC dialog is visible (no Microsoft Blue pixels).
+    Called from the user-session UIAccess worker, which lives on Default
+    but whose hardware screen capture lands the secure desktop frame
+    because the secure desktop is the currently-active input desktop.
+    """
+    try:
+        from PIL import ImageGrab
+    except ImportError as exc:
+        logger.warning("screenshot_uac_synthetic_tree: PIL unavailable: %s", exc)
+        return []
+
+    try:
+        img = ImageGrab.grab(all_screens=False)
+    except Exception as exc:
+        logger.warning("ImageGrab.grab failed: %s", exc)
+        return []
+
+    w, h = img.size
+    logger.info("screenshot_uac: captured frame %dx%d", w, h)
+
+    # Save the capture for offline diagnostics.
+    try:
+        share = (
+            r"\\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\.work"
+            r"\uac-shot.png"
+        )
+        img.save(share)
+        logger.info("screenshot_uac: dumped to %s", share)
+    except Exception as exc:
+        logger.info("screenshot_uac: could not dump frame: %s", exc)
+
+    # Find Microsoft-Blue pixels (the focused button's fill colour).
+    rgb = img.convert("RGB")
+    pixels = rgb.load()
+    blue_xs: list[int] = []
+    blue_ys: list[int] = []
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            r, g, b = pixels[x, y]
+            if r < 30 and 80 < g < 130 and 160 < b < 220:
+                blue_xs.append(x)
+                blue_ys.append(y)
+
+    if not blue_xs:
+        logger.info(
+            "screenshot_uac: no Microsoft-Blue pixels -- UAC dialog not visible in this frame"
+        )
+        return []
+
+    foc_x0, foc_x1 = min(blue_xs), max(blue_xs)
+    foc_y0, foc_y1 = min(blue_ys), max(blue_ys)
+    foc_cx = (foc_x0 + foc_x1) // 2
+    btn_w = foc_x1 - foc_x0
+    btn_h = foc_y1 - foc_y0
+    logger.info(
+        "screenshot_uac: blue bbox=(%d,%d,%d,%d) center=(%d,%d) size=%dx%d",
+        foc_x0,
+        foc_y0,
+        foc_x1,
+        foc_y1,
+        foc_cx,
+        (foc_y0 + foc_y1) // 2,
+        btn_w,
+        btn_h,
+    )
+
+    # Mirror across the screen horizontal centre to locate the unfocused
+    # button. UAC's default focused button is "No" on Win10/11 (security
+    # default), so a blue button on the RIGHT half implies Yes is the
+    # mirrored left button. If a future Windows changes the default to
+    # focus Yes, the mirroring still works -- we just swap which is which.
+    screen_cx = w // 2
+    gap = 8  # small inter-button gap, cosmetic
+    if foc_cx > screen_cx:
+        no_x0, no_y0, no_x1, no_y1 = foc_x0, foc_y0, foc_x1, foc_y1
+        yes_x1 = no_x0 - gap
+        yes_x0 = yes_x1 - btn_w
+        yes_y0, yes_y1 = no_y0, no_y1
+    else:
+        yes_x0, yes_y0, yes_x1, yes_y1 = foc_x0, foc_y0, foc_x1, foc_y1
+        no_x0 = yes_x1 + gap
+        no_x1 = no_x0 + btn_w
+        no_y0, no_y1 = yes_y0, yes_y1
+
+    logger.info(
+        "screenshot_uac: Yes bbox=(%d,%d,%d,%d) No bbox=(%d,%d,%d,%d)",
+        yes_x0,
+        yes_y0,
+        yes_x1,
+        yes_y1,
+        no_x0,
+        no_y0,
+        no_x1,
+        no_y1,
+    )
+
+    def _mk(name, ct, x0, y0, x1, y1, kids=None, invoke=False):
+        return {
+            "name": name,
+            "control_type": ct,
+            "bbox": {
+                "x": x0,
+                "y": y0,
+                "width": x1 - x0,
+                "height": y1 - y0,
+            },
+            "can_invoke": invoke,
+            "children": kids or [],
+        }
+
+    # Dialog bbox: bound the buttons plus a generous padding for the dialog
+    # title / body. UAC dialogs are roughly 480x320 on 1280x720 -- we don't
+    # need to be exact since downstream consumers only care about the Yes/No
+    # bboxes for clicking.
+    dlg_x0 = min(yes_x0, no_x0) - 50
+    dlg_y0 = max(0, foc_y0 - 300)
+    dlg_x1 = max(yes_x1, no_x1) + 50
+    dlg_y1 = foc_y1 + 40
+
+    return [
+        _mk(
+            "User Account Control",
+            "window",
+            dlg_x0,
+            dlg_y0,
+            dlg_x1,
+            dlg_y1,
+            kids=[
+                _mk("Yes", "button", yes_x0, yes_y0, yes_x1, yes_y1, invoke=True),
+                _mk("No", "button", no_x0, no_y0, no_x1, no_y1, invoke=True),
+            ],
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -2124,9 +2270,46 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                         "tree": tree,
                     }
 
+                # Iteration 3 fallback: every UIA/Win32 cross-desktop query
+                # we know of returns nothing from a UIAccess worker on Win11.
+                # Capture the rendered secure desktop and locate the dialog
+                # buttons by colour.
                 logger.info(
-                    "wait_for_uac_prompt: UIAccess strategy empty -- falling "
-                    "back to DACL-loosen + desktop-attach"
+                    "wait_for_uac_prompt: UIAccess strategy empty -- trying screenshot fallback"
+                )
+                try:
+                    tree = (
+                        _spawn_in_user_session(
+                            "tree_uac_screenshot",
+                            timeout=15.0,
+                        )
+                        or []
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "wait_for_uac_prompt: tree_uac_screenshot raised: %s",
+                        exc,
+                    )
+                    tree = []
+                if tree:
+                    logger.info(
+                        "wait_for_uac_prompt: screenshot fallback returned %d top windows",
+                        len(tree),
+                    )
+                    try:
+                        publisher = _spawn_in_user_session("publisher", timeout=10.0)
+                    except Exception as exc:
+                        logger.warning("publisher spawn failed: %s", exc)
+                        publisher = None
+                    return {
+                        "desktop": "Winlogon",
+                        "publisher": publisher,
+                        "tree": tree,
+                    }
+
+                logger.info(
+                    "wait_for_uac_prompt: screenshot fallback empty -- "
+                    "falling back to DACL-loosen + desktop-attach"
                 )
                 dacl_state = _grant_winlogon_access_to_console_user()
                 try:

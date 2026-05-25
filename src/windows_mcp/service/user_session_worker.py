@@ -40,8 +40,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cross-desktop UAC tree fetch via UIAccess (no SetThreadDesktop).",
     )
     tu.add_argument(
-        "--wait-ms", type=int, default=3000,
+        "--wait-ms",
+        type=int,
+        default=3000,
         help="Time to wait for cross-desktop UIA events before giving up.",
+    )
+    sub.add_parser(
+        "tree_uac_screenshot",
+        help="Capture the secure desktop and emit a synthetic UAC tree by "
+        "locating the focused button via Microsoft-Blue pixels.",
     )
     iv = sub.add_parser("invoke", help="Invoke the named UIA element.")
     iv.add_argument("name")
@@ -74,6 +81,7 @@ def _log_token_diag() -> None:
     try:
         import ctypes
         import ctypes.wintypes as wt
+
         TokenUIAccess = 26
 
         kernel32 = ctypes.windll.kernel32
@@ -83,34 +91,46 @@ def _log_token_diag() -> None:
         kernel32.GetCurrentProcess.restype = wt.HANDLE
         kernel32.GetCurrentThreadId.restype = wt.DWORD
         advapi32.OpenProcessToken.argtypes = [
-            wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE),
+            wt.HANDLE,
+            wt.DWORD,
+            ctypes.POINTER(wt.HANDLE),
         ]
         advapi32.OpenProcessToken.restype = wt.BOOL
         advapi32.GetTokenInformation.argtypes = [
-            wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
+            wt.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wt.DWORD,
             ctypes.POINTER(wt.DWORD),
         ]
         advapi32.GetTokenInformation.restype = wt.BOOL
         user32.GetThreadDesktop.argtypes = [wt.DWORD]
         user32.GetThreadDesktop.restype = wt.HANDLE
         user32.GetUserObjectInformationW.argtypes = [
-            wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
+            wt.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wt.DWORD,
             ctypes.POINTER(wt.DWORD),
         ]
         user32.GetUserObjectInformationW.restype = wt.BOOL
 
         h_token = wt.HANDLE()
         ok_open = advapi32.OpenProcessToken(
-            kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(h_token),
+            kernel32.GetCurrentProcess(),
+            0x0008,
+            ctypes.byref(h_token),
         )
         open_gle = ctypes.GetLastError() if not ok_open else 0
 
         ui_access = wt.DWORD(0)
         rlen = wt.DWORD(0)
         ok_get = advapi32.GetTokenInformation(
-            h_token, TokenUIAccess,
+            h_token,
+            TokenUIAccess,
             ctypes.cast(ctypes.byref(ui_access), ctypes.c_void_p),
-            4, ctypes.byref(rlen),
+            4,
+            ctypes.byref(rlen),
         )
         get_gle = ctypes.GetLastError() if not ok_get else 0
 
@@ -118,15 +138,20 @@ def _log_token_diag() -> None:
         needed = wt.DWORD()
         hdesk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
         user32.GetUserObjectInformationW(
-            hdesk, 2,
+            hdesk,
+            2,
             ctypes.cast(buf, ctypes.c_void_p),
-            ctypes.sizeof(buf), ctypes.byref(needed),
+            ctypes.sizeof(buf),
+            ctypes.byref(needed),
         )
         logger.info(
-            "diag: TokenUIAccess=%d (open_ok=%s gle=%d, get_ok=%s gle=%d) "
-            "initial-desktop=%r",
-            ui_access.value, bool(ok_open), open_gle,
-            bool(ok_get), get_gle, buf.value,
+            "diag: TokenUIAccess=%d (open_ok=%s gle=%d, get_ok=%s gle=%d) initial-desktop=%r",
+            ui_access.value,
+            bool(ok_open),
+            open_gle,
+            bool(ok_get),
+            get_gle,
+            buf.value,
         )
         try:
             kernel32.CloseHandle(h_token)
@@ -151,6 +176,7 @@ def _accept_winlogon_handoff() -> None:
     try:
         import os
         import ctypes
+
         data = os.read(0, 128)
     except OSError as exc:
         logger.info("no winlogon handoff (stdin read failed: %s)", exc)
@@ -159,6 +185,7 @@ def _accept_winlogon_handoff() -> None:
     if not line:
         return
     from windows_mcp.service import secure_desktop
+
     for token in line.split():
         if "=" not in token:
             continue
@@ -178,12 +205,14 @@ def _accept_winlogon_handoff() -> None:
                 err = ctypes.get_last_error()
                 logger.info(
                     "SetThreadDesktop(broker-passed hdesk %d) failed (gle=%d)",
-                    value, err,
+                    value,
+                    err,
                 )
         elif key == "CONSENT_HWND":
             secure_desktop._preattached_consent_hwnd = value
             logger.info(
-                "received broker-enumerated consent.exe hwnd=0x%x", value,
+                "received broker-enumerated consent.exe hwnd=0x%x",
+                value,
             )
 
 
@@ -215,6 +244,8 @@ def main() -> int:
             result = secure_desktop.uia_get_tree()
         elif args.op == "tree_uiaccess":
             result = secure_desktop.uia_get_tree_uiaccess(wait_ms=args.wait_ms)
+        elif args.op == "tree_uac_screenshot":
+            result = secure_desktop.screenshot_uac_synthetic_tree()
         elif args.op == "publisher":
             result = secure_desktop.get_uac_publisher()
         elif args.op == "windows":
