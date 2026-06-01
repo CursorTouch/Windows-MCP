@@ -76,15 +76,27 @@ class PostHogAnalytics:
 
         user_id_file = self.TEMP_FOLDER / ".windows-mcp-user-id"
         if user_id_file.exists():
-            self._user_id = user_id_file.read_text(encoding="utf-8").strip()
+            try:
+                self._user_id = user_id_file.read_text(encoding="utf-8").strip()
+            except OSError as e:
+                logger.warning(f"Could not read persisted user ID: {e}")
+                self._user_id = uuid7str()
+                self._persist_user_id(user_id_file)
         else:
             self._user_id = uuid7str()
-            try:
-                user_id_file.write_text(self._user_id, encoding="utf-8")
-            except Exception as e:
-                logger.warning(f"Could not persist user ID: {e}")
+            self._persist_user_id(user_id_file)
 
         return self._user_id
+
+    def _persist_user_id(self, user_id_file: Path) -> None:
+        try:
+            user_id_file.write_text(self._user_id, encoding="utf-8")
+            try:
+                user_id_file.chmod(0o600)
+            except OSError as e:
+                logger.debug(f"Could not restrict user ID file permissions: {e}")
+        except Exception as e:
+            logger.warning(f"Could not persist user ID: {e}")
 
     async def track_tool(self, tool_name: str, result: Dict[str, Any]) -> None:
         if self.client:

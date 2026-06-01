@@ -7,14 +7,13 @@
     "url": "https://github.com/CursorTouch/Windows-MCP",
     "source": "github"
   },
-  "version": "1.0.0",
+  "version": "1.0.1",
   "packages": [
     {
-      "registry_type": "pypi",
-      "registry_base_url": "https://pypi.org",
+      "registryType": "pypi",
       "identifier": "windows-mcp",
-      "version": "0.6.2",
-      "runtime_hint": "uvx",
+      "version": "0.8.1",
+      "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
       }

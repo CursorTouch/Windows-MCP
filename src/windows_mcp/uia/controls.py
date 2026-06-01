@@ -4,7 +4,7 @@ Author: yinkaisheng
 Source: https://github.com/yinkaisheng/Python-UIAutomation-for-Windows
 
 This module is for UIAutomation on Windows(Windows XP with SP3, Windows Vista and Windows 7/8/8.1/10).
-It supports UIAutomation for the applications which implmented IUIAutomation, such as MFC, Windows Form, WPF, Modern UI(Metro UI), Qt, Firefox and Chrome.
+It supports UIAutomation for the applications which implemented IUIAutomation, such as MFC, Windows Form, WPF, Modern UI(Metro UI), Qt, Firefox and Chrome.
 Run 'automation.py -h' for help.
 
 uiautomation is shared under the Apache Licene 2.0.
@@ -1057,7 +1057,7 @@ class Control:
     ) -> "Control" | None:
         """
         Get a sibling control that matches the condition.
-        forward: bool, if True, only search next siblings, if False, search pervious siblings first, then search next siblings.
+        forward: bool, if True, only search next siblings, if False, search previous siblings first, then search next siblings.
         condition: Callable[[Control], bool], function(control: Control) -> bool.
         Return `Control` subclass or None.
         """
@@ -1254,7 +1254,7 @@ class Control:
         Gets the position of the center of the control.
         ratioX: float.
         ratioY: float.
-        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0)
+        Return Tuple[int, int], two ints tuple (x, y), the cursor position relative to screen(0, 0)
         """
         rect = self.BoundingRectangle
         if rect.width() == 0 or rect.height() == 0:
@@ -1278,7 +1278,7 @@ class Control:
         ratioX: float.
         ratioY: float.
         simulateMove: bool.
-        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0)
+        Return Tuple[int, int], two ints tuple (x, y), the cursor position relative to screen(0, 0)
             after moving or None if control's width or height is 0.
         """
         rect = self.BoundingRectangle
@@ -1301,7 +1301,7 @@ class Control:
     def MoveCursorToMyCenter(self, simulateMove: bool = True) -> Tuple[int, int] | None:
         """
         Move cursor to control's center.
-        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0) after moving.
+        Return Tuple[int, int], two ints tuple (x, y), the cursor position relative to screen(0, 0) after moving.
         """
         return self.MoveCursorToInnerPos(simulateMove=simulateMove)
 
