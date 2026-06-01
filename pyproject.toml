@@ -20,8 +20,8 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.4.1",
-    "comtypes>=1.4.16",
-    "dxcam>=0.3.0",
+    "comtypes>=1.4.16; sys_platform == 'win32'",
+    "dxcam>=0.3.0; sys_platform == 'win32'",
     "fastmcp>=3.3.1",
     "fuzzywuzzy>=0.18.0",
     "markdownify>=1.2.2",
@@ -31,7 +31,7 @@ dependencies = [
     "psutil>=7.2.2",
     "pygments>=2.20.0",
     "python-levenshtein>=0.27.3",
-    "pywin32>=311",
+    "pywin32>=311; sys_platform == 'win32'",
     "requests>=2.34.2",
     "tabulate>=0.10.0",
     "thefuzz>=0.22.1",
