@@ -44,13 +44,22 @@ if (-not (Test-Path $LocalRepo)) { New-Item -ItemType Directory -Path $LocalRepo
 robocopy $Share $LocalRepo /MIR /XD .git .venv tests\manual\vm_e2e\.work /NFL /NDL /NJH /NJS | Out-Null
 if ($LASTEXITCODE -ge 8) { Fail "robocopy exit $LASTEXITCODE" }
 
-# 2) Stop host service so wheel rebuild doesn't fail (Access denied)
+# 2) Stop host service + kill any straggler venv processes. The ONLOGON
+#    windows-mcp-server / windows-mcp-test tasks spawn windows-mcp.exe
+#    from .venv\Scripts at login; uv sync's reinstall fails with
+#    "file in use" if any of them are still running.
 $svc = Get-Service -Name WindowsMCPHost -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq 'Running') {
     Log "Stopping WindowsMCPHost so the rebuild can replace .venv files"
     Stop-Service WindowsMCPHost -Force -ErrorAction SilentlyContinue
     $svc.WaitForStatus('Stopped','00:00:30')
 }
+Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path -like "$LocalRepo\.venv\*" } |
+    ForEach-Object {
+        Log "Killing venv process pid=$($_.Id) path=$($_.Path)"
+        try { $_.Kill(); $_.WaitForExit(5000) | Out-Null } catch { Log "  kill failed: $($_.Exception.Message)" }
+    }
 
 # 3) Rebuild venv from updated source
 Push-Location $LocalRepo
