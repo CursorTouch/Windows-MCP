@@ -187,7 +187,7 @@ on this build short of disabling UAC entirely (`EnableLUA = 0`), which
 breaks modern UWP/Store apps and is therefore not viable as a default
 install behaviour.
 
-## Iter 8: trying CPB=4 instead of CPB=5
+## Iter 8: CPB=4 works
 
 Hypothesis from iter 7's failure: if Win 11 25H2's dispatch layer is
 checking the CPB value as an enum (rather than honouring
@@ -197,23 +197,39 @@ consent" with no Windows-binary carve-out wording) has the strictest
 description against ever touching the secure desktop. Iter 7 used 5
 ("Prompt for consent for non-Windows binaries", the Microsoft default),
 which is what the dockur image upgraded itself to and the OS still
-routed to Winlogon. Iter 8 swaps the install target to CPB=4 to see
-whether the kernel-side enforcement changes. The restore-on-uninstall
-target stays at CPB=5 (the modern Win 11 default), so a clean
-install/uninstall cycle still leaves the machine on Microsoft defaults.
+routed to Winlogon. Iter 8 swaps the install target to CPB=4. The
+restore-on-uninstall target stays at CPB=5 (the modern Win 11 default),
+so a clean install/uninstall cycle still leaves the machine on
+Microsoft defaults.
 
-This may or may not survive the OS check. If it does not, the
-Microsoft-documented surface is exhausted and the only remaining
-escape hatches (`EnableLUA=0`, a fully signed accessibility helper,
-or a virtual-input driver) are too costly to ship as defaults.
+Empirical result on Win 11 25H2 Dockur (commit 538237c,
+`tests/manual/vm_e2e/iter8-test.ps1`):
+
+```
+[21:20:09] registry: EnableLUA=1 CPB=4 POSD=0
+[21:20:09] registry write stuck: CPB=4 POSD=0 confirmed.
+[21:20:09] Triggering UAC via Start-Process -Verb RunAs ...
+[21:21:08] consent.exe pid=4664 appeared
+[21:26:27] current input desktop: 'Default'
+[21:26:27] VERDICT: PASS -- UAC on Default. Iter-8 CPB=4 confirmed.
+```
+
+Two independent reads of the desktop state agree: (1) the same elevated
+PowerShell that triggered the prompt could see the consent.exe dialog
+overlaid on its console (so the input session never switched away from
+Default), and (2) `OpenInputDesktop`+`GetUserObjectInformationW` returned
+the literal string `Default`. CPB=4 is the one value in the
+off-secure-desktop trio (3, 4, 5) that Win 11 25H2's dispatch layer
+honours.
 
 ## The fix we shipped
 
-`windows-mcp service secure-desktop install` now writes
+`windows-mcp service secure-desktop install` writes
 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`:
 
 * `PromptOnSecureDesktop = 0` (DWORD)
-* `ConsentPromptBehaviorAdmin = 4` (DWORD) -- iter-8 candidate
+* `ConsentPromptBehaviorAdmin = 4` (DWORD) -- iter-8, confirmed on
+  Win 11 25H2 Dockur
 
 Both are required. Iter 6 set only the first one, confirmed the readback
 returned 0, and then watched UAC fire on Winlogon anyway because the Win 11
