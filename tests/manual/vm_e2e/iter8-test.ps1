@@ -134,13 +134,22 @@ Log "consent.exe pid=$($consent.Id) appeared"
 
 # Which desktop is consent.exe on? We can read the input desktop name
 # from a tiny C# helper. If it's "Winlogon", CPB=4 didn't change anything.
-Add-Type -TypeDefinition @"
+# IterEightDesk (not "Desk") because Add-Type loads types for the lifetime
+# of the host process and the previous iter-8 commit shipped a Desk class
+# with the wrong CharSet -- if a tester is in the same PS session, the old
+# class is still cached. New name = clean load. The if-already-loaded guard
+# makes a same-session re-invocation also safe.
+if (-not ([System.Management.Automation.PSTypeName]'IterEightDesk').Type) {
+    Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class Desk {
-    [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr OpenInputDesktop(uint flags, bool inh, uint access);
-    [DllImport("user32.dll", SetLastError=true)] public static extern bool GetUserObjectInformation(IntPtr h, int idx, IntPtr info, uint len, out uint needed);
+public class IterEightDesk {
+    // CharSet=Unicode picks the ...W variant which writes UTF-16 bytes
+    // that Marshal.PtrToStringUni decodes correctly. Default CharSet=Ansi
+    // would link ...A and produce garbage when read as Unicode.
+    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr OpenInputDesktop(uint flags, bool inh, uint access);
+    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool GetUserObjectInformation(IntPtr h, int idx, IntPtr info, uint len, out uint needed);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool CloseDesktop(IntPtr h);
     public static string Current() {
         IntPtr h = OpenInputDesktop(0,false,0x0001);
@@ -157,8 +166,9 @@ public class Desk {
     }
 }
 "@
+}
 try {
-    $deskName = [Desk]::Current()
+    $deskName = [IterEightDesk]::Current()
     Log "current input desktop: $deskName"
 } catch {
     Log "desktop-name probe failed: $($_.Exception.Message)"
