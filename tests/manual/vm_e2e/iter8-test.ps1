@@ -115,9 +115,11 @@ schtasks /Create /TN iter8-trigger /TR "powershell.exe -ExecutionPolicy Bypass -
 schtasks /Run /TN iter8-trigger | Out-Null
 
 # 7) Poll for consent.exe and capture which desktop it's on. Give it up
-#    to 15s -- iter-7 saw the prompt within 1-2s.
+#    to 90s -- KVM-disabled QEMU is ~10x slower than bare-metal, and the
+#    first observed CPB=4 prompt under Dockur fired at +14-15s. Iter-7's
+#    1-2s window assumed a fast box.
 $consent = $null
-$deadline = (Get-Date).AddSeconds(15)
+$deadline = (Get-Date).AddSeconds(90)
 while ((Get-Date) -lt $deadline) {
     $consent = Get-Process consent -ErrorAction SilentlyContinue
     if ($consent) { break }
