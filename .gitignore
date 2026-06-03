@@ -181,11 +181,14 @@ elevated-run.bat
 /e.bat
 /test-trigger.bat
 /trigger-diag.ps1
+/trigger-iter8.ps1
 /r-bat-diag.log
 /e-log.txt
 /test-trigger.log
 /trigger-diag.log
 /trigger-elev-fired.log
+/iter8-result.log
+/iter8-result.marker
 /vm-screen.png
 /vm-screen.ppm
 tests/manual/vm_e2e/.work/
