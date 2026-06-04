@@ -503,28 +503,62 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
             iuia, _ = _create_uia()
             walker = iuia.RawViewWalker
             if consent_pid:
-                # consent.exe's Yes/No buttons aren't Win32 child windows --
-                # EnumWindows + EnumChildWindows returns just the frame. The
-                # dialog content is drawn by a UIA provider that doesn't hang
-                # off the main HWND in the standard tree walk. Use
-                # IUIAutomation.FindAll with a ProcessId property condition
-                # to discover every UIA element consent.exe registers,
-                # regardless of HWND ownership.
+                # Win 11 25H2 hides consent.exe (System integrity) from
+                # IUIAutomation enumeration even with TokenUIAccess=1:
+                # FindAll(ProcessId=consent_pid) returns 0, ElementFromHandle
+                # on the main HWND returns only the OS-supplied frame. The
+                # one UIA call that DOES cross integrity reliably is
+                # GetFocusedElement -- consent.exe default-focuses the No
+                # button, so we can grab that element and walk up to the
+                # parent dialog, then down to find Yes as a sibling.
                 UIA_ProcessIdPropertyId = 30005 - 3  # 30002
+                try:
+                    focused = iuia.GetFocusedElement()
+                    fpid = None
+                    try:
+                        fpid = focused.CurrentProcessId if focused is not None else None
+                    except Exception:
+                        fpid = None
+                    diag_lines.append(
+                        f"consent_pid={consent_pid} GetFocusedElement pid={fpid}"
+                    )
+                    if focused is not None and fpid == consent_pid:
+                        # Walk up to the dialog root so the serializer
+                        # captures both Yes and No as descendants.
+                        cur = focused
+                        for _ in range(8):
+                            try:
+                                parent = walker.GetParentElement(cur)
+                            except Exception:
+                                break
+                            if parent is None:
+                                break
+                            try:
+                                ppid = parent.CurrentProcessId
+                            except Exception:
+                                ppid = None
+                            if ppid != consent_pid:
+                                break
+                            cur = parent
+                        node = _serialize_element(cur, walker)
+                        if node:
+                            node["_diag"] = " | ".join(diag_lines) + " | path=GetFocusedElement+walk-up"
+                            nodes.append(node)
+                            return nodes
+                        else:
+                            diag_lines.append("focus walk-up: _serialize_element returned None")
+                except Exception as exc:  # noqa: BLE001
+                    diag_lines.append(f"GetFocusedElement raised: {exc}")
+                    logger.warning("uia_get_tree: GetFocusedElement failed: %s", exc)
+                # Then try FindAll(ProcessId) as a backup
                 try:
                     pid_cond = iuia.CreatePropertyCondition(UIA_ProcessIdPropertyId, consent_pid)
                     matches = iuia.GetRootElement().FindAll(
                         _UIA_TreeScope_Descendants, pid_cond
                     )
                     length = matches.Length if matches is not None else 0
-                    diag_lines.append(
-                        f"consent_pid={consent_pid} FindAll(ProcessId)={length}"
-                    )
+                    diag_lines.append(f"FindAll(ProcessId)={length}")
                     if length > 0:
-                        # Serialize each top-most consent.exe element. We
-                        # don't deduplicate -- consent.exe rarely has more
-                        # than a handful of UIA roots, and dupes are fine
-                        # for the matcher.
                         for i in range(length):
                             elem = matches.GetElement(i)
                             if elem is None:
