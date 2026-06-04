@@ -180,6 +180,7 @@ elevated-run.bat
 /trigger-diag.ps1
 /trigger-iter8.ps1
 /trigger-probe.ps1
+/fix-and-restart.bat
 /r-bat-diag.log
 /e-log.txt
 /test-trigger.log
