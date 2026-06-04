@@ -226,19 +226,17 @@ async def assert_yes_button_present(
                 _walk(child, depth + 1)
         for top in tree:
             _walk(top)
-        # Write the full dump to the share so we can see it from host.
-        from pathlib import Path
-        share = Path(r"\\host.lan\Data\Windows-MCP")
-        try:
-            (share / "uac-tree-dump.txt").write_text(
-                "\n".join(candidates), encoding="utf-8"
-            )
-        except OSError:
-            pass
+        # Print dump to stderr -- test.ps1 captures stderr+stdout into
+        # mcp_client-allow_all.log on the share via Tee-Object 2>&1.
+        sys.stderr.write("\n===== UAC TREE DUMP (Yes not found) =====\n")
+        for line in candidates:
+            sys.stderr.write(line + "\n")
+        sys.stderr.write("===== END UAC TREE DUMP =====\n")
+        sys.stderr.flush()
         detail = (
-            "no element named 'Yes' with can_invoke=True. "
+            f"no element named 'Yes' with can_invoke=True. "
             f"Tree had {sum(1 for _ in candidates)} named/typed nodes; "
-            "full dump at \\\\host.lan\\Data\\Windows-MCP\\uac-tree-dump.txt"
+            "full dump in mcp_client-allow_all.log on the share."
         )
         _record(report, "UAC tree contains invokable Yes button", False, detail, t0)
         return None
