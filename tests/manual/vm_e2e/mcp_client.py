@@ -246,10 +246,17 @@ async def assert_yes_button_present(
         for top in tree:
             _collect_diag(top)
         diag_blurb = "; ".join(diag) if diag else "(no _diag markers)"
+        # Squash candidates to a compact, single-line listing in the detail so
+        # the per-run results-allow_all.json captures the full picture even
+        # when the next run overwrites mcp_client-allow_all.log.
+        snapshot = " || ".join(
+            c.replace("\n", " ") for c in candidates[:25]
+        )
         detail = (
             f"no element named 'Yes' with can_invoke=True. "
             f"Tree had {sum(1 for _ in candidates)} named/typed nodes. "
-            f"Worker diag: {diag_blurb}"
+            f"Worker diag: {diag_blurb}. "
+            f"First nodes: [{snapshot}]"
         )
         _record(report, "UAC tree contains invokable Yes button", False, detail, t0)
         return None
