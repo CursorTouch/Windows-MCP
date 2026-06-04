@@ -856,50 +856,18 @@ _UAC_POLICY_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
 
 
 def _set_uac_secure_desktop_off(off: bool) -> tuple[int, int]:
-    """Toggle the UAC secure-desktop policy values (HKLM, requires admin).
+    """Toggle the UAC secure-desktop policy. Returns the (POSD, CPB) readback
+    so callers can verify the writes stuck.
 
-    Win 11 routes UAC to the Secure Desktop based on TWO registry values, and
-    they can disagree -- iter-6 saw ``PromptOnSecureDesktop=0`` but UAC still
-    went to Winlogon because ``ConsentPromptBehaviorAdmin=2`` ("Prompt for
-    consent **on the secure desktop**") forced it.
+    off=True  -> POSD=0, CPB=4 (UAC on Default desktop).
+    off=False -> POSD=1, CPB=5 (modern Win 11 default).
 
-    The CPB values whose Microsoft-documented description references the
-    secure desktop are 1 ("Prompt for credentials on the secure desktop") and
-    2 ("Prompt for consent on the secure desktop"). Values 3, 4, and 5
-    describe the same prompts without the secure desktop. Win 11 ships with
-    5 as the default, but the dockur image we test against ships with 2.
-
-    Iter 7 shipped CPB=5 (Microsoft default) and observed Win 11 25H2 route
-    UAC to Winlogon anyway. Iter 8 tries CPB=4 ("Prompt for consent for
-    non-Windows binaries") whose documented description is the strictest
-    of the off-secure-desktop values -- no "secure desktop" wording at all,
-    and the policy explicitly names non-Windows binaries (consent.exe is
-    invoked *for* a non-Windows binary, our installer). If the dispatch
-    layer is checking the CPB value as an enum rather than honoring
-    PromptOnSecureDesktop, CPB=4 is the next-most-likely candidate to
-    actually keep UAC on Default.
-
-    To actually keep UAC off the secure desktop we have to set BOTH:
-      PromptOnSecureDesktop = 0
-      ConsentPromptBehaviorAdmin = 4  (iter-8 candidate)
-
-    Restored on ``service secure-desktop uninstall``: both go back to 1, 5
-    (Microsoft default).
-
-    Returns the (PromptOnSecureDesktop, ConsentPromptBehaviorAdmin) readback
-    tuple so the caller can verify the writes stuck. The iter-5 surprise
-    where the write succeeded but the live value differed was the reason for
-    threading the readback through here.
+    CPB=4 specifically (not 5) is needed on Win 11 25H2 -- see
+    docs/win11-uac-investigation.md iter-7 vs iter-8.
     """
     import winreg
 
     posd_target = 0 if off else 1
-    # When disabling secure-desktop UAC, iter-8 targets CPB=4 (strictest
-    # off-secure-desktop value) instead of iter-7's CPB=5. When restoring,
-    # go back to 5 -- the modern Win 11 default. We deliberately do not
-    # restore to 2 (the dockur image's shipping value) because POSD=1 +
-    # CPB=2 is the secure-desktop-pinning combination we want to leave
-    # behind.
     cpba_target = 4 if off else 5
 
     with winreg.OpenKey(
@@ -1149,12 +1117,10 @@ def service_secure_desktop_install(
         click.echo(f"Warning: could not persist UAC policy: {exc}")
         click.echo("         Service will refuse auto-clicks until policy is set.")
 
-    # Disable PromptOnSecureDesktop so UAC renders on the user's Default
-    # desktop. The iter-1-4 investigation in docs/win11-uac-investigation.md
-    # confirms cross-desktop access to consent.exe is unreachable on Win11
-    # (UIA, Win32 enumeration, AND BitBlt are all blocked); the policy
-    # toggle is the only documented Microsoft mechanism that makes this
-    # scenario tractable. Restored on uninstall.
+    # Route UAC to the user's Default desktop. Without this every UAC
+    # prompt lands on Winlogon where consent.exe is unreachable from
+    # user-mode UIA (see docs/win11-uac-investigation.md). Restored on
+    # uninstall.
     try:
         posd, cpba = _set_uac_secure_desktop_off(True)
         if posd == 0 and cpba == 4:
