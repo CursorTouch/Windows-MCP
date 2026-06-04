@@ -405,11 +405,25 @@ def main() -> int:
             summary={"total": 1, "passed": 0, "failed": 1},
         )
 
+    payload = {
+        **asdict(report),
+        "results": [asdict(r) for r in report.results],
+    }
     with open(args.results, "w", encoding="utf-8") as fh:
-        json.dump({
-            **asdict(report),
-            "results": [asdict(r) for r in report.results],
-        }, fh, indent=2, default=str)
+        json.dump(payload, fh, indent=2, default=str)
+    # Also write a timestamped copy so concurrent test runs don't
+    # overwrite each other's data (schtasks /Run is non-blocking, and
+    # the windows-mcp-test ONLOGON task fires every login on top of
+    # any manual triggers).
+    try:
+        ts_path = os.path.join(
+            os.path.dirname(os.path.abspath(args.results)) or ".",
+            f"results-allow_all-{time.strftime('%H%M%S')}.json",
+        )
+        with open(ts_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+    except OSError:
+        pass
 
     print(json.dumps(report.summary, indent=2))
     return 0 if report.summary.get("failed", 1) == 0 else 1
