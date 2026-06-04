@@ -414,47 +414,63 @@ def uia_get_window_titles() -> list[str]:
 
 
 def _find_visible_hwnds_for_pid(pid: int) -> list[int]:
-    """Walk EnumWindows on the current desktop, return ALL visible
-    top-level HWNDs owned by *pid*.
+    """Return every TOP-LEVEL + CHILD HWND owned by *pid* on the current
+    desktop, regardless of visibility flag.
 
-    consent.exe can have multiple top-level windows: a frame HWND that
-    UIA exposes as only title-bar + System menu + Close, and a separate
-    HWND carrying the actual dialog content (the "Do you want to allow"
-    text + Yes/No buttons). Walking just the first match was missing
-    the buttons -- we now serialize every visible HWND.
+    consent.exe's dialog content (the Yes/No buttons, the prompt text,
+    publisher info) is rendered into a CHILD window of the frame HWND --
+    Win32 EnumWindows returns the top-level frame but not its children.
+    We use EnumWindows + EnumChildWindows together to get every HWND
+    consent.exe owns, then walk each via ElementFromHandle.
     """
     EnumWindows = _user32.EnumWindows
     EnumWindows.argtypes = [ctypes.c_void_p, ctypes.wintypes.LPARAM]
     EnumWindows.restype = ctypes.wintypes.BOOL
+    EnumChildWindows = _user32.EnumChildWindows
+    EnumChildWindows.argtypes = [ctypes.wintypes.HWND, ctypes.c_void_p, ctypes.wintypes.LPARAM]
+    EnumChildWindows.restype = ctypes.wintypes.BOOL
     GetWindowThreadProcessId = _user32.GetWindowThreadProcessId
     GetWindowThreadProcessId.argtypes = [
         ctypes.wintypes.HWND,
         ctypes.POINTER(ctypes.wintypes.DWORD),
     ]
     GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
-    IsWindowVisible = _user32.IsWindowVisible
-    IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
-    IsWindowVisible.restype = ctypes.wintypes.BOOL
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(
         ctypes.wintypes.BOOL,
         ctypes.wintypes.HWND,
         ctypes.wintypes.LPARAM,
     )
-    found: list[int] = []
+    top: list[int] = []
+    children: list[int] = []
 
     @WNDENUMPROC
-    def _on_window(hwnd, _lparam):
-        if not IsWindowVisible(hwnd):
-            return True
+    def _on_top(hwnd, _lparam):
         owner = ctypes.wintypes.DWORD(0)
         GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
         if owner.value == pid:
-            found.append(int(hwnd))
+            top.append(int(hwnd))
         return True
 
-    EnumWindows(ctypes.cast(_on_window, ctypes.c_void_p), 0)
-    return found
+    @WNDENUMPROC
+    def _on_child(hwnd, _lparam):
+        owner = ctypes.wintypes.DWORD(0)
+        GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid:
+            children.append(int(hwnd))
+        return True
+
+    EnumWindows(ctypes.cast(_on_top, ctypes.c_void_p), 0)
+    for parent_hwnd in top:
+        EnumChildWindows(parent_hwnd, ctypes.cast(_on_child, ctypes.c_void_p), 0)
+    # De-duplicate while preserving order (top first, then children).
+    seen: set[int] = set()
+    out: list[int] = []
+    for h in top + children:
+        if h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out
 
 
 def _find_top_hwnd_for_pid(pid: int) -> int:
