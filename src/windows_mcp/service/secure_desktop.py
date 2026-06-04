@@ -413,16 +413,15 @@ def uia_get_window_titles() -> list[str]:
         return []
 
 
-def _find_top_hwnd_for_pid(pid: int) -> int:
-    """Walk EnumWindows on the current desktop, return the first visible
-    top-level HWND owned by *pid*, or 0. Runs in the user-session worker.
+def _find_visible_hwnds_for_pid(pid: int) -> list[int]:
+    """Walk EnumWindows on the current desktop, return ALL visible
+    top-level HWNDs owned by *pid*.
 
-    EnumWindows sees windows across integrity levels for the calling
-    desktop, even from a medium-integrity caller. We use this to discover
-    consent.exe's HWND, which is invisible to IUIAutomation.GetRootElement
-    because consent.exe runs at System integrity -- the UIA tree walk
-    filters out higher-integrity windows even with TokenUIAccess=1, but
-    ElementFromHandle on a known HWND DOES cross the integrity boundary.
+    consent.exe can have multiple top-level windows: a frame HWND that
+    UIA exposes as only title-bar + System menu + Close, and a separate
+    HWND carrying the actual dialog content (the "Do you want to allow"
+    text + Yes/No buttons). Walking just the first match was missing
+    the buttons -- we now serialize every visible HWND.
     """
     EnumWindows = _user32.EnumWindows
     EnumWindows.argtypes = [ctypes.c_void_p, ctypes.wintypes.LPARAM]
@@ -442,7 +441,7 @@ def _find_top_hwnd_for_pid(pid: int) -> int:
         ctypes.wintypes.HWND,
         ctypes.wintypes.LPARAM,
     )
-    found = [0]
+    found: list[int] = []
 
     @WNDENUMPROC
     def _on_window(hwnd, _lparam):
@@ -450,12 +449,19 @@ def _find_top_hwnd_for_pid(pid: int) -> int:
             return True
         owner = ctypes.wintypes.DWORD(0)
         GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        if owner.value == pid and found[0] == 0:
-            found[0] = int(hwnd)
+        if owner.value == pid:
+            found.append(int(hwnd))
         return True
 
     EnumWindows(ctypes.cast(_on_window, ctypes.c_void_p), 0)
-    return found[0]
+    return found
+
+
+def _find_top_hwnd_for_pid(pid: int) -> int:
+    """Legacy helper retained for the publisher walker. Returns the first
+    visible top-level HWND, or 0."""
+    hwnds = _find_visible_hwnds_for_pid(pid)
+    return hwnds[0] if hwnds else 0
 
 
 def uia_get_tree(consent_pid: int = 0) -> list[dict]:
@@ -481,32 +487,32 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
             iuia, _ = _create_uia()
             walker = iuia.RawViewWalker
             if consent_pid:
-                hwnd = _find_top_hwnd_for_pid(consent_pid)
-                diag_lines.append(f"consent_pid={consent_pid} hwnd=0x{hwnd:x}")
-                logger.info(
-                    "uia_get_tree: consent_pid=%d -> hwnd=0x%x", consent_pid, hwnd
+                hwnds = _find_visible_hwnds_for_pid(consent_pid)
+                diag_lines.append(
+                    f"consent_pid={consent_pid} hwnds=[{','.join(f'0x{h:x}' for h in hwnds)}]"
                 )
-                if hwnd:
+                logger.info(
+                    "uia_get_tree: consent_pid=%d -> hwnds=%s", consent_pid, hwnds
+                )
+                walked_any = False
+                for hwnd in hwnds:
                     try:
                         elem = iuia.ElementFromHandle(hwnd)
                         if elem is None:
-                            diag_lines.append("ElementFromHandle returned None")
-                        else:
-                            node = _serialize_element(elem, walker)
-                            if node:
-                                node["_diag"] = " | ".join(diag_lines) + " | path=ElementFromHandle"
-                                nodes.append(node)
-                                return nodes
-                            else:
-                                diag_lines.append("_serialize_element returned None")
+                            diag_lines.append(f"ElementFromHandle(0x{hwnd:x}) None")
+                            continue
+                        node = _serialize_element(elem, walker)
+                        if node:
+                            node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
+                            nodes.append(node)
+                            walked_any = True
                     except Exception as exc:  # noqa: BLE001
-                        diag_lines.append(f"ElementFromHandle raised: {exc}")
+                        diag_lines.append(f"ElementFromHandle(0x{hwnd:x}) raised: {exc}")
                         logger.warning(
-                            "uia_get_tree: ElementFromHandle(0x%x) failed: %s -- "
-                            "falling back to desktop-root walk", hwnd, exc
+                            "uia_get_tree: ElementFromHandle(0x%x) failed: %s", hwnd, exc
                         )
-                else:
-                    diag_lines.append("EnumWindows found no visible hwnd for pid")
+                if walked_any:
+                    return nodes
             root = iuia.GetRootElement()
             child = walker.GetFirstChildElement(root)
             first = True
