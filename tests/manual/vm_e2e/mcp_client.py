@@ -182,12 +182,27 @@ async def assert_wait_for_uac_returns_dialog(
             json.dump(payload, fh, indent=2, default=str)
     except Exception:
         pass
+    # Collect any _diag markers from the tree so we see the worker's
+    # consent-pid lookup even when the tree itself is empty.
+    diag_msgs: list[str] = []
+    def _gather(node):
+        if not isinstance(node, dict):
+            return
+        d = node.get("_diag")
+        if d:
+            diag_msgs.append(d)
+        for c in node.get("children") or []:
+            _gather(c)
+    for top in tree:
+        _gather(top)
     detail = (
         f"ok={payload.get('ok')!r} fired={payload.get('fired')!r} "
         f"reason={payload.get('reason')!r} error={payload.get('error')!r} "
         f"top_windows={len(tree)} publisher={payload.get('publisher')!r} "
         f"policy={payload.get('policy')}"
     )
+    if diag_msgs:
+        detail += f" worker_diag={diag_msgs!r}"
     _record(report, "WaitForUACPrompt returns dialog", ok, detail, t0)
 
     # Bonus assertion: policy reported matches what we set up.
