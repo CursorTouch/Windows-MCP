@@ -90,14 +90,18 @@ def _extract_payload(call_result: Any) -> dict:
 
 
 def _find_named_invokable(tree: list[dict], name: str) -> dict | None:
-    """DFS through a WaitForUACPrompt tree looking for `name` with can_invoke=True."""
-    target = name.strip().lower()
+    """DFS through a WaitForUACPrompt tree looking for `name` with can_invoke=True.
+
+    Strips Windows accelerator prefixes ('&Yes' -> 'yes') and matches case
+    -insensitively. consent.exe's Yes/No buttons carry the accelerator on
+    Win 11."""
+    target = name.strip().lower().lstrip("&")
     stack = list(tree)
     while stack:
         node = stack.pop()
         if not isinstance(node, dict):
             continue
-        nname = (node.get("name") or "").strip().lower()
+        nname = (node.get("name") or "").strip().lower().lstrip("&")
         if nname == target and node.get("can_invoke"):
             return node
         for child in node.get("children") or []:
