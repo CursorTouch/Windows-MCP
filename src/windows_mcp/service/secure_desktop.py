@@ -57,25 +57,14 @@ _kernel32 = ctypes.windll.kernel32
 
 # Declare argtypes/restype on the user32 desktop/window-station functions
 # we call. Without these, ctypes passes Python str as a c_char_p (ASCII
-# bytes) but the *W APIs expect LPCWSTR (UTF-16) -- the call sees garbled
-# wide characters and returns NULL, so OpenDesktopW('Winlogon', ...) always
-# fails for the user-session worker and _input_desktop falls back to
-# OpenInputDesktop which (from inside a user session) returns the user's
-# Default desktop instead of Winlogon, leaving consent.exe outside the UIA
-# enumeration scope.
+# bytes) but the *W APIs expect LPCWSTR (UTF-16) -- silently corrupted
+# calls return NULL with no obvious cause.
 _user32.OpenWindowStationW.argtypes = [
     ctypes.wintypes.LPCWSTR,
     ctypes.wintypes.BOOL,
     ctypes.wintypes.DWORD,
 ]
 _user32.OpenWindowStationW.restype = ctypes.wintypes.HANDLE
-_user32.OpenDesktopW.argtypes = [
-    ctypes.wintypes.LPCWSTR,
-    ctypes.wintypes.DWORD,
-    ctypes.wintypes.BOOL,
-    ctypes.wintypes.DWORD,
-]
-_user32.OpenDesktopW.restype = ctypes.wintypes.HANDLE
 _user32.OpenInputDesktop.argtypes = [
     ctypes.wintypes.DWORD,
     ctypes.wintypes.BOOL,
@@ -121,19 +110,6 @@ def _open_winsta0() -> int:
 
 def _open_input_desktop(access: int = _DESKTOP_ALL_ACCESS) -> int:
     handle = _user32.OpenInputDesktop(0, False, access)
-    return handle or 0
-
-
-def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
-    handle = _user32.OpenDesktopW(name, 0, False, access)
-    if not handle:
-        gle = ctypes.GetLastError()
-        logger.info(
-            "OpenDesktopW(%r, access=0x%04x) failed (gle=%d)",
-            name,
-            access,
-            gle,
-        )
     return handle or 0
 
 
@@ -289,32 +265,6 @@ def _serialize_element(element: Any, walker: Any, depth: int = 0) -> dict | None
         return None
 
 
-def _diagnose_uia_element(elem: Any, label: str) -> dict:
-    """Best-effort metadata dump for one UIA element. Used by the UIAccess
-    cross-desktop probes -- the worker's stderr is the only way to see what
-    UIA returns for elements that live on Winlogon, so we log enough to
-    distinguish consent.exe from the user's Default-desktop fallback.
-    """
-    info: dict[str, Any] = {"label": label}
-    for key, attr in (
-        ("name", "CurrentName"),
-        ("ctrl", "CurrentLocalizedControlType"),
-        ("cls", "CurrentClassName"),
-        ("pid", "CurrentProcessId"),
-    ):
-        try:
-            info[key] = getattr(elem, attr)
-        except Exception:
-            pass
-    try:
-        hwnd = elem.CurrentNativeWindowHandle
-        info["hwnd"] = f"0x{hwnd:x}" if hwnd else "0"
-    except Exception:
-        pass
-    logger.info("uiaccess-probe: %s", info)
-    return info
-
-
 def _find_consent_pid() -> int | None:
     """Walk Toolhelp32Snapshot looking for ``consent.exe``. Returns the first
     matching PID or ``None``. Used to confirm element identity from a
@@ -366,81 +316,6 @@ def _find_consent_pid() -> int | None:
     finally:
         k32.CloseHandle(snap)
     return None
-
-
-def _find_threads_of_pid(pid: int) -> list[int]:
-    """Return all thread IDs belonging to ``pid``. Used to call
-    ``GetGUIThreadInfo`` against consent.exe's GUI thread directly --
-    that API can read cross-desktop thread state for a UIAccess caller
-    even when ``OpenDesktop('Winlogon')`` is blocked.
-    """
-    import ctypes
-    from ctypes import wintypes
-
-    TH32CS_SNAPTHREAD = 0x00000004
-    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-
-    class THREADENTRY32(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", wintypes.DWORD),
-            ("cntUsage", wintypes.DWORD),
-            ("th32ThreadID", wintypes.DWORD),
-            ("th32OwnerProcessID", wintypes.DWORD),
-            ("tpBasePri", ctypes.c_long),
-            ("tpDeltaPri", ctypes.c_long),
-            ("dwFlags", wintypes.DWORD),
-        ]
-
-    k32 = ctypes.windll.kernel32
-    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
-    if snap == INVALID_HANDLE_VALUE or snap == 0:
-        return []
-    out: list[int] = []
-    try:
-        k32.Thread32First.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(THREADENTRY32),
-        ]
-        k32.Thread32First.restype = wintypes.BOOL
-        k32.Thread32Next.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(THREADENTRY32),
-        ]
-        k32.Thread32Next.restype = wintypes.BOOL
-        te = THREADENTRY32()
-        te.dwSize = ctypes.sizeof(THREADENTRY32)
-        ok = k32.Thread32First(snap, ctypes.byref(te))
-        while ok:
-            if te.th32OwnerProcessID == pid:
-                out.append(int(te.th32ThreadID))
-            ok = k32.Thread32Next(snap, ctypes.byref(te))
-    finally:
-        k32.CloseHandle(snap)
-    return out
-
-
-def _walk_to_window_ancestor(elem: Any, walker: Any) -> Any:
-    """Walk up an element's ancestors until we hit a Window control (50032)
-    or run out of parents. Returns the original element if no Window ancestor
-    is reachable -- which is what we want to serialise either way.
-    """
-    cur = elem
-    for _ in range(30):
-        try:
-            parent = walker.GetParentElement(cur)
-        except Exception:
-            return cur
-        if parent is None:
-            return cur
-        try:
-            ct = parent.CurrentControlType
-        except Exception:
-            ct = 0
-        if ct == 50032:  # UIA_WindowControlTypeId
-            return parent
-        cur = parent
-    return cur
-
 
 
 # ---------------------------------------------------------------------------
