@@ -207,10 +207,40 @@ async def assert_yes_button_present(
     payload: dict, report: Report
 ) -> dict | None:
     t0 = time.monotonic()
-    yes = _find_named_invokable(payload.get("tree") or [], "Yes")
+    tree = payload.get("tree") or []
+    yes = _find_named_invokable(tree, "Yes")
     if yes is None:
-        _record(report, "UAC tree contains invokable Yes button", False,
-                "no element named 'Yes' with can_invoke=True", t0)
+        # Dump everything we can see -- name/ctrl/can_invoke for every node --
+        # so the failure detail is actionable (localized label? can_invoke=False
+        # on consent.exe? wrong subtree walked?).
+        candidates: list[str] = []
+        def _walk(node: dict, depth: int = 0):
+            if not isinstance(node, dict):
+                return
+            n = (node.get("name") or "").strip()
+            c = node.get("control_type") or ""
+            inv = node.get("can_invoke")
+            if n or c:
+                candidates.append(f"d{depth} ctrl={c!r} name={n!r} inv={inv}")
+            for child in node.get("children") or []:
+                _walk(child, depth + 1)
+        for top in tree:
+            _walk(top)
+        # Write the full dump to the share so we can see it from host.
+        from pathlib import Path
+        share = Path(r"\\host.lan\Data\Windows-MCP")
+        try:
+            (share / "uac-tree-dump.txt").write_text(
+                "\n".join(candidates), encoding="utf-8"
+            )
+        except OSError:
+            pass
+        detail = (
+            "no element named 'Yes' with can_invoke=True. "
+            f"Tree had {sum(1 for _ in candidates)} named/typed nodes; "
+            "full dump at \\\\host.lan\\Data\\Windows-MCP\\uac-tree-dump.txt"
+        )
+        _record(report, "UAC tree contains invokable Yes button", False, detail, t0)
         return None
     cx, cy = yes.get("center", {}).get("x"), yes.get("center", {}).get("y")
     ok = isinstance(cx, int) and isinstance(cy, int)
