@@ -265,6 +265,27 @@ def _serialize_element(element: Any, walker: Any, depth: int = 0) -> dict | None
         return None
 
 
+def _tree_contains_consent(tree: list[dict], _pid: int) -> bool:
+    """Return True if the worker's serialized UIA tree contains a window that
+    looks like consent.exe's UAC dialog. We match on the dialog title
+    "User Account Control" rather than process id (the serializer doesn't
+    record pid). _pid is accepted for future use."""
+
+    target = "user account control"
+
+    def _walk(node: dict) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if target in (node.get("name") or "").lower():
+            return True
+        for child in node.get("children") or []:
+            if _walk(child):
+                return True
+        return False
+
+    return any(_walk(n) for n in tree)
+
+
 def _find_consent_pid() -> int | None:
     """Walk Toolhelp32Snapshot looking for ``consent.exe``. Returns the first
     matching PID or ``None``. Used to confirm element identity from a
@@ -1041,13 +1062,32 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                         consent_pid,
                         name,
                     )
+                    # consent.exe shows up in the process list before its
+                    # top-level dialog window is registered with UIA. Walk
+                    # the user-session UIA tree up to 30 times (~6s on a
+                    # KVM-disabled VM) until the consent.exe window appears,
+                    # then return.
                     tree: list[dict] = []
                     publisher = None
-                    try:
-                        tree = _spawn_in_user_session("tree", timeout=10.0) or []
-                    except Exception as exc:
-                        logger.warning("Default-desktop tree spawn failed: %s", exc)
-                        tree = []
+                    for attempt in range(30):
+                        try:
+                            tree = _spawn_in_user_session("tree", timeout=15.0) or []
+                        except Exception as exc:
+                            logger.warning("Default-desktop tree spawn failed: %s", exc)
+                            tree = []
+                        if _tree_contains_consent(tree, consent_pid):
+                            logger.info(
+                                "wait_for_uac_prompt: consent.exe in UIA tree after %d retries (%d top windows)",
+                                attempt,
+                                len(tree),
+                            )
+                            break
+                        time.sleep(0.2)
+                    else:
+                        logger.warning(
+                            "wait_for_uac_prompt: consent.exe pid=%d never appeared in user-session UIA tree after 30 retries -- returning whatever the worker saw",
+                            consent_pid,
+                        )
                     try:
                         publisher = _spawn_in_user_session("publisher", timeout=10.0)
                     except Exception as exc:
