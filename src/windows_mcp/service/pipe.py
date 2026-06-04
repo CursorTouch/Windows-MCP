@@ -6,13 +6,12 @@ Usage
 
     client = get_client()
     if client.is_available():
-        png = client.screenshot()   # bytes
         name = client.desktop_name()  # "Default" | "Winlogon"
+        tree = client.uia_tree()
 """
 
 from __future__ import annotations
 
-import base64
 import logging
 import time
 from typing import Any
@@ -67,11 +66,6 @@ class HostServiceClient:
     def desktop_name(self) -> str:
         """Return the name of the current input desktop ('Default' or 'Winlogon')."""
         return self._call("desktop_name", {})
-
-    def screenshot(self) -> bytes:
-        """Capture the current input desktop (incl. UAC). Returns PNG bytes."""
-        encoded = self._call("screenshot", {})
-        return base64.b64decode(encoded)
 
     def uia_windows(self) -> list[str]:
         """Return top-level window titles visible on the input desktop."""

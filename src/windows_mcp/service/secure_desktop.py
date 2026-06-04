@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
-import io
 import json
 import logging
 import re
@@ -104,24 +103,6 @@ _user32.GetUserObjectInformationW.argtypes = [
 _user32.GetUserObjectInformationW.restype = ctypes.wintypes.BOOL
 _kernel32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
 
-# When set (by the user-session worker after reading from broker-passed
-# stdin), _input_desktop() attaches the thread to this handle instead of
-# trying to OpenDesktopW("Winlogon") itself — which fails for non-SYSTEM
-# tokens. See _spawn_in_user_session for the broker side.
-_preattached_winlogon_hdesk: int = 0
-
-# When set (by the user-session worker after reading from broker-passed
-# stdin), uia_get_tree uses IUIAutomation.ElementFromHandle on this HWND
-# instead of walking the thread desktop's root. This is the fallback path
-# when the worker can't attach to Winlogon (Winlogon's DACL denies
-# OpenDesktopW even to UIAccess processes -- empirically gle=5 ACCESS_DENIED
-# on Win11 with TokenUIAccess=1). The SYSTEM broker can open Winlogon and
-# enumerate its windows, so it walks Winlogon, finds consent.exe's top HWND,
-# and hands it to the worker via stdin. ElementFromHandle works cross-desktop
-# for UIAccess processes, so the worker can then walk the dialog without
-# ever switching desktops.
-_preattached_consent_hwnd: int = 0
-
 # UIA constants
 _UIA_InvokePatternId = 10000
 _UIA_NamePropertyId = 30005
@@ -156,299 +137,6 @@ def _open_desktop_by_name(name: str, access: int = _DESKTOP_ALL_ACCESS) -> int:
     return handle or 0
 
 
-def _grant_winlogon_access_to_console_user() -> tuple | None:
-    """Temporarily add an ACE granting the active console user
-    DESKTOP_ALL_ACCESS to the Winlogon desktop, so the spawned worker can
-    OpenDesktopW("Winlogon") + SetThreadDesktop + walk consent.exe.
-
-    Returns a state tuple suitable for handing to _restore_winlogon_dacl,
-    or None on failure (caller proceeds without the loosening; tree
-    capture will likely return the worker's Default-desktop fallback).
-    """
-    try:
-        import win32api
-        import win32security
-        import win32ts
-    except Exception as exc:  # noqa: BLE001
-        logger.info("DACL loosen import failed: %s", exc)
-        return None
-
-    DESKTOP_ALL_ACCESS = 0xF01FF  # STANDARD_RIGHTS_REQUIRED | desktop bits
-    DACL_SECURITY_INFORMATION = 0x4
-    READ_CONTROL = 0x00020000
-    WRITE_DAC = 0x00040000
-    open_access = DESKTOP_ALL_ACCESS | READ_CONTROL | WRITE_DAC
-
-    try:
-        session_id = win32ts.WTSGetActiveConsoleSessionId()
-        if session_id in (0xFFFFFFFF, 0):
-            logger.info("DACL loosen: no console session")
-            return None
-        user_token = win32ts.WTSQueryUserToken(session_id)
-        user_sid_struct = win32security.GetTokenInformation(
-            user_token,
-            win32security.TokenUser,
-        )
-        user_sid = user_sid_struct[0]
-        try:
-            win32api.CloseHandle(user_token)
-        except Exception:
-            pass
-    except Exception as exc:  # noqa: BLE001
-        logger.info("DACL loosen: WTSQueryUserToken/TokenUser failed: %s", exc)
-        return None
-
-    hdesk = _user32.OpenDesktopW("Winlogon", 0, False, open_access)
-    if not hdesk:
-        logger.info(
-            "DACL loosen: OpenDesktopW('Winlogon', WRITE_DAC) failed gle=%d",
-            ctypes.GetLastError(),
-        )
-        return None
-
-    try:
-        original_sd = win32security.GetUserObjectSecurity(
-            hdesk,
-            DACL_SECURITY_INFORMATION,
-        )
-        original_dacl = original_sd.GetSecurityDescriptorDacl()
-        new_dacl = win32security.ACL()
-        if original_dacl:
-            for i in range(original_dacl.GetAceCount()):
-                ace = original_dacl.GetAce(i)
-                ace_type_flags, mask, sid = ace
-                ace_type, _ace_flags = ace_type_flags
-                if ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE:
-                    new_dacl.AddAccessAllowedAce(
-                        win32security.ACL_REVISION,
-                        mask,
-                        sid,
-                    )
-                elif ace_type == win32security.ACCESS_DENIED_ACE_TYPE:
-                    new_dacl.AddAccessDeniedAce(
-                        win32security.ACL_REVISION,
-                        mask,
-                        sid,
-                    )
-                # Skip audit/object ACEs -- they don't affect access decisions.
-        new_dacl.AddAccessAllowedAce(
-            win32security.ACL_REVISION,
-            DESKTOP_ALL_ACCESS,
-            user_sid,
-        )
-        new_sd = win32security.SECURITY_DESCRIPTOR()
-        new_sd.SetSecurityDescriptorDacl(True, new_dacl, False)
-        win32security.SetUserObjectSecurity(
-            hdesk,
-            DACL_SECURITY_INFORMATION,
-            new_sd,
-        )
-        logger.info(
-            "DACL loosen: granted user SID %s DESKTOP_ALL_ACCESS on Winlogon",
-            win32security.ConvertSidToStringSid(user_sid),
-        )
-        return (hdesk, original_sd)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("DACL loosen: SetUserObjectSecurity failed: %s", exc)
-        try:
-            _user32.CloseDesktop(hdesk)
-        except Exception:
-            pass
-        return None
-
-
-def _restore_winlogon_dacl(state: tuple) -> None:
-    """Restore the original Winlogon DACL after _grant_winlogon_access_to_console_user."""
-    try:
-        import win32security
-    except Exception:
-        return
-    hdesk, original_sd = state
-    DACL_SECURITY_INFORMATION = 0x4
-    try:
-        win32security.SetUserObjectSecurity(
-            hdesk,
-            DACL_SECURITY_INFORMATION,
-            original_sd,
-        )
-        logger.info("DACL restore: original Winlogon DACL re-applied")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("DACL restore failed: %s", exc)
-    finally:
-        try:
-            _user32.CloseDesktop(hdesk)
-        except Exception:
-            pass
-
-
-def _get_elevated_user_token_for_impersonation() -> int:
-    """Return a token handle the broker can ImpersonateLoggedOnUser with so
-    EnumDesktopWindows on Winlogon sees the call from the session-1 admin
-    user instead of from SYSTEM session 0. Returns 0 on failure (caller
-    skips impersonation and EnumDesktopWindows will return 0 windows due
-    to session-isolation, but the rest of the flow still works in the
-    degraded path).
-    """
-    try:
-        import win32ts
-        import win32security
-    except Exception:
-        return 0
-    try:
-        session_id = win32ts.WTSGetActiveConsoleSessionId()
-        if session_id in (0xFFFFFFFF, 0):
-            return 0
-        user_token = win32ts.WTSQueryUserToken(session_id)
-        try:
-            elevated = win32security.GetTokenInformation(
-                user_token,
-                win32security.TokenLinkedToken,
-            )
-        except Exception:
-            elevated = None
-        # We want to KEEP the elevated handle and CLOSE user_token.
-        # win32ts returns PyHANDLE -- int() extracts the underlying handle.
-        if elevated:
-            try:
-                import win32api
-
-                win32api.CloseHandle(user_token)
-            except Exception:
-                pass
-            return int(elevated)
-        return int(user_token)
-    except Exception as exc:  # noqa: BLE001
-        logger.info(
-            "_get_elevated_user_token_for_impersonation failed: %s",
-            exc,
-        )
-        return 0
-
-
-def _find_consent_hwnd_on(hdesk: int, impersonate_token: int = 0) -> int:
-    """Walk *hdesk* (a Winlogon desktop handle the broker can open as SYSTEM)
-    and return the top-level HWND owned by consent.exe -- or 0 if none.
-
-    The user-session worker can't open Winlogon (the desktop DACL denies
-    UIAccess processes), so it can't EnumDesktopWindows itself either.
-    The SYSTEM broker can, so we do it here and hand the worker just the
-    HWND -- ElementFromHandle is cross-desktop with UIAccess.
-    """
-    _user32.EnumDesktopWindows.argtypes = [
-        ctypes.wintypes.HANDLE,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    _user32.EnumDesktopWindows.restype = ctypes.wintypes.BOOL
-    _user32.GetWindowThreadProcessId.argtypes = [
-        ctypes.wintypes.HANDLE,
-        ctypes.POINTER(ctypes.wintypes.DWORD),
-    ]
-    _user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
-    _user32.GetClassNameW.argtypes = [
-        ctypes.wintypes.HANDLE,
-        ctypes.wintypes.LPWSTR,
-        ctypes.c_int,
-    ]
-    _user32.GetClassNameW.restype = ctypes.c_int
-    _kernel32.OpenProcess.argtypes = [
-        ctypes.wintypes.DWORD,
-        ctypes.wintypes.BOOL,
-        ctypes.wintypes.DWORD,
-    ]
-    _kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
-    _kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
-    _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
-    QueryFullProcessImageNameW = _kernel32.QueryFullProcessImageNameW
-    QueryFullProcessImageNameW.argtypes = [
-        ctypes.wintypes.HANDLE,
-        ctypes.wintypes.DWORD,
-        ctypes.wintypes.LPWSTR,
-        ctypes.POINTER(ctypes.wintypes.DWORD),
-    ]
-    QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
-
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-
-    WNDENUMPROC = ctypes.WINFUNCTYPE(
-        ctypes.wintypes.BOOL,
-        ctypes.wintypes.HWND,
-        ctypes.wintypes.LPARAM,
-    )
-
-    found = [0]
-    enumerated: list[tuple[int, str, str]] = []  # (hwnd, class, exe)
-
-    @WNDENUMPROC
-    def _on_window(hwnd, _lparam):
-        pid = ctypes.wintypes.DWORD(0)
-        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        cls = ctypes.create_unicode_buffer(128)
-        _user32.GetClassNameW(hwnd, cls, 128)
-        exe_name = ""
-        if pid.value:
-            h_proc = _kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                False,
-                pid.value,
-            )
-            if h_proc:
-                try:
-                    buf = ctypes.create_unicode_buffer(260)
-                    size = ctypes.wintypes.DWORD(260)
-                    if QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
-                        exe_name = buf.value
-                finally:
-                    _kernel32.CloseHandle(h_proc)
-        enumerated.append((int(hwnd), cls.value, exe_name))
-        if exe_name.lower().endswith("\\consent.exe") and found[0] == 0:
-            found[0] = int(hwnd)
-        return True  # keep enumerating so we capture the full list for diag
-
-    advapi32 = ctypes.windll.advapi32
-    advapi32.ImpersonateLoggedOnUser.argtypes = [ctypes.wintypes.HANDLE]
-    advapi32.ImpersonateLoggedOnUser.restype = ctypes.wintypes.BOOL
-    advapi32.RevertToSelf.restype = ctypes.wintypes.BOOL
-
-    impersonated = False
-    if impersonate_token:
-        if advapi32.ImpersonateLoggedOnUser(impersonate_token):
-            impersonated = True
-        else:
-            logger.info(
-                "_find_consent_hwnd_on: ImpersonateLoggedOnUser failed (gle=%d)",
-                ctypes.GetLastError(),
-            )
-    try:
-        ok = _user32.EnumDesktopWindows(
-            hdesk,
-            ctypes.cast(_on_window, ctypes.c_void_p),
-            0,
-        )
-        enum_gle = ctypes.GetLastError() if not ok else 0
-    finally:
-        if impersonated:
-            advapi32.RevertToSelf()
-    logger.info(
-        "_find_consent_hwnd_on: EnumDesktopWindows ok=%s gle=%d "
-        "windows_seen=%d match=0x%x impersonated=%s",
-        bool(ok),
-        enum_gle,
-        len(enumerated),
-        found[0],
-        impersonated,
-    )
-    # Dump up to 20 windows so we can see what was on Winlogon when we looked.
-    for hwnd, cls, exe in enumerated[:20]:
-        logger.info(
-            "_find_consent_hwnd_on:   hwnd=0x%x class=%r exe=%r",
-            hwnd,
-            cls,
-            exe,
-        )
-    return found[0]
-
-
 def _get_desktop_name(hdesk: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
     needed = ctypes.wintypes.DWORD()
@@ -459,21 +147,15 @@ def _get_desktop_name(hdesk: int) -> str:
 
 
 @contextmanager
-def _input_desktop(prefer_winlogon: bool = True):
-    """Switch process/thread to the input desktop, then restore on exit.
+def _input_desktop(prefer_winlogon: bool = True):  # noqa: ARG001 -- kept for callsite compatibility
+    """Switch the thread to the input (Default) desktop, then restore on exit.
 
-    From a user-session process, ``OpenInputDesktop`` returns the user's
-    *Default* desktop even while UAC is up — Secure Desktop is intentionally
-    isolated from the user session, and the user-session worker can't see
-    Winlogon as the input desktop. So when *prefer_winlogon* is true (the
-    case for UAC tree walking), we first try opening "Winlogon" by name and
-    only fall back to OpenInputDesktop if that fails. The handle-by-name
-    path goes through ``OpenDesktopW`` which Winlogon's DACL does grant to
-    admin tokens (and to uiAccess processes).
-
-    Tries ALL_ACCESS first (needed for synthetic input ops), falls back to
-    the minimum read+switch mask. Logs which path actually stuck (and a
-    loud warning if nothing did) so future regressions don't fail silently.
+    Pre-iter-8 this also tried `OpenDesktopW("Winlogon")` to walk the
+    UAC dialog cross-desktop; that whole path is gone now because the
+    secure-desktop install routes UAC to Default. The `prefer_winlogon`
+    argument is left as a stub so old callsites compile -- it is ignored.
+    Tries ALL_ACCESS first (needed for synthetic input), falls back to
+    DESKTOP_READ_ATTACH if that's all we can get.
     """
     hwinsta_prev = _user32.GetProcessWindowStation()
     hdesk_prev = _user32.GetThreadDesktop(_kernel32.GetCurrentThreadId())
@@ -481,54 +163,25 @@ def _input_desktop(prefer_winlogon: bool = True):
     if hwinsta:
         _user32.SetProcessWindowStation(hwinsta)
     hdesk = 0
-    own_hdesk = True  # whether we should close this handle on exit
+    own_hdesk = True
     attached_via = None
-    attached_how = None
-    # If the broker handed us a Winlogon desktop handle via stdin, use it
-    # directly. The handle belongs to the worker process for its lifetime —
-    # don't close it in finally.
-    if prefer_winlogon and _preattached_winlogon_hdesk:
-        if _user32.SetThreadDesktop(_preattached_winlogon_hdesk):
-            hdesk = _preattached_winlogon_hdesk
-            own_hdesk = False
-            attached_how = "broker-handoff"
-            attached_via = _DESKTOP_ALL_ACCESS
-    if not hdesk:
-        candidates: list[tuple[str, Any]] = []
-        if prefer_winlogon:
-            candidates.append(
-                ("Winlogon-by-name", lambda access: _open_desktop_by_name("Winlogon", access))
-            )
-        candidates.append(("input-desktop", _open_input_desktop))
-        for how, opener in candidates:
-            for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
-                hdesk = opener(access)
-                if not hdesk:
-                    continue
-                if _user32.SetThreadDesktop(hdesk):
-                    attached_via = access
-                    attached_how = how
-                    break
-                # SetThreadDesktop failed even though we got a handle — drop
-                # it and try a narrower access mask.
-                _user32.CloseDesktop(hdesk)
-                hdesk = 0
-            if hdesk:
-                break
+    for access in (_DESKTOP_ALL_ACCESS, _DESKTOP_READ_ATTACH):
+        hdesk = _open_input_desktop(access)
+        if not hdesk:
+            continue
+        if _user32.SetThreadDesktop(hdesk):
+            attached_via = access
+            break
+        _user32.CloseDesktop(hdesk)
+        hdesk = 0
     if hdesk:
         name = _get_desktop_name(hdesk) or "(unknown)"
-        logger.info(
-            "_input_desktop: attached to %r via %s access=0x%04x",
-            name,
-            attached_how,
-            attached_via,
-        )
+        logger.info("_input_desktop: attached to %r access=0x%04x", name, attached_via)
     else:
         logger.warning(
-            "_input_desktop: could not attach to any candidate desktop "
-            "(prefer_winlogon=%s). The thread will stay on the worker's "
-            "initial desktop and UIA enumeration will reflect that desktop.",
-            prefer_winlogon,
+            "_input_desktop: could not attach to the input desktop. The "
+            "thread will stay on the worker's initial desktop and UIA "
+            "enumeration will reflect that desktop."
         )
     try:
         yield
@@ -789,636 +442,6 @@ def _walk_to_window_ancestor(elem: Any, walker: Any) -> Any:
     return cur
 
 
-def uia_get_tree_uiaccess(wait_ms: int = 3000) -> list[dict]:
-    """Cross-desktop UAC tree fetch using only UIAccess + UIA -- no DACL
-    munging, no SetThreadDesktop.
-
-    UIAccess processes are supposed to receive UIA elements/events from any
-    desktop (this is the documented mechanism Narrator/Magnifier use to read
-    UAC). Iteration 2 layers many strategies, ordered cheap -> expensive:
-
-      S1. ``GetForegroundWindow`` + ``ElementFromHandle``
-      S2. ``ElementFromPoint`` at screen centre
-      S3. ``GetGUIThreadInfo(0)`` -> hwndActive/hwndFocus
-      S4. ``GetGUIThreadInfo(consent.exe-tid)`` for each consent.exe thread
-      S5. ``GetFocusedElement``
-      S6. Walk top-level children of root via RawViewWalker
-      S7-S9. UIA events (Focus, WindowOpened, StructureChanged)
-
-    Each candidate is checked against a consent.exe identity filter (matches
-    consent.exe PID, or class/name matches the UAC dialog pattern). Things
-    that look like our own user-session windows (ConsoleWindowClass etc.)
-    are rejected outright so we don't short-circuit and miss consent.exe.
-    """
-    import ctypes
-    from ctypes import wintypes
-
-    import comtypes
-
-    # --------------------------------------------------------------- helpers
-    consent_pid = _find_consent_pid()
-    consent_tids = _find_threads_of_pid(consent_pid) if consent_pid else []
-    logger.info(
-        "uiaccess: consent.exe pid=%s threads=%s",
-        consent_pid,
-        consent_tids[:6],
-    )
-
-    def _info_of(elem: Any) -> dict:
-        """Cheap props dump for an element. Logs nothing -- pure read."""
-        info: dict[str, Any] = {}
-        if elem is None:
-            return info
-        for key, attr in (
-            ("name", "CurrentName"),
-            ("ctrl", "CurrentLocalizedControlType"),
-            ("cls", "CurrentClassName"),
-            ("pid", "CurrentProcessId"),
-        ):
-            try:
-                info[key] = getattr(elem, attr)
-            except Exception:
-                pass
-        try:
-            hwnd = elem.CurrentNativeWindowHandle
-            info["hwnd"] = int(hwnd) if hwnd else 0
-        except Exception:
-            info["hwnd"] = 0
-        return info
-
-    BAD_CLASSES = {
-        "ConsoleWindowClass",
-        "ApplicationFrameWindow",
-        "CASCADIA_HOSTING_WINDOW_CLASS",
-        "PseudoConsoleWindow",
-        "WorkerW",
-        "Progman",
-        "Shell_TrayWnd",
-        "Shell_SecondaryTrayWnd",
-        "Windows.UI.Core.CoreWindow",
-    }
-    BAD_NAME_SUBSTRINGS = (
-        "powershell",
-        "command prompt",
-        "windows mcp",
-        "task manager",
-        "program manager",
-        "taskbar",
-    )
-
-    def _is_uac_like(info: dict) -> bool:
-        if not info:
-            return False
-        if consent_pid and info.get("pid") == consent_pid:
-            return True
-        cls = (info.get("cls") or "").lower()
-        if "consent" in cls or "credential dialog" in cls or cls == "$$$$markup":
-            return True
-        name = (info.get("name") or "").lower()
-        if "user account control" in name:
-            return True
-        return False
-
-    def _is_definitely_not_uac(info: dict) -> bool:
-        if not info:
-            return True
-        if (info.get("cls") or "") in BAD_CLASSES:
-            return True
-        name = (info.get("name") or "").lower()
-        if any(s in name for s in BAD_NAME_SUBSTRINGS):
-            return True
-        return False
-
-    def _work() -> list[dict]:
-        iuia, uia_core = _create_uia()
-        walker = iuia.RawViewWalker
-
-        def _try_capture(elem: Any, label: str) -> dict | None:
-            """Inspect, classify, and serialise an element. Returns the
-            serialised tree if and only if it looks like a UAC dialog;
-            otherwise logs and returns None so the next strategy can try.
-            """
-            if elem is None:
-                logger.info("uiaccess %s: elem is None", label)
-                return None
-            info = _info_of(elem)
-            logger.info("uiaccess %s: %s", label, info)
-            if _is_definitely_not_uac(info):
-                logger.info("uiaccess %s: REJECT (cls/name in bad list)", label)
-                return None
-            top = _walk_to_window_ancestor(elem, walker)
-            top_info = _info_of(top) if top is not None else {}
-            logger.info("uiaccess %s.top: %s", label, top_info)
-            if _is_definitely_not_uac(top_info):
-                logger.info("uiaccess %s.top: REJECT (cls/name in bad list)", label)
-                return None
-            if not (_is_uac_like(info) or _is_uac_like(top_info)):
-                logger.info(
-                    "uiaccess %s: neutral (not UAC-pid/class/name); skipping",
-                    label,
-                )
-                return None
-            node = _serialize_element(top if top is not None else elem, walker)
-            if not node:
-                logger.info("uiaccess %s: serialise returned empty", label)
-                return None
-            logger.info(
-                "uiaccess %s: UAC-MATCH name=%r kids=%d",
-                label,
-                node.get("name"),
-                len(node.get("children") or []),
-            )
-            return node
-
-        # ============================================================
-        # Strategy S1: GetForegroundWindow + ElementFromHandle
-        # ============================================================
-        user32 = ctypes.windll.user32
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        user32.GetSystemMetrics.argtypes = [ctypes.c_int]
-        user32.GetSystemMetrics.restype = ctypes.c_int
-
-        try:
-            fg = user32.GetForegroundWindow()
-            logger.info("uiaccess S1: GetForegroundWindow=0x%x", fg or 0)
-            if fg:
-                try:
-                    elem = iuia.ElementFromHandle(fg)
-                    captured = _try_capture(elem, "S1-foreground")
-                    if captured:
-                        return [captured]
-                except Exception as exc:
-                    logger.info("uiaccess S1 ElementFromHandle: %s", exc)
-        except Exception as exc:
-            logger.info("uiaccess S1: %s", exc)
-
-        # ============================================================
-        # Strategy S2: ElementFromPoint at screen centre
-        # ============================================================
-        try:
-            cx = user32.GetSystemMetrics(0) // 2  # SM_CXSCREEN
-            cy = user32.GetSystemMetrics(1) // 2
-            logger.info("uiaccess S2: ElementFromPoint(%d, %d)", cx, cy)
-            try:
-                from comtypes.gen.UIAutomationClient import tagPOINT
-
-                pt = tagPOINT(cx, cy)
-            except Exception:
-                # Fall back to ctypes POINT
-                class _POINT(ctypes.Structure):
-                    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-                pt = _POINT(cx, cy)
-            try:
-                elem = iuia.ElementFromPoint(pt)
-                captured = _try_capture(elem, "S2-center")
-                if captured:
-                    return [captured]
-            except Exception as exc:
-                logger.info("uiaccess S2 ElementFromPoint: %s", exc)
-        except Exception as exc:
-            logger.info("uiaccess S2: %s", exc)
-
-        # ============================================================
-        # Strategy S3: GetGUIThreadInfo(0) -- foreground thread's GUI
-        # ============================================================
-        class GUITHREADINFO(ctypes.Structure):
-            _fields_ = [
-                ("cbSize", wintypes.DWORD),
-                ("flags", wintypes.DWORD),
-                ("hwndActive", wintypes.HWND),
-                ("hwndFocus", wintypes.HWND),
-                ("hwndCapture", wintypes.HWND),
-                ("hwndMenuOwner", wintypes.HWND),
-                ("hwndMoveSize", wintypes.HWND),
-                ("hwndCaret", wintypes.HWND),
-                ("rcCaret", wintypes.RECT),
-            ]
-
-        user32.GetGUIThreadInfo.argtypes = [
-            wintypes.DWORD,
-            ctypes.POINTER(GUITHREADINFO),
-        ]
-        user32.GetGUIThreadInfo.restype = wintypes.BOOL
-
-        def _probe_thread_info(tid: int, tag: str) -> dict | None:
-            gti = GUITHREADINFO()
-            gti.cbSize = ctypes.sizeof(GUITHREADINFO)
-            ok = user32.GetGUIThreadInfo(tid, ctypes.byref(gti))
-            logger.info(
-                "uiaccess %s: GetGUIThreadInfo(%d) ok=%s active=0x%x focus=0x%x menuOwner=0x%x",
-                tag,
-                tid,
-                bool(ok),
-                int(gti.hwndActive or 0),
-                int(gti.hwndFocus or 0),
-                int(gti.hwndMenuOwner or 0),
-            )
-            if not ok:
-                return None
-            for hwnd, sub in (
-                (gti.hwndActive, "active"),
-                (gti.hwndFocus, "focus"),
-                (gti.hwndMenuOwner, "menuOwner"),
-            ):
-                if hwnd:
-                    try:
-                        elem = iuia.ElementFromHandle(int(hwnd))
-                        cap = _try_capture(elem, f"{tag}-{sub}")
-                        if cap:
-                            return cap
-                    except Exception as exc:
-                        logger.info("uiaccess %s-%s EFH: %s", tag, sub, exc)
-            return None
-
-        cap = _probe_thread_info(0, "S3")
-        if cap:
-            return [cap]
-
-        # ============================================================
-        # Strategy S4: GetGUIThreadInfo on each consent.exe thread
-        # ============================================================
-        for tid in consent_tids[:12]:
-            cap = _probe_thread_info(tid, f"S4(consent-tid={tid})")
-            if cap:
-                return [cap]
-
-        # ============================================================
-        # Strategy S5: GetFocusedElement (original Strategy A)
-        # ============================================================
-        try:
-            focused = iuia.GetFocusedElement()
-            cap = _try_capture(focused, "S5-focused")
-            if cap:
-                return [cap]
-        except Exception as exc:
-            logger.info("uiaccess S5 GetFocusedElement: %s", exc)
-
-        # ============================================================
-        # Strategy S6: Walk top-level children of root via RawViewWalker
-        # ============================================================
-        try:
-            root = iuia.GetRootElement()
-            child = walker.GetFirstChildElement(root)
-            i = 0
-            while child is not None:
-                i += 1
-                if i > 80:
-                    logger.info("uiaccess S6: stopping at 80 children")
-                    break
-                cap = _try_capture(child, f"S6-child#{i}")
-                if cap:
-                    return [cap]
-                try:
-                    child = walker.GetNextSiblingElement(child)
-                except Exception as exc:
-                    logger.info("uiaccess S6: walker stopped: %s", exc)
-                    break
-            logger.info("uiaccess S6: walked %d top-level children, no match", i)
-        except Exception as exc:
-            logger.info("uiaccess S6: %s", exc)
-
-        # ---- Strategies B/C/D: event-based ----
-        UIA = uia_core
-        cap_lock = threading.Lock()
-        captured: list[tuple[str, Any]] = []
-        cap_event = threading.Event()
-
-        class _FocusH(comtypes.COMObject):
-            _com_interfaces_ = [UIA.IUIAutomationFocusChangedEventHandler]
-
-            def HandleFocusChangedEvent(self, sender):
-                try:
-                    name = ""
-                    try:
-                        name = sender.CurrentName or ""
-                    except Exception:
-                        pass
-                    logger.info("uiaccess B focus-event: name=%r", name)
-                    with cap_lock:
-                        captured.append(("focus", sender))
-                    cap_event.set()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("focus handler raised: %s", exc)
-                return 0
-
-        class _AutoH(comtypes.COMObject):
-            _com_interfaces_ = [UIA.IUIAutomationEventHandler]
-
-            def HandleAutomationEvent(self, sender, event_id):
-                try:
-                    name = ""
-                    try:
-                        name = sender.CurrentName or ""
-                    except Exception:
-                        pass
-                    logger.info(
-                        "uiaccess C auto-event: id=%d name=%r",
-                        event_id,
-                        name,
-                    )
-                    with cap_lock:
-                        captured.append(("auto", sender))
-                    cap_event.set()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("auto handler raised: %s", exc)
-                return 0
-
-        class _StructH(comtypes.COMObject):
-            _com_interfaces_ = [UIA.IUIAutomationStructureChangedEventHandler]
-
-            def HandleStructureChangedEvent(self, sender, change_type, runtime_id):
-                try:
-                    name = ""
-                    try:
-                        name = sender.CurrentName or ""
-                    except Exception:
-                        pass
-                    logger.info(
-                        "uiaccess D struct-event: change=%d name=%r",
-                        change_type,
-                        name,
-                    )
-                    with cap_lock:
-                        captured.append(("struct", sender))
-                    cap_event.set()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("struct handler raised: %s", exc)
-                return 0
-
-        focus_h = _FocusH()
-        auto_h = _AutoH()
-        struct_h = _StructH()
-
-        root = iuia.GetRootElement()
-        focus_added = auto_added = struct_added = False
-        # 4 = TreeScope_Descendants
-        TREE_SCOPE_DESCENDANTS = 4
-        # 20016 = UIA_Window_WindowOpenedEventId
-        WIN_OPENED_EVENT_ID = 20016
-
-        try:
-            try:
-                iuia.AddFocusChangedEventHandler(None, focus_h)
-                focus_added = True
-                logger.info("uiaccess B: AddFocusChangedEventHandler registered")
-            except Exception as exc:
-                logger.warning("AddFocusChangedEventHandler failed: %s", exc)
-            try:
-                iuia.AddAutomationEventHandler(
-                    WIN_OPENED_EVENT_ID,
-                    root,
-                    TREE_SCOPE_DESCENDANTS,
-                    None,
-                    auto_h,
-                )
-                auto_added = True
-                logger.info("uiaccess C: AddAutomationEventHandler(WindowOpened) registered")
-            except Exception as exc:
-                logger.warning("AddAutomationEventHandler failed: %s", exc)
-            try:
-                iuia.AddStructureChangedEventHandler(
-                    root,
-                    TREE_SCOPE_DESCENDANTS,
-                    None,
-                    struct_h,
-                )
-                struct_added = True
-                logger.info("uiaccess D: AddStructureChangedEventHandler registered")
-            except Exception as exc:
-                logger.warning("AddStructureChangedEventHandler failed: %s", exc)
-
-            # UIA may deliver events from an MTA worker pool. Our COMObject
-            # handlers are STA-registered (via _create_uia's CoInitialize),
-            # so the cross-apartment proxy needs the registering thread to
-            # pump messages or the call queues forever. We poll cap_event in
-            # short slices and pump waiting COM messages between checks --
-            # if UIA happens to be in our apartment, this is harmless extra
-            # work; if it's cross-apartment, the pump is what makes the
-            # handler actually fire.
-            try:
-                import pythoncom
-
-                pump = pythoncom.PumpWaitingMessages
-            except Exception:
-                pump = None
-            deadline = time.monotonic() + (wait_ms / 1000.0)
-            fired = False
-            while time.monotonic() < deadline:
-                if pump is not None:
-                    try:
-                        pump()
-                    except Exception:
-                        pass
-                if cap_event.wait(timeout=0.05):
-                    fired = True
-                    # Keep pumping briefly so subsequent events also land --
-                    # callers benefit from a few captured candidates so the
-                    # walk_to_window step can pick the most promising one.
-                    for _ in range(10):
-                        if pump is not None:
-                            try:
-                                pump()
-                            except Exception:
-                                pass
-                        time.sleep(0.02)
-                    break
-            with cap_lock:
-                logger.info(
-                    "uiaccess events: fired=%s captured=%d",
-                    fired,
-                    len(captured),
-                )
-                candidates = list(reversed(captured))
-
-            for kind, elem in candidates:
-                cap = _try_capture(elem, f"event-{kind}")
-                if cap:
-                    return [cap]
-        finally:
-            try:
-                if focus_added:
-                    iuia.RemoveFocusChangedEventHandler(focus_h)
-            except Exception:
-                pass
-            try:
-                if auto_added:
-                    iuia.RemoveAutomationEventHandler(
-                        WIN_OPENED_EVENT_ID,
-                        root,
-                        auto_h,
-                    )
-            except Exception:
-                pass
-            try:
-                if struct_added:
-                    iuia.RemoveStructureChangedEventHandler(root, struct_h)
-            except Exception:
-                pass
-            try:
-                iuia.RemoveAllEventHandlers()
-            except Exception:
-                pass
-
-        logger.info("uia_get_tree_uiaccess: all strategies returned empty")
-        return []
-
-    try:
-        # Give the thread enough headroom for the event wait plus COM teardown.
-        return _run_on_fresh_thread(_work, timeout=(wait_ms / 1000.0) + 5.0) or []
-    except Exception as exc:
-        logger.error("uia_get_tree_uiaccess raised: %s", exc)
-        return []
-
-
-def screenshot_uac_synthetic_tree() -> list[dict]:
-    """Capture the secure desktop, locate the UAC dialog by pixel colour,
-    return a synthetic UIA tree pinpointing the Yes/No buttons.
-
-    Iteration-3 fallback. Win11 hides consent.exe from every cross-desktop
-    UIA / Win32 query we can issue from a UIAccess worker on Default; the
-    only thing we *can* observe is what's rendered on the input desktop.
-    BitBlt + colour-segmentation finds the focused button by its Microsoft
-    Blue (#0067C0) fill, then mirrors across the dialog centre to recover
-    the unfocused button. Yes is left, No is right in every Win10/11 UAC.
-
-    Returns ``[]`` if no UAC dialog is visible (no Microsoft Blue pixels).
-    Called from the user-session UIAccess worker, which lives on Default
-    but whose hardware screen capture lands the secure desktop frame
-    because the secure desktop is the currently-active input desktop.
-    """
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        logger.warning("screenshot_uac_synthetic_tree: PIL unavailable: %s", exc)
-        return []
-
-    # Use the broker's capture_screenshot() rather than ImageGrab directly.
-    # capture_screenshot wraps SetThreadDesktop(Winlogon) -- a plain
-    # ImageGrab.grab() from the user-session worker captures Default's DC
-    # and returns "screen grab failed" while UAC is up.
-    try:
-        png_bytes = capture_screenshot()
-        img = Image.open(io.BytesIO(png_bytes))
-        img.load()
-    except Exception as exc:
-        logger.warning("screenshot_uac: capture_screenshot raised: %s", exc)
-        return []
-
-    w, h = img.size
-    logger.info("screenshot_uac: captured frame %dx%d", w, h)
-
-    # Save the capture for offline diagnostics.
-    try:
-        share = r"\\host.lan\Data\Windows-MCP\tests\manual\vm_e2e\.work\uac-shot.png"
-        img.save(share)
-        logger.info("screenshot_uac: dumped to %s", share)
-    except Exception as exc:
-        logger.info("screenshot_uac: could not dump frame: %s", exc)
-
-    # Find Microsoft-Blue pixels (the focused button's fill colour).
-    rgb = img.convert("RGB")
-    pixels = rgb.load()
-    blue_xs: list[int] = []
-    blue_ys: list[int] = []
-    for y in range(0, h, 2):
-        for x in range(0, w, 2):
-            r, g, b = pixels[x, y]
-            if r < 30 and 80 < g < 130 and 160 < b < 220:
-                blue_xs.append(x)
-                blue_ys.append(y)
-
-    if not blue_xs:
-        logger.info(
-            "screenshot_uac: no Microsoft-Blue pixels -- UAC dialog not visible in this frame"
-        )
-        return []
-
-    foc_x0, foc_x1 = min(blue_xs), max(blue_xs)
-    foc_y0, foc_y1 = min(blue_ys), max(blue_ys)
-    foc_cx = (foc_x0 + foc_x1) // 2
-    btn_w = foc_x1 - foc_x0
-    btn_h = foc_y1 - foc_y0
-    logger.info(
-        "screenshot_uac: blue bbox=(%d,%d,%d,%d) center=(%d,%d) size=%dx%d",
-        foc_x0,
-        foc_y0,
-        foc_x1,
-        foc_y1,
-        foc_cx,
-        (foc_y0 + foc_y1) // 2,
-        btn_w,
-        btn_h,
-    )
-
-    # Mirror across the screen horizontal centre to locate the unfocused
-    # button. UAC's default focused button is "No" on Win10/11 (security
-    # default), so a blue button on the RIGHT half implies Yes is the
-    # mirrored left button. If a future Windows changes the default to
-    # focus Yes, the mirroring still works -- we just swap which is which.
-    screen_cx = w // 2
-    gap = 8  # small inter-button gap, cosmetic
-    if foc_cx > screen_cx:
-        no_x0, no_y0, no_x1, no_y1 = foc_x0, foc_y0, foc_x1, foc_y1
-        yes_x1 = no_x0 - gap
-        yes_x0 = yes_x1 - btn_w
-        yes_y0, yes_y1 = no_y0, no_y1
-    else:
-        yes_x0, yes_y0, yes_x1, yes_y1 = foc_x0, foc_y0, foc_x1, foc_y1
-        no_x0 = yes_x1 + gap
-        no_x1 = no_x0 + btn_w
-        no_y0, no_y1 = yes_y0, yes_y1
-
-    logger.info(
-        "screenshot_uac: Yes bbox=(%d,%d,%d,%d) No bbox=(%d,%d,%d,%d)",
-        yes_x0,
-        yes_y0,
-        yes_x1,
-        yes_y1,
-        no_x0,
-        no_y0,
-        no_x1,
-        no_y1,
-    )
-
-    def _mk(name, ct, x0, y0, x1, y1, kids=None, invoke=False):
-        return {
-            "name": name,
-            "control_type": ct,
-            "bbox": {
-                "x": x0,
-                "y": y0,
-                "width": x1 - x0,
-                "height": y1 - y0,
-            },
-            "can_invoke": invoke,
-            "children": kids or [],
-        }
-
-    # Dialog bbox: bound the buttons plus a generous padding for the dialog
-    # title / body. UAC dialogs are roughly 480x320 on 1280x720 -- we don't
-    # need to be exact since downstream consumers only care about the Yes/No
-    # bboxes for clicking.
-    dlg_x0 = min(yes_x0, no_x0) - 50
-    dlg_y0 = max(0, foc_y0 - 300)
-    dlg_x1 = max(yes_x1, no_x1) + 50
-    dlg_y1 = foc_y1 + 40
-
-    return [
-        _mk(
-            "User Account Control",
-            "window",
-            dlg_x0,
-            dlg_y0,
-            dlg_x1,
-            dlg_y1,
-            kids=[
-                _mk("Yes", "button", yes_x0, yes_y0, yes_x1, yes_y1, invoke=True),
-                _mk("No", "button", no_x0, no_y0, no_x1, no_y1, invoke=True),
-            ],
-        )
-    ]
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -1465,21 +488,6 @@ def get_input_desktop_name() -> str:
         _user32.CloseWindowStation(hwinsta)
 
 
-def capture_screenshot() -> bytes:
-    """Capture the current input desktop as PNG bytes.
-
-    Uses GDI (Pillow ImageGrab) after SetThreadDesktop — DXGI is unavailable
-    from Session 0, but GDI BitBlt works once the thread is on the right desktop.
-    """
-    with _input_desktop():
-        from PIL import ImageGrab
-
-        img = ImageGrab.grab(all_screens=True)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-
-
 def uia_get_window_titles() -> list[str]:
     """Return names of top-level windows on the current input desktop."""
 
@@ -1513,19 +521,13 @@ def uia_get_window_titles() -> list[str]:
 def uia_get_tree() -> list[dict]:
     """Return the full UIA tree of the current input desktop.
 
-    Each entry is a top-level window serialized as a nested dict.  Elements with
-    ``can_invoke=True`` support ``IUIAutomationInvokePattern`` — the broker uses
-    this to identify clickable buttons (Yes/No on a UAC dialog) without
-    re-walking the tree.
+    Each entry is a top-level window serialized as a nested dict. Elements
+    with ``can_invoke=True`` support ``IUIAutomationInvokePattern`` — the
+    broker uses this to identify clickable buttons (Yes/No on a UAC dialog)
+    without re-walking the tree.
 
-    Runs on a fresh thread so COM initialises *after* SetThreadDesktop, binding
-    IUIAutomation to the correct desktop (Winlogon during UAC).
-
-    If the broker passed a consent.exe HWND via stdin (the worker can't open
-    Winlogon itself; the broker enumerated it as SYSTEM), use
-    ElementFromHandle on that HWND -- it's the only path that crosses the
-    desktop boundary without SetThreadDesktop, which Winlogon's DACL blocks
-    even for UIAccess processes.
+    Runs on a fresh thread so COM initialises *after* SetThreadDesktop,
+    binding IUIAutomation to the correct desktop.
     """
 
     def _work() -> list[dict]:
@@ -1533,35 +535,16 @@ def uia_get_tree() -> list[dict]:
         with _input_desktop():
             iuia, _ = _create_uia()
             walker = iuia.RawViewWalker
-            roots = []
-            if _preattached_consent_hwnd:
-                try:
-                    elem = iuia.ElementFromHandle(_preattached_consent_hwnd)
-                    if elem is not None:
-                        logger.info(
-                            "uia_get_tree: walking via ElementFromHandle(0x%x)",
-                            _preattached_consent_hwnd,
-                        )
-                        roots.append(elem)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "ElementFromHandle(0x%x) failed: %s; falling back to desktop-root walk",
-                        _preattached_consent_hwnd,
-                        exc,
-                    )
-            if not roots:
-                root = iuia.GetRootElement()
-                child = walker.GetFirstChildElement(root)
-                while child:
-                    roots.append(child)
-                    try:
-                        child = walker.GetNextSiblingElement(child)
-                    except Exception:
-                        break
-            for r in roots:
-                node = _serialize_element(r, walker)
+            root = iuia.GetRootElement()
+            child = walker.GetFirstChildElement(root)
+            while child:
+                node = _serialize_element(child, walker)
                 if node:
                     nodes.append(node)
+                try:
+                    child = walker.GetNextSiblingElement(child)
+                except Exception:
+                    break
         return nodes
 
     try:
@@ -1955,45 +938,6 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
     # Worker reads stdin; the broker's write end must stay non-inheritable.
     win32api.SetHandleInformation(stdin_w, win32con.HANDLE_FLAG_INHERIT, 0)
 
-    # The user-session worker cannot OpenDesktopW("Winlogon") itself even
-    # with UIAccess + admin token (Winlogon's DACL denies non-SYSTEM). The
-    # broker is SYSTEM and *does* have access, so for read ops that need
-    # to walk consent.exe (tree, publisher) we open Winlogon here and
-    # duplicate the handle into the spawned worker. The worker reads the
-    # duplicated value from stdin and SetThreadDesktop's onto it directly.
-    hdesk_winlogon = 0
-    consent_hwnd = 0
-    pass_winlogon = bool(op_args) and op_args[0] in ("tree", "publisher")
-    if pass_winlogon:
-        hdesk_winlogon = _open_desktop_by_name("Winlogon", _DESKTOP_ALL_ACCESS)
-        if not hdesk_winlogon:
-            logger.warning(
-                "broker could not open Winlogon — worker will fall back "
-                "to its own enumeration (likely returns wrong desktop)"
-            )
-        else:
-            # The worker can't attach to Winlogon itself, so it can't walk
-            # the desktop root. Find consent.exe's top HWND here and pass it
-            # to the worker -- ElementFromHandle works cross-desktop with
-            # UIAccess and bypasses the SetThreadDesktop requirement.
-            #
-            # ImpersonateLoggedOnUser with the user's elevated linked token
-            # so EnumDesktopWindows on Winlogon doesn't trip session-0/-1
-            # isolation (broker is SYSTEM in session 0; without
-            # impersonation the kernel refuses to enumerate session-1
-            # Winlogon and returns FALSE with windows_seen=0).
-            try:
-                consent_hwnd = _find_consent_hwnd_on(
-                    hdesk_winlogon,
-                    impersonate_token=int(spawn_token),
-                )
-                logger.info(
-                    "broker enumerated Winlogon: consent.exe hwnd=0x%x",
-                    consent_hwnd,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("_find_consent_hwnd_on failed: %s", exc)
-
     argv = [
         sys.executable,
         "-m",
@@ -2058,53 +1002,23 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
             except Exception:
                 pass
 
-    # Hand the worker:
-    #   1. (best effort) a duplicated Winlogon desktop handle so it can
-    #      SetThreadDesktop directly. HDESK isn't a real kernel handle so
-    #      DuplicateHandle almost always fails here with ACCESS_DENIED;
-    #      kept as the preferred path in case a future Windows build relaxes
-    #      it.
-    #   2. (real fallback) the HWND of consent.exe on Winlogon that we
-    #      enumerated above. The worker uses ElementFromHandle on this HWND,
-    #      which crosses the desktop boundary as long as it has UIAccess.
-    handoff_parts: list[str] = []
-    if hdesk_winlogon and proc_handle:
-        try:
-            dup = win32api.DuplicateHandle(
-                win32api.GetCurrentProcess(),
-                hdesk_winlogon,
-                proc_handle,
-                0,  # ignored under DUPLICATE_SAME_ACCESS
-                False,  # bInheritHandle
-                2,  # DUPLICATE_SAME_ACCESS
-            )
-            handoff_parts.append(f"WINLOGON_HDESK={int(dup)}")
-        except Exception as exc:
-            logger.warning("Winlogon DuplicateHandle into worker failed: %s", exc)
-    if consent_hwnd:
-        handoff_parts.append(f"CONSENT_HWND={consent_hwnd}")
-    handoff_line = (" ".join(handoff_parts) + "\n") if handoff_parts else "\n"
+    # Worker reads its stdin once and treats an empty line as "no
+    # pre-attach" -- close the write end so the child doesn't block.
     try:
-        win32file.WriteFile(stdin_w, handoff_line.encode("utf-8"))
+        win32file.WriteFile(stdin_w, b"\n")
     except Exception as exc:
-        logger.warning("writing winlogon handoff to worker stdin failed: %s", exc)
+        logger.warning("writing handoff line to worker stdin failed: %s", exc)
     finally:
         try:
             win32file.CloseHandle(stdin_w)
         except Exception:
             pass
-        if hdesk_winlogon:
-            try:
-                _user32.CloseDesktop(hdesk_winlogon)
-            except Exception:
-                pass
 
     logger.info(
-        "spawned user-session worker pid=? session=%d elevated=%s op=%s winlogon_handoff=%s",
+        "spawned user-session worker pid=? session=%d elevated=%s op=%s",
         session_id,
         using_elevated,
         " ".join(op_args),
-        handoff_line.strip() or "<none>",
     )
 
     stdout_chunks: list[bytes] = []
@@ -2272,126 +1186,18 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                     }
 
             if name.lower() == "winlogon":
-                logger.info(
-                    "wait_for_uac_prompt: Winlogon detected after %d polls", sum(seen.values())
+                # Defensive: if UAC is routed to Winlogon despite the policy
+                # write, we can detect the desktop flip but cannot read the
+                # consent dialog (Winlogon's DACL denies UIA from the user
+                # session even with TokenUIAccess=1 -- see iter 1-5 in
+                # win11-uac-investigation.md). Return what we know and let
+                # the caller decide whether to fall back to keyboard input.
+                logger.warning(
+                    "wait_for_uac_prompt: Winlogon detected -- secure-desktop "
+                    "policy did not take effect, dialog tree will be empty. "
+                    "Verify HKLM\\...\\Policies\\System CPB=4 POSD=0."
                 )
-                # Two paths to recover the consent.exe tree:
-                #
-                #   1. UIAccess-only via UIA events / GetFocusedElement -- no
-                #      desktop attach, no DACL change. Cheap and the only
-                #      path that gets to 4/4 on Win11 without weakening
-                #      Winlogon's DACL. Documented behaviour: a UIAccess
-                #      process receives UIA elements cross-desktop, which is
-                #      how Narrator reads UAC.
-                #
-                #   2. DACL-loosening fallback -- temporarily ACE the console
-                #      user onto Winlogon's DACL, spawn the worker which can
-                #      now OpenDesktopW("Winlogon") + SetThreadDesktop + walk
-                #      consent.exe, then restore. Path of last resort; opens
-                #      a brief security regression and we only take it if (1)
-                #      fails.
-                tree: list[dict] = []
-                publisher = None
-                try:
-                    tree = (
-                        _spawn_in_user_session(
-                            "tree_uiaccess",
-                            "--wait-ms=5000",
-                            timeout=15.0,
-                        )
-                        or []
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "wait_for_uac_prompt: tree_uiaccess raised: %s",
-                        exc,
-                    )
-                    tree = []
-                if tree:
-                    logger.info(
-                        "wait_for_uac_prompt: UIAccess strategy returned %d top windows -- skipping DACL loosen",
-                        len(tree),
-                    )
-                    try:
-                        publisher = _spawn_in_user_session("publisher", timeout=10.0)
-                    except Exception as exc:
-                        logger.warning("publisher spawn failed: %s", exc)
-                        publisher = None
-                    return {
-                        "desktop": "Winlogon",
-                        "publisher": publisher,
-                        "tree": tree,
-                    }
-
-                # Iteration 3 fallback: every UIA/Win32 cross-desktop query
-                # we know of returns nothing from a UIAccess worker on Win11.
-                # Capture the rendered secure desktop in the BROKER (its
-                # SetThreadDesktop attaches to Winlogon; the worker can't)
-                # and locate the dialog buttons by colour.
-                logger.info(
-                    "wait_for_uac_prompt: UIAccess strategy empty -- trying screenshot fallback"
-                )
-                try:
-                    tree = screenshot_uac_synthetic_tree() or []
-                except Exception as exc:
-                    logger.warning(
-                        "wait_for_uac_prompt: screenshot_uac_synthetic_tree raised: %s",
-                        exc,
-                    )
-                    tree = []
-                if tree:
-                    logger.info(
-                        "wait_for_uac_prompt: screenshot fallback returned %d top windows",
-                        len(tree),
-                    )
-                    try:
-                        publisher = _spawn_in_user_session("publisher", timeout=10.0)
-                    except Exception as exc:
-                        logger.warning("publisher spawn failed: %s", exc)
-                        publisher = None
-                    return {
-                        "desktop": "Winlogon",
-                        "publisher": publisher,
-                        "tree": tree,
-                    }
-
-                logger.info(
-                    "wait_for_uac_prompt: screenshot fallback empty -- "
-                    "falling back to DACL-loosen + desktop-attach"
-                )
-                dacl_state = _grant_winlogon_access_to_console_user()
-                try:
-                    for attempt in range(8):
-                        try:
-                            tree = _spawn_in_user_session("tree", timeout=20.0) or []
-                        except Exception as exc:
-                            logger.warning("user-session tree spawn failed: %s", exc)
-                            tree = []
-                        try:
-                            publisher = _spawn_in_user_session("publisher", timeout=15.0)
-                        except Exception as exc:
-                            logger.warning("user-session publisher spawn failed: %s", exc)
-                            publisher = None
-                        if tree:
-                            logger.info(
-                                "wait_for_uac_prompt: tree captured after %d retries (%d top windows)",
-                                attempt,
-                                len(tree),
-                            )
-                            break
-                        time.sleep(0.3)
-                    else:
-                        logger.warning(
-                            "wait_for_uac_prompt: Winlogon active but user-session UIA tree stayed empty after 8 retries"
-                        )
-                finally:
-                    if dacl_state:
-                        _restore_winlogon_dacl(dacl_state)
-                return {
-                    "desktop": "Winlogon",
-                    "publisher": publisher,
-                    "tree": tree,
-                }
+                return {"desktop": "Winlogon", "publisher": None, "tree": []}
             time.sleep(poll_ms / 1000.0)
         logger.warning("wait_for_uac_prompt: timed out; saw desktops: %s", seen)
         return None

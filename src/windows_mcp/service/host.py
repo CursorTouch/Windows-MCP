@@ -24,7 +24,6 @@ Named pipe server design
 
 from __future__ import annotations
 
-import base64
 import logging
 import threading
 from typing import Any
@@ -222,10 +221,6 @@ def _dispatch(req: Request) -> Response:
             case "desktop_name":
                 name = secure_desktop.get_input_desktop_name()
                 return Response(id=req.id, result=name)
-
-            case "screenshot":
-                png = secure_desktop.capture_screenshot()
-                return Response(id=req.id, result=base64.b64encode(png).decode())
 
             case "uia_windows":
                 # Same Session 0 isolation as uia_invoke / uia_click_at —

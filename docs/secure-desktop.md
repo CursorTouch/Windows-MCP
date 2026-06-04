@@ -75,60 +75,13 @@ capture clicks. Every other UAC protection is intact:
 * Malware still can't programmatically click a real UAC dialog without
   UIAccess (which needs a signed binary in a trusted path).
 
-The alternative — leaving UAC on the secure desktop and reaching it via
-some other mechanism — is well-explored. The summary below is so future
-readers don't waste time re-walking these paths. Full forensic detail
-(iterations 1 through 8, with the actual Win32 calls, registry reads,
-and observed return codes) lives in
+The alternatives — leaving UAC on the secure desktop and reaching it
+some other way (UIAccess-enabled worker binary, loosening Winlogon's
+DACL from a SYSTEM broker, screenshot-as-UIA fallback, `EnableLUA=0`,
+CPB=5 instead of CPB=4) — were each tried and each failed on Win 11
+25H2 for documented reasons. The arc lives in
 [`win11-uac-investigation.md`](win11-uac-investigation.md).
 
 If you need the secure-desktop protection back, run `uninstall`. The
 agent will then see UAC fire but won't be able to inspect or dismiss
 the dialog.
-
-## What we tried that didn't work
-
-* **UIAccess-enabled worker binary, code-signed and shipped from
-  `%ProgramFiles%`.** This is Microsoft's documented "correct" answer
-  for letting an accessibility tool read higher-integrity windows. We
-  built the full pipeline (PyInstaller-frozen worker, embedded
-  manifest with `uiAccess="true"`, self-signed cert added to
-  LocalMachine\Root + TrustedPublisher, install into Program Files,
-  `SetTokenInformation(TokenUIAccess=1)` on the spawn token). UIAccess
-  was granted to the worker's token, but `OpenDesktopW("Winlogon", …)`
-  still returned `ERROR_ACCESS_DENIED (5)` from the user-session
-  worker. Win 11's Winlogon DACL is the actual gate; UIAccess opens
-  cross-integrity reads but does not grant cross-desktop reads.
-  Removed in this commit.
-
-* **Loosening the Winlogon desktop DACL from a SYSTEM-context broker.**
-  The host service has `SeRestorePrivilege` and could `SetSecurityInfo`
-  on Winlogon to grant the console user `DESKTOP_READOBJECTS`. On Win 11
-  25H2 the DACL write succeeded but `EnumDesktopWindows` on Winlogon
-  still returned zero — the kernel applies an additional cross-session
-  filter on top of the DACL, and the broker (session 0) can't reach
-  session 1's Winlogon regardless. Removed.
-
-* **Screenshot fallback.** Capture the framebuffer during UAC and
-  segment the consent dialog by colour. Did work for *reading*
-  (publisher, target executable), did not work for *clicking* (no UIA
-  element ids, no input target for `Click`). Could detect-but-not-act,
-  which left the agent half-blocked. Kept for the read-only "we know
-  UAC fired" path, which is now redundant since plain UIA against
-  Default desktop returns the full tree.
-
-* **`EnableLUA=0`.** Disables UAC entirely. Breaks Microsoft Store /
-  UWP apps in the same session, removes file/registry virtualisation,
-  and silently auto-approves every elevation including the ones the
-  agent didn't ask for. Considered and rejected as a default.
-
-* **CPB=5 + POSD=0** (the obvious cousin of the iter-8 fix). Microsoft
-  documents CPB=5 ("Prompt for consent for non-Windows binaries") as
-  the modern Win 11 default. Setting it alongside `PromptOnSecureDesktop=0`
-  *should* mean "prompt on Default desktop". Win 11 25H2 ignored
-  `POSD=0` and routed UAC to Winlogon anyway. CPB=4 ("Prompt for
-  consent" — same description without the Windows-binary carve-out)
-  is the value Win 11 25H2 actually honours. The OS appears to treat
-  the off-secure-desktop CPB values (3, 4, 5) as semantically distinct
-  rather than equivalent. See iter-7 vs iter-8 in the investigation
-  doc for the empirical confirmation.
