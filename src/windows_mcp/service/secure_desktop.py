@@ -327,8 +327,7 @@ def get_input_desktop_name() -> str:
     """Return the name of the current input desktop.
 
     Returns ``"Default"`` during normal desktop use and ``"Winlogon"`` while a
-    UAC prompt is active.  Works from user-mode too (used for detection in the
-    broker via :func:`~windows_mcp.desktop.screenshot.is_secure_desktop_active`).
+    UAC prompt is on the secure desktop. Works from user-mode too.
 
     When called from a LocalSystem service the process window station is
     ``Service-0x0-3e7$``, not ``WinSta0`` — and ``OpenInputDesktop`` on the
