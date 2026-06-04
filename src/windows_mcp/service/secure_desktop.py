@@ -468,46 +468,71 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
 
     If *consent_pid* is non-zero, find that pid's top HWND via EnumWindows
     and walk from ``ElementFromHandle(hwnd)`` instead of the desktop root.
-    consent.exe runs at System integrity; GetRootElement walk filters it
-    out even from a UIAccess caller, but ElementFromHandle on a known HWND
-    crosses the integrity boundary.
 
-    Runs on a fresh thread so COM initialises *after* SetThreadDesktop.
+    The first node may carry a ``_diag`` key with the lookup outcome
+    (``hwnd=...``, fallback reason) so the broker / client can see what
+    happened without needing access to the SYSTEM broker log.
     """
 
     def _work() -> list[dict]:
         nodes: list[dict] = []
+        diag_lines: list[str] = []
         with _input_desktop():
             iuia, _ = _create_uia()
             walker = iuia.RawViewWalker
             if consent_pid:
                 hwnd = _find_top_hwnd_for_pid(consent_pid)
+                diag_lines.append(f"consent_pid={consent_pid} hwnd=0x{hwnd:x}")
                 logger.info(
                     "uia_get_tree: consent_pid=%d -> hwnd=0x%x", consent_pid, hwnd
                 )
                 if hwnd:
                     try:
                         elem = iuia.ElementFromHandle(hwnd)
-                        if elem is not None:
+                        if elem is None:
+                            diag_lines.append("ElementFromHandle returned None")
+                        else:
                             node = _serialize_element(elem, walker)
                             if node:
+                                node["_diag"] = " | ".join(diag_lines) + " | path=ElementFromHandle"
                                 nodes.append(node)
                                 return nodes
+                            else:
+                                diag_lines.append("_serialize_element returned None")
                     except Exception as exc:  # noqa: BLE001
+                        diag_lines.append(f"ElementFromHandle raised: {exc}")
                         logger.warning(
                             "uia_get_tree: ElementFromHandle(0x%x) failed: %s -- "
                             "falling back to desktop-root walk", hwnd, exc
                         )
+                else:
+                    diag_lines.append("EnumWindows found no visible hwnd for pid")
             root = iuia.GetRootElement()
             child = walker.GetFirstChildElement(root)
+            first = True
             while child:
                 node = _serialize_element(child, walker)
                 if node:
+                    if first and diag_lines:
+                        node["_diag"] = " | ".join(diag_lines) + " | path=desktop-root"
+                        first = False
                     nodes.append(node)
                 try:
                     child = walker.GetNextSiblingElement(child)
                 except Exception:
                     break
+            if not nodes and diag_lines:
+                # Walker returned nothing at all -- bubble the diag up as a
+                # placeholder node so the caller can see why.
+                nodes.append({
+                    "name": "(empty)",
+                    "control_type": "",
+                    "bbox": {"left": 0, "top": 0, "right": 0, "bottom": 0, "width": 0, "height": 0},
+                    "center": {"x": 0, "y": 0},
+                    "can_invoke": False,
+                    "children": [],
+                    "_diag": " | ".join(diag_lines) + " | path=walker-empty",
+                })
         return nodes
 
     try:

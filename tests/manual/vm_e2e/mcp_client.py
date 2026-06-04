@@ -226,28 +226,30 @@ async def assert_yes_button_present(
                 _walk(child, depth + 1)
         for top in tree:
             _walk(top)
-        # Print to stderr + also write a timestamped dump next to results.json
-        # so each run preserves its tree (test.ps1's Tee overwrites
-        # mcp_client-allow_all.log every run).
-        import os
+        # Print to stderr + collect any _diag markers the worker attached
+        # so we can see what _find_top_hwnd_for_pid actually returned even
+        # if the broker's SYSTEM log isn't readable from the user session.
         sys.stderr.write("\n===== UAC TREE DUMP (Yes not found) =====\n")
         for line in candidates:
             sys.stderr.write(line + "\n")
         sys.stderr.write("===== END UAC TREE DUMP =====\n")
         sys.stderr.flush()
-        results_dir = r"\\host.lan\Data\Windows-MCP\tests\manual\vm_e2e"
-        ts = time.strftime("%H%M%S")
-        dump_path = os.path.join(results_dir, f"uac-tree-{ts}.txt")
-        try:
-            with open(dump_path, "w", encoding="utf-8") as fh:
-                for line in candidates:
-                    fh.write(line + "\n")
-        except OSError as exc:
-            sys.stderr.write(f"(dump write to {dump_path} failed: {exc})\n")
+        diag: list[str] = []
+        def _collect_diag(node):
+            if not isinstance(node, dict):
+                return
+            d = node.get("_diag")
+            if d:
+                diag.append(d)
+            for child in node.get("children") or []:
+                _collect_diag(child)
+        for top in tree:
+            _collect_diag(top)
+        diag_blurb = "; ".join(diag) if diag else "(no _diag markers)"
         detail = (
             f"no element named 'Yes' with can_invoke=True. "
-            f"Tree had {sum(1 for _ in candidates)} named/typed nodes; "
-            f"dump at {dump_path}."
+            f"Tree had {sum(1 for _ in candidates)} named/typed nodes. "
+            f"Worker diag: {diag_blurb}"
         )
         _record(report, "UAC tree contains invokable Yes button", False, detail, t0)
         return None
