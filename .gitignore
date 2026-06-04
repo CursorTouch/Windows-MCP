@@ -191,6 +191,12 @@ elevated-run.bat
 /iter8-result.marker
 /iter8-probe.log
 /iter8-probe.marker
+/redeploy2.bat
+/copylog.bat
+/fix-and-restart.bat
+/windows-mcp-host*.log
+/uac-tree-dump.txt
+/tests/manual/vm_e2e/uac-tree-*.txt
 /vm-screen.png
 /vm-screen.ppm
 tests/manual/vm_e2e/.work/
