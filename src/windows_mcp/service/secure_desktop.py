@@ -503,12 +503,47 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
             iuia, _ = _create_uia()
             walker = iuia.RawViewWalker
             if consent_pid:
+                # consent.exe's Yes/No buttons aren't Win32 child windows --
+                # EnumWindows + EnumChildWindows returns just the frame. The
+                # dialog content is drawn by a UIA provider that doesn't hang
+                # off the main HWND in the standard tree walk. Use
+                # IUIAutomation.FindAll with a ProcessId property condition
+                # to discover every UIA element consent.exe registers,
+                # regardless of HWND ownership.
+                UIA_ProcessIdPropertyId = 30005 - 3  # 30002
+                try:
+                    pid_cond = iuia.CreatePropertyCondition(UIA_ProcessIdPropertyId, consent_pid)
+                    matches = iuia.GetRootElement().FindAll(
+                        _UIA_TreeScope_Descendants, pid_cond
+                    )
+                    length = matches.Length if matches is not None else 0
+                    diag_lines.append(
+                        f"consent_pid={consent_pid} FindAll(ProcessId)={length}"
+                    )
+                    if length > 0:
+                        # Serialize each top-most consent.exe element. We
+                        # don't deduplicate -- consent.exe rarely has more
+                        # than a handful of UIA roots, and dupes are fine
+                        # for the matcher.
+                        for i in range(length):
+                            elem = matches.GetElement(i)
+                            if elem is None:
+                                continue
+                            node = _serialize_element(elem, walker)
+                            if node:
+                                if not nodes:
+                                    node["_diag"] = " | ".join(diag_lines) + " | path=FindAll(ProcessId)"
+                                nodes.append(node)
+                        if nodes:
+                            return nodes
+                except Exception as exc:  # noqa: BLE001
+                    diag_lines.append(f"FindAll(ProcessId) raised: {exc}")
+                    logger.warning("uia_get_tree: FindAll(ProcessId) failed: %s", exc)
+                # Fallback to the HWND walk in case FindAll returned 0 (e.g.
+                # consent.exe registered nothing or the call was denied).
                 hwnds = _find_visible_hwnds_for_pid(consent_pid)
                 diag_lines.append(
-                    f"consent_pid={consent_pid} hwnds=[{','.join(f'0x{h:x}' for h in hwnds)}]"
-                )
-                logger.info(
-                    "uia_get_tree: consent_pid=%d -> hwnds=%s", consent_pid, hwnds
+                    f"hwnds=[{','.join(f'0x{h:x}' for h in hwnds)}]"
                 )
                 walked_any = False
                 for hwnd in hwnds:
@@ -519,7 +554,8 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                             continue
                         node = _serialize_element(elem, walker)
                         if node:
-                            node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
+                            if not nodes:
+                                node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
                             nodes.append(node)
                             walked_any = True
                     except Exception as exc:  # noqa: BLE001
