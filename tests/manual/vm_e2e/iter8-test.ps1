@@ -82,7 +82,7 @@ try {
 
     Log "windows-mcp service secure-desktop install (writes CPB=4)"
     & uv run windows-mcp service secure-desktop install `
-        --policy allow_all --allow-user-binary-path --no-uia-worker --force 2>&1 |
+        --policy allow_all --allow-user-binary-path --force 2>&1 |
         ForEach-Object { Add-Content -Path $Report -Value "    [inst] $_" }
     if ($LASTEXITCODE -ne 0) { Fail "install exit $LASTEXITCODE" }
 } finally { Pop-Location }

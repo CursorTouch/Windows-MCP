@@ -1994,22 +1994,12 @@ def _spawn_in_user_session(*op_args: str, timeout: float = 30.0) -> Any:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("_find_consent_hwnd_on failed: %s", exc)
 
-    # Prefer a UIAccess-signed worker installed in a trusted path. Without
-    # it, the unsigned fallback (this Python module) cannot enumerate
-    # consent.exe's UIA tree across the integrity boundary — see
-    # docs/secure-desktop.md and policy.read_uia_worker_path().
-    from windows_mcp.service import policy as _policy_mod
-
-    signed_worker = _policy_mod.read_uia_worker_path()
-    if signed_worker:
-        argv = [signed_worker, *op_args]
-    else:
-        argv = [
-            sys.executable,
-            "-m",
-            "windows_mcp.service.user_session_worker",
-            *op_args,
-        ]
+    argv = [
+        sys.executable,
+        "-m",
+        "windows_mcp.service.user_session_worker",
+        *op_args,
+    ]
     cmd_line = subprocess.list2cmdline(argv)
 
     startup = win32process.STARTUPINFO()

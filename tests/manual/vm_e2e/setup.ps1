@@ -177,10 +177,9 @@ function Uv-Sync {
         Invoke-Native "uv_sync.log" { & uv sync --reinstall-package windows-mcp }
         # Sanity check: confirm the freshly-installed code matches the source
         # we just robocopy'd. If anything still resolves to a cached wheel,
-        # we want a loud failure now, not a confusing pyinstaller bootstrap
-        # error 5 minutes later.
-        $expected = (Get-FileHash -Algorithm SHA256 "$LocalRepo\src\windows_mcp\service\uia_worker_install.py").Hash
-        $installed = (& uv run python -c "import windows_mcp.service.uia_worker_install as m, hashlib; print(hashlib.sha256(open(m.__file__,'rb').read()).hexdigest())").Trim()
+        # we want a loud failure now.
+        $expected = (Get-FileHash -Algorithm SHA256 "$LocalRepo\src\windows_mcp\service\secure_desktop.py").Hash
+        $installed = (& uv run python -c "import windows_mcp.service.secure_desktop as m, hashlib; print(hashlib.sha256(open(m.__file__,'rb').read()).hexdigest())").Trim()
         if ($expected -ne $installed) {
             throw "venv has stale windows_mcp: src=$expected installed=$installed"
         }
@@ -198,44 +197,13 @@ function Set-Uac-Config {
     Log "UAC: EnableLUA=1 ConsentPromptBehaviorAdmin=2 PromptOnSecureDesktop=1"
 }
 
-function Disable-Defender-For-Build {
-    # PyInstaller writes hundreds of small files into %TEMP%\_MEIxxxxx and
-    # %TEMP%\windows-mcp-uia-build-*; Defender real-time scan on a slow VM
-    # serializes those writes and effectively hangs the build. Add an
-    # exclusion for the build paths and the venv. VM-only -- production
-    # users on a normal disk don't see the slowdown.
-    try {
-        Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
-        Add-MpPreference -ExclusionPath "$LocalRepo\.venv" -ErrorAction SilentlyContinue
-        Add-MpPreference -ExclusionProcess "pyinstaller.exe" -ErrorAction SilentlyContinue
-        Add-MpPreference -ExclusionProcess "python.exe"      -ErrorAction SilentlyContinue
-        Log "Defender exclusions added for %TEMP%, .venv, pyinstaller, python."
-    } catch {
-        Log "WARN: Add-MpPreference failed: $($_.Exception.Message). Continuing."
-    }
-}
-
 function Install-Host-Service {
     Push-Location $LocalRepo
     try {
         Log "Installing host service (allow-user-binary-path because this is a VM)..."
-        # --self-sign-uia-worker drives the production build+self-sign+install
-        # flow shipped in the wheel: ensures PyInstaller, freezes the worker
-        # with the embedded uiAccess manifest, generates a self-signed cert,
-        # plants it in LocalMachine\Root + \TrustedPublisher, signs the exe,
-        # and copies into %ProgramFiles%\WindowsMCP\. Same code path an end
-        # user gets when they answer 'y' to the interactive prompt.
-        #
-        # PIP_TRUSTED_HOST: the sandbox MITM proxy in the test harness breaks
-        # TLS verification; pip ships its own resolver (not uv), so the
-        # UV_INSECURE_HOST we set earlier doesn't carry over. Setting
-        # PIP_TRUSTED_HOST is the pip equivalent. Production users with
-        # direct PyPI access don't need it.
-        $env:PIP_TRUSTED_HOST = "pypi.org files.pythonhosted.org"
         Invoke-Native "install-host.log" {
             & uv run windows-mcp service secure-desktop install `
-                --policy allow_all --allow-user-binary-path `
-                --self-sign-uia-worker --force
+                --policy allow_all --allow-user-binary-path --force
         }
     } finally { Pop-Location }
 }
@@ -277,7 +245,6 @@ try {
     Stage-Repo
     Uv-Sync
     Set-Uac-Config
-    Disable-Defender-For-Build
     Install-Host-Service
     Install-Server-AutoStart
     Register-Test-Task
