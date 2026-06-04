@@ -31,8 +31,21 @@ logger = logging.getLogger(__name__)
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="windows-mcp user-session UIA worker")
     sub = p.add_subparsers(dest="op", required=True)
-    sub.add_parser("tree", help="Walk the input desktop's UIA tree.")
-    sub.add_parser("publisher", help="Extract the UAC consent publisher string.")
+    tree = sub.add_parser("tree", help="Walk the input desktop's UIA tree.")
+    tree.add_argument(
+        "--consent-pid",
+        type=int,
+        default=0,
+        help=(
+            "If non-zero, scope the walk to the top-level HWND owned by this "
+            "pid (consent.exe). IUIAutomation.GetRootElement walk does NOT "
+            "return System-integrity windows even from a UIAccess caller, so "
+            "for UAC we look up the HWND via EnumWindows and use "
+            "ElementFromHandle which DOES cross the integrity boundary."
+        ),
+    )
+    pub = sub.add_parser("publisher", help="Extract the UAC consent publisher string.")
+    pub.add_argument("--consent-pid", type=int, default=0)
     sub.add_parser("windows", help="List top-level window titles on the input desktop.")
     iv = sub.add_parser("invoke", help="Invoke the named UIA element.")
     iv.add_argument("name")
@@ -88,9 +101,9 @@ def main() -> int:
 
     try:
         if args.op == "tree":
-            result = secure_desktop.uia_get_tree()
+            result = secure_desktop.uia_get_tree(consent_pid=args.consent_pid)
         elif args.op == "publisher":
-            result = secure_desktop.get_uac_publisher()
+            result = secure_desktop.get_uac_publisher(consent_pid=args.consent_pid)
         elif args.op == "windows":
             result = secure_desktop.uia_get_window_titles()
         elif args.op == "invoke":

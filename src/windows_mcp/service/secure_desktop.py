@@ -413,7 +413,52 @@ def uia_get_window_titles() -> list[str]:
         return []
 
 
-def uia_get_tree() -> list[dict]:
+def _find_top_hwnd_for_pid(pid: int) -> int:
+    """Walk EnumWindows on the current desktop, return the first visible
+    top-level HWND owned by *pid*, or 0. Runs in the user-session worker.
+
+    EnumWindows sees windows across integrity levels for the calling
+    desktop, even from a medium-integrity caller. We use this to discover
+    consent.exe's HWND, which is invisible to IUIAutomation.GetRootElement
+    because consent.exe runs at System integrity -- the UIA tree walk
+    filters out higher-integrity windows even with TokenUIAccess=1, but
+    ElementFromHandle on a known HWND DOES cross the integrity boundary.
+    """
+    EnumWindows = _user32.EnumWindows
+    EnumWindows.argtypes = [ctypes.c_void_p, ctypes.wintypes.LPARAM]
+    EnumWindows.restype = ctypes.wintypes.BOOL
+    GetWindowThreadProcessId = _user32.GetWindowThreadProcessId
+    GetWindowThreadProcessId.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
+    IsWindowVisible = _user32.IsWindowVisible
+    IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
+    IsWindowVisible.restype = ctypes.wintypes.BOOL
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(
+        ctypes.wintypes.BOOL,
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.LPARAM,
+    )
+    found = [0]
+
+    @WNDENUMPROC
+    def _on_window(hwnd, _lparam):
+        if not IsWindowVisible(hwnd):
+            return True
+        owner = ctypes.wintypes.DWORD(0)
+        GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and found[0] == 0:
+            found[0] = int(hwnd)
+        return True
+
+    EnumWindows(ctypes.cast(_on_window, ctypes.c_void_p), 0)
+    return found[0]
+
+
+def uia_get_tree(consent_pid: int = 0) -> list[dict]:
     """Return the full UIA tree of the current input desktop.
 
     Each entry is a top-level window serialized as a nested dict. Elements
@@ -421,8 +466,13 @@ def uia_get_tree() -> list[dict]:
     broker uses this to identify clickable buttons (Yes/No on a UAC dialog)
     without re-walking the tree.
 
-    Runs on a fresh thread so COM initialises *after* SetThreadDesktop,
-    binding IUIAutomation to the correct desktop.
+    If *consent_pid* is non-zero, find that pid's top HWND via EnumWindows
+    and walk from ``ElementFromHandle(hwnd)`` instead of the desktop root.
+    consent.exe runs at System integrity; GetRootElement walk filters it
+    out even from a UIAccess caller, but ElementFromHandle on a known HWND
+    crosses the integrity boundary.
+
+    Runs on a fresh thread so COM initialises *after* SetThreadDesktop.
     """
 
     def _work() -> list[dict]:
@@ -430,6 +480,24 @@ def uia_get_tree() -> list[dict]:
         with _input_desktop():
             iuia, _ = _create_uia()
             walker = iuia.RawViewWalker
+            if consent_pid:
+                hwnd = _find_top_hwnd_for_pid(consent_pid)
+                logger.info(
+                    "uia_get_tree: consent_pid=%d -> hwnd=0x%x", consent_pid, hwnd
+                )
+                if hwnd:
+                    try:
+                        elem = iuia.ElementFromHandle(hwnd)
+                        if elem is not None:
+                            node = _serialize_element(elem, walker)
+                            if node:
+                                nodes.append(node)
+                                return nodes
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "uia_get_tree: ElementFromHandle(0x%x) failed: %s -- "
+                            "falling back to desktop-root walk", hwnd, exc
+                        )
             root = iuia.GetRootElement()
             child = walker.GetFirstChildElement(root)
             while child:
@@ -600,17 +668,19 @@ _PUBLISHER_PATTERNS = [
 ]
 
 
-def get_uac_publisher() -> str | None:
+def get_uac_publisher(consent_pid: int = 0) -> str | None:
     """Inspect the active UAC consent dialog and return its publisher string.
 
     Returns ``None`` if no UAC dialog is currently displayed, if its layout does
     not match the expected English pattern, or if reading the UIA tree fails.
+
+    When *consent_pid* is non-zero, scope the walk to that pid's top-level
+    HWND via ElementFromHandle -- same rationale as uia_get_tree.
     """
 
     def _work() -> str | None:
         with _input_desktop():
             iuia, _ = _create_uia()
-            root = iuia.GetRootElement()
             walker = iuia.RawViewWalker
             collected: list[str] = []
 
@@ -634,13 +704,31 @@ def get_uac_publisher() -> str | None:
                 except Exception:
                     pass
 
-            child = walker.GetFirstChildElement(root)
-            while child:
-                _collect(child)
-                try:
-                    child = walker.GetNextSiblingElement(child)
-                except Exception:
-                    break
+            roots: list[Any] = []
+            if consent_pid:
+                hwnd = _find_top_hwnd_for_pid(consent_pid)
+                if hwnd:
+                    try:
+                        elem = iuia.ElementFromHandle(hwnd)
+                        if elem is not None:
+                            roots.append(elem)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "get_uac_publisher: ElementFromHandle(0x%x) failed: %s",
+                            hwnd, exc,
+                        )
+            if not roots:
+                root = iuia.GetRootElement()
+                child = walker.GetFirstChildElement(root)
+                while child:
+                    roots.append(child)
+                    try:
+                        child = walker.GetNextSiblingElement(child)
+                    except Exception:
+                        break
+
+            for r in roots:
+                _collect(r)
 
             text = "\n".join(collected)
             for pat in _PUBLISHER_PATTERNS:
@@ -1067,11 +1155,18 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                     # the user-session UIA tree up to 30 times (~6s on a
                     # KVM-disabled VM) until the consent.exe window appears,
                     # then return.
+                    # Pass consent_pid to the worker so uia_get_tree /
+                    # get_uac_publisher can scope via EnumWindows +
+                    # ElementFromHandle. consent.exe at System integrity is
+                    # not returned by GetRootElement walk even from a
+                    # UIAccess caller; ElementFromHandle on a discovered
+                    # HWND crosses the integrity boundary.
+                    pid_arg = f"--consent-pid={consent_pid}"
                     tree: list[dict] = []
                     publisher = None
                     for attempt in range(30):
                         try:
-                            tree = _spawn_in_user_session("tree", timeout=15.0) or []
+                            tree = _spawn_in_user_session("tree", pid_arg, timeout=15.0) or []
                         except Exception as exc:
                             logger.warning("Default-desktop tree spawn failed: %s", exc)
                             tree = []
@@ -1089,7 +1184,7 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                             consent_pid,
                         )
                     try:
-                        publisher = _spawn_in_user_session("publisher", timeout=10.0)
+                        publisher = _spawn_in_user_session("publisher", pid_arg, timeout=10.0)
                     except Exception as exc:
                         logger.warning("publisher spawn failed: %s", exc)
                         publisher = None
