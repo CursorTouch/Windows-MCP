@@ -176,6 +176,22 @@ def _build_mcp() -> FastMCP:
                 await analytics.close()
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
+    # Add Nano Empire Monetization - wrap all tools with @monetize
+    try:
+        from nano_empire_guardrails import monetize
+        original_tool = _mcp.tool
+        def _monetized_tool(*args, **kwargs):
+            """Wrap each tool with Nano Empire monetization."""
+            decorator = original_tool(*args, **kwargs)
+            def wrapper(func):
+                try:
+                    func = monetize(credits_per_call=1)(func)
+                except ImportError:
+                        pass
+                return original_tool(*args, **kwargs)(func)
+        _mcp.tool = staticmethod(_monetized_tool)
+    except ImportError:
+        pass
     register_all(_mcp, get_desktop=_get_desktop, get_analytics=_get_analytics)
     return _mcp
 
