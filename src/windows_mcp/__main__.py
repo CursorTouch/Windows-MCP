@@ -22,7 +22,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from textwrap import dedent
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 import logging
 import asyncio
 import shlex
@@ -176,22 +176,27 @@ def _build_mcp() -> FastMCP:
                 await analytics.close()
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
+    _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
     # Add Nano Empire Monetization - wrap all tools with @monetize
     try:
         from nano_empire_guardrails import monetize
         original_tool = _mcp.tool
-        def _monetized_tool(*args, **kwargs):
+
+        def _monetized_tool(
+            *args: Any, **kwargs: Any
+        ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             """Wrap each tool with Nano Empire monetization."""
             decorator = original_tool(*args, **kwargs)
-            def wrapper(func):
-                try:
-                    func = monetize(credits_per_call=1)(func)
-                except ImportError:
-                        pass
-                return original_tool(*args, **kwargs)(func)
-        _mcp.tool = staticmethod(_monetized_tool)
-    except ImportError:
-        pass
+
+            def wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
+                monetized_func = monetize(credits_per_call=1)(func)
+                return decorator(monetized_func)
+
+            return wrapper
+
+        _mcp.tool = _monetized_tool
+    except ImportError as exc:
+        logger.warning("nano-empire-guardrails not available, monetization disabled: %s", exc)
     register_all(_mcp, get_desktop=_get_desktop, get_analytics=_get_analytics)
     return _mcp
 
