@@ -176,7 +176,6 @@ def _build_mcp() -> FastMCP:
                 await analytics.close()
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
-    _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
     # Add Nano Empire Monetization - wrap all tools with @monetize
     try:
         from nano_empire_guardrails import monetize
