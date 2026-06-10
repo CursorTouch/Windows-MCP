@@ -413,6 +413,148 @@ def uia_get_window_titles() -> list[str]:
         return []
 
 
+def _send_tab_key() -> None:
+    """Send a single Tab keypress via SendInput on the current input desktop.
+
+    Used to provoke a UIA FocusChanged event from consent.exe: the worker
+    has TokenUIAccess=1, so UIPI permits SendInput to the higher-integrity
+    UAC dialog. Tab only moves focus between the Yes/No buttons -- it never
+    activates one -- so it is a safe nudge to make the dialog re-emit a
+    focus event that a registered handler can capture.
+    """
+    INPUT_KEYBOARD = 1
+    KEYEVENTF_KEYUP = 0x0002
+    VK_TAB = 0x09
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", ctypes.wintypes.WORD),
+            ("wScan", ctypes.wintypes.WORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.wintypes.ULONG)),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", _KEYBDINPUT)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _INPUT_UNION)]
+
+    SendInput = _user32.SendInput
+    SendInput.argtypes = [ctypes.wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
+    SendInput.restype = ctypes.wintypes.UINT
+
+    down = _INPUT(type=INPUT_KEYBOARD, u=_INPUT_UNION(ki=_KEYBDINPUT(VK_TAB, 0, 0, 0, None)))
+    up = _INPUT(
+        type=INPUT_KEYBOARD,
+        u=_INPUT_UNION(ki=_KEYBDINPUT(VK_TAB, 0, KEYEVENTF_KEYUP, 0, None)),
+    )
+    arr = (_INPUT * 2)(down, up)
+    sent = SendInput(2, arr, ctypes.sizeof(_INPUT))
+    logger.info("_send_tab_key: SendInput sent=%d gle=%d", sent, ctypes.GetLastError())
+
+
+def _capture_consent_via_focus_events(iuia, uia_core, walker, consent_pid, wait_ms=3000):
+    """Strategy A: subscribe to UIA FocusChanged events and capture the
+    consent.exe element when one fires.
+
+    Win 11 25H2 blocks every *pull* path to consent.exe (root walk,
+    FindAll(ProcessId), ElementFromHandle gives only the frame). But UIA
+    event delivery is *push* and is what Narrator/Magnifier rely on for
+    cross-integrity access. A UIAccess process receives focus events from
+    higher-integrity processes. We register a no-filter FocusChanged
+    handler, nudge the dialog with a Tab keypress to force a fresh focus
+    event, pump the STA message queue, and capture any sender whose
+    ProcessId matches consent.exe. Returns the serialized dialog-root node
+    or None.
+    """
+    import comtypes
+    import pythoncom
+
+    cap_lock = threading.Lock()
+    captured: list[Any] = []
+    cap_event = threading.Event()
+
+    class _FocusHandler(comtypes.COMObject):
+        _com_interfaces_ = [uia_core.IUIAutomationFocusChangedEventHandler]
+
+        def HandleFocusChangedEvent(self, sender):
+            try:
+                spid = sender.CurrentProcessId if sender is not None else None
+                if spid == consent_pid:
+                    with cap_lock:
+                        captured.append(sender)
+                    cap_event.set()
+            except Exception:
+                pass
+            return 0
+
+    handler = _FocusHandler()
+    registered = False
+    try:
+        iuia.AddFocusChangedEventHandler(None, handler)
+        registered = True
+        logger.info("focus-events: AddFocusChangedEventHandler registered")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("focus-events: AddFocusChangedEventHandler failed: %s", exc)
+        return None
+
+    try:
+        # Nudge the dialog so it emits a fresh focus event.
+        try:
+            _send_tab_key()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("focus-events: _send_tab_key failed: %s", exc)
+
+        deadline = time.monotonic() + (wait_ms / 1000.0)
+        nudges = 0
+        while time.monotonic() < deadline:
+            pythoncom.PumpWaitingMessages()
+            if cap_event.wait(timeout=0.05):
+                break
+            # Re-nudge every ~1s in case the first Tab landed before the
+            # handler was fully wired through the COM marshaller.
+            nudges += 1
+            if nudges % 20 == 0:
+                try:
+                    _send_tab_key()
+                except Exception:
+                    pass
+
+        with cap_lock:
+            sender = captured[0] if captured else None
+        if sender is None:
+            logger.info("focus-events: no consent.exe focus event captured")
+            return None
+        # Walk up to the dialog root so Yes AND No are both descendants.
+        cur = sender
+        for _ in range(8):
+            try:
+                parent = walker.GetParentElement(cur)
+            except Exception:
+                break
+            if parent is None:
+                break
+            try:
+                ppid = parent.CurrentProcessId
+            except Exception:
+                ppid = None
+            if ppid != consent_pid:
+                break
+            cur = parent
+        node = _serialize_element(cur, walker)
+        if node:
+            logger.info("focus-events: captured + serialized consent dialog")
+        return node
+    finally:
+        if registered:
+            try:
+                iuia.RemoveFocusChangedEventHandler(handler)
+            except Exception:
+                pass
+
+
 def _find_visible_hwnds_for_pid(pid: int) -> list[int]:
     """Return every TOP-LEVEL + CHILD HWND owned by *pid* on the current
     desktop, regardless of visibility flag.
@@ -500,17 +642,31 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
         nodes: list[dict] = []
         diag_lines: list[str] = []
         with _input_desktop():
-            iuia, _ = _create_uia()
+            iuia, uia_core = _create_uia()
             walker = iuia.RawViewWalker
             if consent_pid:
-                # Win 11 25H2 hides consent.exe (System integrity) from
-                # IUIAutomation enumeration even with TokenUIAccess=1:
-                # FindAll(ProcessId=consent_pid) returns 0, ElementFromHandle
-                # on the main HWND returns only the OS-supplied frame. The
-                # one UIA call that DOES cross integrity reliably is
-                # GetFocusedElement -- consent.exe default-focuses the No
-                # button, so we can grab that element and walk up to the
-                # parent dialog, then down to find Yes as a sibling.
+                # Win 11 25H2 blocks every UIA *pull* path to consent.exe
+                # (System integrity): root walk, FindAll(ProcessId)=0,
+                # ElementFromHandle returns only the OS frame. UIA event
+                # delivery is *push* and is what Narrator/Magnifier use for
+                # cross-integrity access -- try that first (strategy A).
+                try:
+                    focus_node = _capture_consent_via_focus_events(
+                        iuia, uia_core, walker, consent_pid, wait_ms=4000
+                    )
+                    if focus_node:
+                        focus_node["_diag"] = (
+                            f"consent_pid={consent_pid} | path=FocusEvent"
+                        )
+                        nodes.append(focus_node)
+                        return nodes
+                    diag_lines.append(f"consent_pid={consent_pid} FocusEvent=empty")
+                except Exception as exc:  # noqa: BLE001
+                    diag_lines.append(f"FocusEvent raised: {exc}")
+                    logger.warning("uia_get_tree: focus-event strategy failed: %s", exc)
+
+                # GetFocusedElement is a cheap pull-path retry now that a Tab
+                # nudge may have moved focus onto a consent button.
                 UIA_ProcessIdPropertyId = 30005 - 3  # 30002
                 try:
                     focused = iuia.GetFocusedElement()
