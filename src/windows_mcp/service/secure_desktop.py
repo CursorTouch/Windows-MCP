@@ -426,17 +426,33 @@ def _send_tab_key() -> None:
     KEYEVENTF_KEYUP = 0x0002
     VK_TAB = 0x09
 
+    ULONG_PTR = ctypes.c_size_t  # pointer-sized, matches ULONG_PTR on x86/x64
+
     class _KEYBDINPUT(ctypes.Structure):
         _fields_ = [
             ("wVk", ctypes.wintypes.WORD),
             ("wScan", ctypes.wintypes.WORD),
             ("dwFlags", ctypes.wintypes.DWORD),
             ("time", ctypes.wintypes.DWORD),
-            ("dwExtraInfo", ctypes.POINTER(ctypes.wintypes.ULONG)),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
+    class _MOUSEINPUT(ctypes.Structure):
+        # Largest union member -- present only so the union (and thus INPUT)
+        # gets the correct size. SendInput validates cbSize == sizeof(INPUT),
+        # which is 40 bytes on x64; without MOUSEINPUT the union shrinks to
+        # KEYBDINPUT and the call fails with ERROR_INVALID_PARAMETER.
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.wintypes.DWORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
         ]
 
     class _INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", _KEYBDINPUT)]
+        _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
 
     class _INPUT(ctypes.Structure):
         _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _INPUT_UNION)]
@@ -445,14 +461,17 @@ def _send_tab_key() -> None:
     SendInput.argtypes = [ctypes.wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
     SendInput.restype = ctypes.wintypes.UINT
 
-    down = _INPUT(type=INPUT_KEYBOARD, u=_INPUT_UNION(ki=_KEYBDINPUT(VK_TAB, 0, 0, 0, None)))
+    down = _INPUT(type=INPUT_KEYBOARD, u=_INPUT_UNION(ki=_KEYBDINPUT(VK_TAB, 0, 0, 0, 0)))
     up = _INPUT(
         type=INPUT_KEYBOARD,
-        u=_INPUT_UNION(ki=_KEYBDINPUT(VK_TAB, 0, KEYEVENTF_KEYUP, 0, None)),
+        u=_INPUT_UNION(ki=_KEYBDINPUT(VK_TAB, 0, KEYEVENTF_KEYUP, 0, 0)),
     )
     arr = (_INPUT * 2)(down, up)
     sent = SendInput(2, arr, ctypes.sizeof(_INPUT))
-    logger.info("_send_tab_key: SendInput sent=%d gle=%d", sent, ctypes.GetLastError())
+    logger.info(
+        "_send_tab_key: SendInput sent=%d gle=%d sizeof(INPUT)=%d",
+        sent, ctypes.GetLastError(), ctypes.sizeof(_INPUT),
+    )
 
 
 def _capture_consent_via_focus_events(iuia, uia_core, walker, consent_pid, wait_ms=3000):
