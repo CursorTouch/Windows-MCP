@@ -204,3 +204,7 @@ tests/manual/vm_e2e/.work/
 # Per-run diagnostic dumps from the VM e2e harness
 /tests/manual/vm_e2e/results-allow_all-*.json
 /tests/manual/vm_e2e/.work/wait_for_uac_payload.json
+
+# More transient deploy/diag artifacts
+/diag.bat
+/diag-out.txt
