@@ -208,3 +208,4 @@ tests/manual/vm_e2e/.work/
 # More transient deploy/diag artifacts
 /diag.bat
 /diag-out.txt
+/restart-host.bat
