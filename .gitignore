@@ -210,3 +210,4 @@ tests/manual/vm_e2e/.work/
 /diag-out.txt
 /restart-host.bat
 /copy-host-log.bat
+/dump-host-log.bat
