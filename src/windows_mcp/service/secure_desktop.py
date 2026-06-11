@@ -641,84 +641,6 @@ def _find_top_hwnd_for_pid(pid: int) -> int:
     return hwnds[0] if hwnds else 0
 
 
-def _probe_uac_buttons_via_point(
-    iuia, walker, dialog_bbox: dict, consent_pid: int, diag_lines: list[str]
-) -> list[dict]:
-    """Probe ElementFromPoint at predicted Yes/No locations inside the UAC
-    dialog's bounding rect, return the resolved nodes if they exist.
-
-    The Win 11 consent.exe dialog renders Yes/No as XAML elements that the
-    UIA tree-walker can't reach from the parent window. But UIAccess
-    processes can use ElementFromPoint to resolve the UIA element under any
-    screen pixel cross-integrity, so we sample a few candidate locations
-    inside the dialog box.
-
-    Returns a list of serialized nodes for matched elements (deduped by
-    NativeWindowHandle + name).
-    """
-    left, top, right, bottom = (
-        dialog_bbox.get("left", 0),
-        dialog_bbox.get("top", 0),
-        dialog_bbox.get("right", 0),
-        dialog_bbox.get("bottom", 0),
-    )
-    if right <= left or bottom <= top:
-        diag_lines.append("point-probe: dialog bbox empty")
-        return []
-    w = right - left
-    h = bottom - top
-
-    # Win 11 UAC layout: Yes/No buttons sit on the bottom strip of the
-    # dialog. Yes is left-of-center, No is right-of-center. The dialog's
-    # left strip below the publisher line is usually padded out; aim at
-    # roughly y = bottom - 50 and x = left + w * 0.4 / 0.7 for the two
-    # buttons. Add a few alternate y offsets in case the dialog is taller.
-    candidate_points = [
-        (left + int(w * 0.4), bottom - 50),
-        (left + int(w * 0.7), bottom - 50),
-        (left + int(w * 0.4), bottom - 80),
-        (left + int(w * 0.7), bottom - 80),
-        (left + int(w * 0.5), bottom - 60),
-    ]
-
-    class _POINT_LOCAL(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-    found: list[dict] = []
-    seen_handles: set[int] = set()
-    for px, py in candidate_points:
-        try:
-            elem = iuia.ElementFromPoint(_POINT_LOCAL(px, py))
-        except Exception as exc:  # noqa: BLE001
-            diag_lines.append(f"ElementFromPoint({px},{py}) raised: {exc}")
-            continue
-        if elem is None:
-            continue
-        try:
-            epid = elem.CurrentProcessId
-        except Exception:
-            epid = None
-        if epid != consent_pid:
-            continue
-        try:
-            hwnd = elem.CurrentNativeWindowHandle or 0
-        except Exception:
-            hwnd = 0
-        try:
-            name = elem.CurrentName or ""
-        except Exception:
-            name = ""
-        key = (hwnd, name.lower())
-        if key in seen_handles:
-            continue
-        seen_handles.add(key)
-        node = _serialize_element(elem, walker)
-        if node:
-            found.append(node)
-    diag_lines.append(f"point-probe: found {len(found)} consent.exe elements")
-    return found
-
-
 def uia_get_tree(consent_pid: int = 0) -> list[dict]:
     """Return the full UIA tree of the current input desktop.
 
@@ -843,21 +765,6 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                         if node:
                             if not nodes:
                                 node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
-                            # If this is the UAC dialog window AND it has no
-                            # walkable descendants (consent.exe renders Yes/
-                            # No buttons via XAML/Composition outside the UIA
-                            # tree), probe ElementFromPoint at predicted
-                            # button positions inside the bounding rect.
-                            # UIAccess processes can resolve elements at
-                            # screen coords across integrity, so a point
-                            # query lands directly on the XAML button even
-                            # when walker enumeration filters it out.
-                            if not node.get("children") and "Account Control" in (node.get("name") or ""):
-                                point_children = _probe_uac_buttons_via_point(
-                                    iuia, walker, node["bbox"], consent_pid, diag_lines
-                                )
-                                if point_children:
-                                    node["children"] = point_children
                             nodes.append(node)
                             walked_any = True
                     except Exception as exc:  # noqa: BLE001
