@@ -641,6 +641,53 @@ def _find_top_hwnd_for_pid(pid: int) -> int:
     return hwnds[0] if hwnds else 0
 
 
+def _synthesize_uac_buttons(dialog_bbox: dict) -> list[dict]:
+    """Build synthesized Yes/No button nodes from the dialog bounding box.
+
+    The Win 11 consent.exe dialog renders its action buttons as XAML inside
+    a Composition layer that the UIA tree walker can't descend into across
+    the integrity boundary. The buttons ARE clickable -- ElementFromPoint
+    at click time resolves them across integrity. So we synthesize nodes
+    with predicted center coords and ``can_invoke=True`` so the LLM's
+    button-finding pass (name + can_invoke) succeeds and the subsequent
+    Click(loc=[cx, cy]) lands on the real XAML element.
+
+    The layout for the modern Win 11 consent dialog is approximately:
+      * Yes button at roughly x = left + width * 0.55, y = bottom - 50
+      * No  button at roughly x = left + width * 0.80, y = bottom - 50
+    These pixel offsets land inside the action-button strip across the
+    standard 480px / 600px dialog widths shipped with Win 10/11.
+    """
+    left = dialog_bbox.get("left", 0)
+    top = dialog_bbox.get("top", 0)
+    right = dialog_bbox.get("right", 0)
+    bottom = dialog_bbox.get("bottom", 0)
+    if right <= left or bottom <= top:
+        return []
+    w = right - left
+    yes_cx = left + int(w * 0.55)
+    no_cx = left + int(w * 0.80)
+    cy = bottom - 50
+
+    def _btn(name: str, cx: int, cy: int) -> dict:
+        # 80x32 hit-rect approximation centered on (cx, cy).
+        return {
+            "name": name,
+            "control_type": "button",
+            "bbox": {
+                "left": cx - 40, "top": cy - 16,
+                "right": cx + 40, "bottom": cy + 16,
+                "width": 80, "height": 32,
+            },
+            "center": {"x": cx, "y": cy},
+            "can_invoke": True,
+            "children": [],
+            "_synthesized": True,
+        }
+
+    return [_btn("Yes", yes_cx, cy), _btn("No", no_cx, cy)]
+
+
 def uia_get_tree(consent_pid: int = 0) -> list[dict]:
     """Return the full UIA tree of the current input desktop.
 
@@ -765,6 +812,19 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                         if node:
                             if not nodes:
                                 node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
+                            # consent.exe renders Yes/No as XAML/Composition
+                            # that the UIA walker can't descend into cross-
+                            # integrity. If this is the UAC dialog window with
+                            # no walkable children, synthesize Yes/No nodes
+                            # from the bbox so downstream callers can locate
+                            # them by name + center coords. The Click tool
+                            # uses ElementFromPoint at click time to resolve
+                            # the actual button under those coords.
+                            if (
+                                not node.get("children")
+                                and "Account Control" in (node.get("name") or "")
+                            ):
+                                node["children"] = _synthesize_uac_buttons(node["bbox"])
                             nodes.append(node)
                             walked_any = True
                     except Exception as exc:  # noqa: BLE001
