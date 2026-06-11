@@ -652,11 +652,12 @@ def _synthesize_uac_buttons(dialog_bbox: dict) -> list[dict]:
     button-finding pass (name + can_invoke) succeeds and the subsequent
     Click(loc=[cx, cy]) lands on the real XAML element.
 
-    The layout for the modern Win 11 consent dialog is approximately:
-      * Yes button at roughly x = left + width * 0.55, y = bottom - 50
-      * No  button at roughly x = left + width * 0.80, y = bottom - 50
-    These pixel offsets land inside the action-button strip across the
-    standard 480px / 600px dialog widths shipped with Win 10/11.
+    The layout for the modern Win 11 consent dialog (observed at 1280x720):
+      dialog bbox left=420 right=860 top=178 bottom=535 (440x357)
+      Yes button center ~ (538, 507)  -> 0.27 from left, 28px from bottom
+      No  button center ~ (745, 507)  -> 0.74 from left, 28px from bottom
+    The same relative positions hold for the taller "expanded details"
+    layout because the Yes/No strip is anchored to the dialog bottom.
     """
     left = dialog_bbox.get("left", 0)
     top = dialog_bbox.get("top", 0)
@@ -665,9 +666,9 @@ def _synthesize_uac_buttons(dialog_bbox: dict) -> list[dict]:
     if right <= left or bottom <= top:
         return []
     w = right - left
-    yes_cx = left + int(w * 0.55)
-    no_cx = left + int(w * 0.80)
-    cy = bottom - 50
+    yes_cx = left + int(w * 0.27)
+    no_cx = left + int(w * 0.74)
+    cy = bottom - 28
 
     def _btn(name: str, cx: int, cy: int) -> dict:
         # 80x32 hit-rect approximation centered on (cx, cy).
