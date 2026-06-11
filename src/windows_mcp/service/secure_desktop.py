@@ -666,7 +666,6 @@ def _probe_uac_buttons_via_point(
         diag_lines.append("point-probe: dialog bbox empty")
         return []
     w = right - left
-    h = bottom - top
 
     # Win 11 UAC layout: Yes/No buttons sit on the bottom strip of the
     # dialog. Yes is left-of-center, No is right-of-center. The dialog's
