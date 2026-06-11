@@ -1431,74 +1431,64 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
             # Default desktop. consent.exe is then a regular top-level
             # window reachable via plain UIA from a same-session worker --
             # no UIAccess, no DACL loosening, no screenshot trickery.
-            # Detect by polling for consent.exe in the process list; the
-            # input-desktop name stays "Default" so we can't use it as the
-            # trigger here.
-            if name.lower() != "winlogon":
-                consent_pid = _find_consent_pid()
-                if consent_pid:
-                    logger.info(
-                        "wait_for_uac_prompt: consent.exe pid=%d on desktop=%r -- using Default-desktop UIA path",
-                        consent_pid,
-                        name,
-                    )
-                    # consent.exe shows up in the process list before its
-                    # top-level dialog window is registered with UIA. Walk
-                    # the user-session UIA tree up to 30 times (~6s on a
-                    # KVM-disabled VM) until the consent.exe window appears,
-                    # then return.
-                    # Pass consent_pid to the worker so uia_get_tree /
-                    # get_uac_publisher can scope via EnumWindows +
-                    # ElementFromHandle. consent.exe at System integrity is
-                    # not returned by GetRootElement walk even from a
-                    # UIAccess caller; ElementFromHandle on a discovered
-                    # HWND crosses the integrity boundary.
-                    pid_arg = f"--consent-pid={consent_pid}"
-                    tree: list[dict] = []
-                    publisher = None
-                    for attempt in range(30):
-                        try:
-                            tree = _spawn_in_user_session("tree", pid_arg, timeout=15.0) or []
-                        except Exception as exc:
-                            logger.warning("Default-desktop tree spawn failed: %s", exc)
-                            tree = []
-                        if _tree_contains_consent(tree, consent_pid):
-                            logger.info(
-                                "wait_for_uac_prompt: consent.exe in UIA tree after %d retries (%d top windows)",
-                                attempt,
-                                len(tree),
-                            )
-                            break
-                        time.sleep(0.2)
-                    else:
-                        logger.warning(
-                            "wait_for_uac_prompt: consent.exe pid=%d never appeared in user-session UIA tree after 30 retries -- returning whatever the worker saw",
-                            consent_pid,
-                        )
-                    try:
-                        publisher = _spawn_in_user_session("publisher", pid_arg, timeout=10.0)
-                    except Exception as exc:
-                        logger.warning("publisher spawn failed: %s", exc)
-                        publisher = None
-                    return {
-                        "desktop": name or "Default",
-                        "publisher": publisher,
-                        "tree": tree,
-                    }
-
-            if name.lower() == "winlogon":
-                # Defensive: if UAC is routed to Winlogon despite the policy
-                # write, we can detect the desktop flip but cannot read the
-                # consent dialog (Winlogon's DACL denies UIA from the user
-                # session even with TokenUIAccess=1 -- see iter 1-5 in
-                # win11-uac-investigation.md). Return what we know and let
-                # the caller decide whether to fall back to keyboard input.
-                logger.warning(
-                    "wait_for_uac_prompt: Winlogon detected -- secure-desktop "
-                    "policy did not take effect, dialog tree will be empty. "
-                    "Verify HKLM\\...\\Policies\\System CPB=4 POSD=0."
+            # Detect by polling for consent.exe in the process list.
+            #
+            # We previously had an early-bail branch on input-desktop name
+            # == "Winlogon" -- but Windows briefly transitions the input
+            # desktop to Winlogon during the UAC dispatch sequence even
+            # when POSD=0 keeps the actual dialog on Default. That early
+            # bail returned tree=[] before the consent.exe check ran, so
+            # the worker never got a chance to walk the dialog. Now we
+            # always check consent.exe first regardless of the input
+            # desktop name; only after the polling window expires without
+            # ever seeing consent.exe will we report "Winlogon detected"
+            # as a diagnostic.
+            consent_pid = _find_consent_pid()
+            if consent_pid:
+                logger.info(
+                    "wait_for_uac_prompt: consent.exe pid=%d on desktop=%r -- using Default-desktop UIA path",
+                    consent_pid,
+                    name,
                 )
-                return {"desktop": "Winlogon", "publisher": None, "tree": []}
+                # Pass consent_pid to the worker so uia_get_tree /
+                # get_uac_publisher can scope via EnumWindows +
+                # ElementFromHandle / FocusChanged events. consent.exe at
+                # System integrity is not returned by GetRootElement walk
+                # even from a UIAccess caller; cross-integrity access
+                # requires the per-pid scoped path.
+                pid_arg = f"--consent-pid={consent_pid}"
+                tree: list[dict] = []
+                publisher = None
+                for attempt in range(30):
+                    try:
+                        tree = _spawn_in_user_session("tree", pid_arg, timeout=15.0) or []
+                    except Exception as exc:
+                        logger.warning("Default-desktop tree spawn failed: %s", exc)
+                        tree = []
+                    if _tree_contains_consent(tree, consent_pid):
+                        logger.info(
+                            "wait_for_uac_prompt: consent.exe in UIA tree after %d retries (%d top windows)",
+                            attempt,
+                            len(tree),
+                        )
+                        break
+                    time.sleep(0.2)
+                else:
+                    logger.warning(
+                        "wait_for_uac_prompt: consent.exe pid=%d never appeared in user-session UIA tree after 30 retries -- returning whatever the worker saw",
+                        consent_pid,
+                    )
+                try:
+                    publisher = _spawn_in_user_session("publisher", pid_arg, timeout=10.0)
+                except Exception as exc:
+                    logger.warning("publisher spawn failed: %s", exc)
+                    publisher = None
+                return {
+                    "desktop": name or "Default",
+                    "publisher": publisher,
+                    "tree": tree,
+                }
+
             time.sleep(poll_ms / 1000.0)
         logger.warning("wait_for_uac_prompt: timed out; saw desktops: %s", seen)
         return None
