@@ -139,6 +139,8 @@ class Desktop:
         return "".join([row.get('DisplayName') for row in reader])
     
     def resize_app(self,size:tuple[int,int]=None,loc:tuple[int,int]=None)->tuple[str,int]:
+        if self.desktop_state is None:
+            self.get_state()
         active_app=self.desktop_state.active_app
         if active_app is None:
             return "No active app found",1
@@ -208,6 +210,8 @@ class Desktop:
         return response,status
     
     def switch_app(self,name:str):
+        if self.desktop_state is None:
+            self.get_state()
         apps={app.name:app for app in [self.desktop_state.active_app]+self.desktop_state.apps if app is not None}
         matched_app:Optional[tuple[str,float]]=process.extractOne(name,list(apps.keys()),score_cutoff=70)
         if matched_app is None:
@@ -250,7 +254,7 @@ class Desktop:
         bounding_rectangle=element_handle.BoundingRectangle
         return bounding_rectangle.xcenter(),bounding_rectangle.ycenter()
         
-    def click(self,loc:tuple[int,int],button:str='left',clicks:int=2):
+    def click(self,loc:tuple[int,int],button:str='left',clicks:int=1):
         x,y=loc
         pg.click(x,y,button=button,clicks=clicks,duration=0.1)
 
