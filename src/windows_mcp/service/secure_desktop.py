@@ -811,8 +811,6 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                             continue
                         node = _serialize_element(elem, walker)
                         if node:
-                            if not nodes:
-                                node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
                             # consent.exe renders Yes/No as XAML/Composition
                             # that the UIA walker can't descend into cross-
                             # integrity. If this is the UAC dialog window with
@@ -825,7 +823,13 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                                 not node.get("children")
                                 and "Account Control" in (node.get("name") or "")
                             ):
-                                node["children"] = _synthesize_uac_buttons(node["bbox"])
+                                synth = _synthesize_uac_buttons(node["bbox"])
+                                node["children"] = synth
+                                diag_lines.append(
+                                    f"synthesized_yes_no={len(synth)} from bbox={node['bbox']}"
+                                )
+                            if not nodes:
+                                node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
                             nodes.append(node)
                             walked_any = True
                     except Exception as exc:  # noqa: BLE001
