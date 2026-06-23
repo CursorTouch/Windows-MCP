@@ -38,6 +38,50 @@ import io
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+def _is_consent_target(x: int, y: int) -> bool:
+    """Return True if the screen pixel at (x, y) is owned by consent.exe.
+
+    Used to detect when a Click should be routed through the SYSTEM host
+    service's UIAccess worker instead of the broker's medium-integrity
+    uia.Click, which UIPI blocks against the UAC dialog.
+    """
+    try:
+        hwnd = win32gui.WindowFromPoint((x, y))
+        if not hwnd:
+            return False
+        # WindowFromPoint may return a child HWND; walk up to the top.
+        top = win32gui.GetAncestor(hwnd, win32con.GA_ROOT)
+        _, pid = win32process.GetWindowThreadProcessId(top or hwnd)
+        if not pid:
+            return False
+        try:
+            name = Process(pid).name().lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return name == "consent.exe"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _route_click_through_host(x: int, y: int) -> bool:
+    """Best-effort click via the SYSTEM host service. Returns True if it took.
+
+    Lazy-imports the pipe client so non-UAC code paths don't pay the cost.
+    """
+    try:
+        from windows_mcp.service.pipe import get_client
+        client = get_client()
+        if not client.is_available():
+            return False
+        ok = bool(client.uia_click_at(x, y))
+        if ok:
+            logger.info("Click(%d,%d) routed through host UIAccess worker", x, y)
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("host-routed click failed, falling back to local: %s", exc)
+        return False
+
 import windows_mcp.uia as uia  # noqa: E402
 
 # Key name aliases for shortcut keys that differ from UIA SpecialKeyNames
@@ -642,6 +686,14 @@ class Desktop:
 
         if clicks == 0:
             uia.SetCursorPos(x, y)
+            return
+        # UAC routing: consent.exe runs at System integrity. UIPI blocks
+        # mouse input from medium-integrity processes, so a normal uia.Click
+        # at the dialog's Yes/No coords silently fails to dismiss UAC. The
+        # SYSTEM host service has a UIAccess-tokened user-session worker
+        # that CAN invoke across integrity; route the click there if the
+        # target pixel is owned by consent.exe.
+        if _is_consent_target(x, y) and _route_click_through_host(x, y):
             return
         match button:
             case "left":
