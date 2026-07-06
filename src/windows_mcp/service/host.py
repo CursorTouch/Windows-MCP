@@ -71,9 +71,9 @@ _FILE_ALL_ACCESS = 0x1F01FF
 
 # Identifiers for the well-known SIDs we need.
 # win32security.WinLocalSystemSid → S-1-5-18 (NT AUTHORITY\SYSTEM)
-# win32security.WinBuiltinAdministratorsSid → S-1-5-32-544 (BUILTIN\Administrators)
+# win32security.WinInteractiveSid  → S-1-5-4  (NT AUTHORITY\INTERACTIVE)
 _SID_TYPE_SYSTEM = "WinLocalSystemSid"
-_SID_TYPE_ADMINS = "WinBuiltinAdministratorsSid"
+_SID_TYPE_INTERACTIVE = "WinInteractiveSid"
 
 
 def _console_user_sid() -> Any | None:
@@ -117,9 +117,23 @@ def _console_user_sid() -> Any | None:
 def _build_pipe_sa() -> Any:
     """Return a SECURITY_ATTRIBUTES that allows only SYSTEM + the console user.
 
-    Falls back to SYSTEM + BUILTIN\\Administrators if no console user is
-    logged in yet (typical at boot, before any login).  Never falls back to
-    a NULL DACL — that was the previous attempt's mistake.
+    Falls back to SYSTEM + NT AUTHORITY\\INTERACTIVE (S-1-5-4) when no console
+    user is logged in yet — the typical case at boot, because the service is
+    SERVICE_AUTO_START and comes up before anyone logs in. The pipe server
+    loop rebuilds this SD for every instance and then blocks on
+    ConnectNamedPipe, so the *first* boot-time instance keeps whatever DACL it
+    was created with until a client actually connects. If that fallback were
+    BUILTIN\\Administrators (the previous behaviour), the broker — which runs
+    in the interactive session under the user's *filtered* medium-integrity
+    token, where Administrators is a deny-only SID — could never open the pipe,
+    the ConnectNamedPipe would never complete, and the loop would never
+    recreate the instance with the correct console-user DACL. It would hang
+    until a manual service restart. INTERACTIVE is present in every
+    interactively-logged-on token (filtered or not), so the boot-time pipe is
+    reachable by the interactive user as soon as they log in; once a console
+    user is resolved, later instances tighten to SYSTEM + that specific SID.
+    The privileged operations behind the pipe are policy-gated regardless.
+    Never falls back to a NULL DACL — that was the original mistake.
 
     Raising would prevent the service from starting; instead, on failure we
     return a SECURITY_ATTRIBUTES with a *deny-all* DACL so the pipe is created
@@ -136,13 +150,16 @@ def _build_pipe_sa() -> Any:
             getattr(win32security, _SID_TYPE_SYSTEM), None
         )
 
-        # Console user SID (if anyone is logged in); else fall back to Admins.
+        # Console user SID (if anyone is logged in); else fall back to the
+        # INTERACTIVE group so the pipe is still reachable by the interactive
+        # user once they log in (see _build_pipe_sa docstring for why Admins
+        # would deadlock the boot-time instance).
         sid_user = _console_user_sid()
         if sid_user is None:
             sid_user = win32security.CreateWellKnownSid(
-                getattr(win32security, _SID_TYPE_ADMINS), None
+                getattr(win32security, _SID_TYPE_INTERACTIVE), None
             )
-            logger.info("Pipe DACL fallback: SYSTEM + BUILTIN\\Administrators")
+            logger.info("Pipe DACL fallback: SYSTEM + NT AUTHORITY\\INTERACTIVE")
         else:
             logger.info(
                 "Pipe DACL: SYSTEM + console user %s",
