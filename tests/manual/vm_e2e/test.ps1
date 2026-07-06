@@ -32,6 +32,21 @@ function Log($msg) {
     try { Copy-Item -Force $LocalLog $ShareLog -ErrorAction Stop } catch { }
 }
 
+function Copy-HostLog {
+    # The host service now logs to %ProgramData%\windows-mcp (Users-readable),
+    # so this non-elevated test can copy it to the share for diagnosis instead
+    # of needing an elevated dump. Best-effort.
+    try {
+        $hostLog = Join-Path $env:ProgramData "windows-mcp\windows-mcp-host.log"
+        if (Test-Path $hostLog) {
+            Copy-Item -Force $hostLog (Join-Path $Repo "windows-mcp-host.log")
+            Log "Copied host service log to share."
+        } else {
+            Log "Host service log not found at $hostLog."
+        }
+    } catch { Log "host log copy failed: $($_.Exception.Message)" }
+}
+
 function Wait-For-Url($url, $timeoutSec) {
     # Probe at the TCP layer. We don't care that the streamable-http MCP server
     # answers 406 on plain GET ("Client must accept text/event-stream") — we
@@ -152,6 +167,7 @@ try {
     } else {
         throw "mcp_client did not write $allowJson."
     }
+    Copy-HostLog
     Log "DONE"
 } catch {
     Log "FAILED: $($_.Exception.Message)"
@@ -167,5 +183,6 @@ try {
         })
         summary = @{ total = 1; passed = 0; failed = 1 }
     } | ConvertTo-Json -Depth 5 | Set-Content -Path $ResultsJson
+    Copy-HostLog
     exit 1
 }

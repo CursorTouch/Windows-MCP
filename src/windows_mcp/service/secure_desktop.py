@@ -1617,30 +1617,50 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                 pid_arg = f"--consent-pid={consent_pid}"
                 tree: list[dict] = []
                 publisher = None
-                for attempt in range(30):
+                # Retry the worker walk until it returns the consent window,
+                # but ALWAYS stay inside the overall deadline. Each spawn is a
+                # fresh Python + COM init, which is slow on a KVM-less VM, so
+                # give it a generous per-spawn timeout -- capped to whatever
+                # time is left so we never blow past the caller's deadline (a
+                # bounded loop here is what keeps WaitForUACPrompt returning
+                # within timeout_ms instead of hanging until the client's read
+                # timeout fires).
+                attempt = 0
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 2.0:
+                        logger.warning(
+                            "wait_for_uac_prompt: deadline reached after %d worker attempts; "
+                            "returning whatever the worker last saw",
+                            attempt,
+                        )
+                        break
+                    attempt += 1
+                    spawn_to = min(45.0, remaining - 1.0)
                     try:
-                        tree = _spawn_in_user_session("tree", pid_arg, timeout=15.0) or []
+                        tree = _spawn_in_user_session("tree", pid_arg, timeout=spawn_to) or []
                     except Exception as exc:
                         logger.warning("Default-desktop tree spawn failed: %s", exc)
                         tree = []
                     if _tree_contains_consent(tree, consent_pid):
                         logger.info(
-                            "wait_for_uac_prompt: consent.exe in UIA tree after %d retries (%d top windows)",
+                            "wait_for_uac_prompt: consent.exe in UIA tree after %d attempts (%d top windows)",
                             attempt,
                             len(tree),
                         )
                         break
                     time.sleep(0.2)
-                else:
-                    logger.warning(
-                        "wait_for_uac_prompt: consent.exe pid=%d never appeared in user-session UIA tree after 30 retries -- returning whatever the worker saw",
-                        consent_pid,
-                    )
-                try:
-                    publisher = _spawn_in_user_session("publisher", pid_arg, timeout=10.0)
-                except Exception as exc:
-                    logger.warning("publisher spawn failed: %s", exc)
-                    publisher = None
+                # Publisher is best-effort; only spend time on it if the
+                # deadline hasn't already passed.
+                pub_remaining = deadline - time.monotonic()
+                if pub_remaining > 3.0:
+                    try:
+                        publisher = _spawn_in_user_session(
+                            "publisher", pid_arg, timeout=min(15.0, pub_remaining - 1.0)
+                        )
+                    except Exception as exc:
+                        logger.warning("publisher spawn failed: %s", exc)
+                        publisher = None
                 return {
                     "desktop": name or "Default",
                     "publisher": publisher,

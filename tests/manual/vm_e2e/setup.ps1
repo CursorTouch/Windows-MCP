@@ -247,6 +247,27 @@ function Register-Test-Task {
     Log "Registered test task '$task' (non-elevated, ONLOGON)."
 }
 
+function Prewarm-Comtypes {
+    # The user-session worker's first UIA walk calls
+    # comtypes.client.GetModule("UIAutomationCore.dll"), which *generates* the
+    # comtypes Python wrappers into the venv's comtypes\gen on first use. That
+    # generation is very slow on a KVM-less TCG VM (tens of seconds) and would
+    # otherwise land on the first WaitForUACPrompt, blowing its deadline. Warm
+    # it once here (writes into the shared venv the worker reuses) so the first
+    # real spawn is fast. Non-fatal.
+    Push-Location $LocalRepo
+    try {
+        Log "Pre-warming comtypes UIAutomation gen cache…"
+        try {
+            Invoke-Native "prewarm.log" {
+                & uv run python -c "import comtypes.client; comtypes.client.GetModule('UIAutomationCore.dll'); print('comtypes gen cache warmed')"
+            }
+        } catch {
+            Log "comtypes pre-warm failed (non-fatal): $($_.Exception.Message)"
+        }
+    } finally { Pop-Location }
+}
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -260,6 +281,7 @@ try {
     Persist-Path-For-User
     Stage-Repo
     Uv-Sync
+    Prewarm-Comtypes
     Set-Uac-Config
     Install-Host-Service
     Install-Server-AutoStart

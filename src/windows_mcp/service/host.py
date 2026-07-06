@@ -35,9 +35,33 @@ logger = logging.getLogger(__name__)
 
 
 def _setup_file_logging() -> None:
-    """Write service logs to %TEMP%\\windows-mcp-host.log (no stdout in a service)."""
+    """Write service logs to a world-readable file (no stdout in a service).
+
+    The service runs as SYSTEM. Logging under %TEMP% (SYSTEM's profile temp)
+    makes the file unreadable by the interactive user, so diagnosing the
+    service used to require an elevated dump. Prefer
+    ``%ProgramData%\\windows-mcp\\host.log`` — ProgramData is readable by
+    Users by default, so an ordinary (non-elevated) process can tail the
+    service log. Fall back to %TEMP% if ProgramData can't be created.
+    """
     import os
-    log_path = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "windows-mcp-host.log")
+    candidates = []
+    program_data = os.environ.get("ProgramData")
+    if program_data:
+        candidates.append(os.path.join(program_data, "windows-mcp"))
+    candidates.append(os.environ.get("TEMP", "C:\\Temp"))
+
+    log_path = None
+    for base in candidates:
+        try:
+            os.makedirs(base, exist_ok=True)
+            log_path = os.path.join(base, "windows-mcp-host.log")
+            break
+        except Exception:
+            continue
+    if log_path is None:
+        log_path = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "windows-mcp-host.log")
+
     logging.basicConfig(
         filename=log_path,
         level=logging.DEBUG,
