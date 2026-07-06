@@ -30,10 +30,11 @@ import argparse
 import asyncio
 import json
 import os
-import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import timedelta
 from typing import Any
 
 try:
@@ -68,10 +69,24 @@ class Report:
 # helpers
 # ---------------------------------------------------------------------------
 
-async def call(session: ClientSession, name: str, args: dict | None = None) -> dict:
-    """Call an MCP tool and return the parsed JSON payload."""
+async def call(
+    session: ClientSession,
+    name: str,
+    args: dict | None = None,
+    read_timeout: float | None = None,
+) -> dict:
+    """Call an MCP tool and return the parsed JSON payload.
+
+    *read_timeout* (seconds) bounds how long the client waits for the tool
+    response. WaitForUACPrompt can block for a long time on a slow VM, so it
+    passes a generous value; without it the SDK's default request timeout can
+    fire before the server-side poll finds consent.exe.
+    """
     args = args or {}
-    raw = await session.call_tool(name, args)
+    kwargs: dict[str, Any] = {}
+    if read_timeout is not None:
+        kwargs["read_timeout_seconds"] = timedelta(seconds=read_timeout)
+    raw = await session.call_tool(name, args, **kwargs)
     return _extract_payload(raw)
 
 
@@ -109,21 +124,50 @@ def _find_named_invokable(tree: list[dict], name: str) -> dict | None:
     return None
 
 
-def _trigger_uac() -> subprocess.Popen:
-    """Fire a real UAC prompt asynchronously. Returns the Popen handle.
+class _Trigger:
+    """Handle for an in-flight UAC trigger, quacking like the Popen this used
+    to return (``.wait(timeout)`` / ``.kill()``) so callers don't change."""
 
-    Assumes this Python process is medium-integrity (run_all.ps1 launches
-    mcp_client.py via `runas /trustlevel:0x20000` for that reason). From
-    medium-integrity, Start-Process -Verb RunAs trips UAC and consent.exe
-    fires on the Secure Desktop.
+    def __init__(self, thread: threading.Thread) -> None:
+        self._thread = thread
+
+    def wait(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
+
+    def kill(self) -> None:
+        # The worker thread is a daemon blocked inside ShellExecuteW until the
+        # consent decision is made; it dies with the process. Nothing to kill.
+        pass
+
+
+def _trigger_uac() -> _Trigger:
+    """Fire a real UAC prompt asynchronously and return a handle.
+
+    This Python process is medium-integrity (run_all.ps1 launches mcp_client.py
+    via `runas /trustlevel:0x20000`). From medium integrity, requesting
+    elevation of cmd.exe trips UAC; with PromptOnSecureDesktop=0 the consent
+    dialog renders on the Default desktop where WaitForUACPrompt can reach it.
+
+    We invoke ShellExecuteW(..., "runas", ...) directly instead of spawning
+    powershell -> Start-Process. Spawning powershell added a large, variable
+    cold-start delay (tens of seconds on a KVM-less TCG VM) before the prompt
+    even appeared, which made timing the WaitForUACPrompt wait fragile. The
+    direct call surfaces the prompt in ~a second. It BLOCKS until the consent
+    decision, so it runs on a daemon thread while the main flow proceeds to
+    WaitForUACPrompt (which sees the dialog and clicks Yes, unblocking it).
     """
-    return subprocess.Popen(
-        [
-            "powershell.exe", "-NoLogo", "-NoProfile", "-Command",
-            "Start-Sleep -Milliseconds 1500; "
-            "Start-Process -FilePath cmd.exe -Verb RunAs -WindowStyle Hidden",
-        ],
-    )
+    def _fire() -> None:
+        try:
+            import ctypes
+            # SW_HIDE=0: the elevated cmd itself stays hidden; the consent
+            # dialog is drawn by the system regardless.
+            ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", None, None, 0)
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_fire, name="uac-trigger", daemon=True)
+    thread.start()
+    return _Trigger(thread)
 
 
 def _record(report: Report, name: str, ok: bool, detail: str, t0: float) -> None:
@@ -159,7 +203,14 @@ async def assert_wait_for_uac_returns_dialog(
     trigger = _trigger_uac()
     payload: dict = {}
     try:
-        payload = await call(session, "WaitForUACPrompt", {"timeout_ms": 30_000})
+        # The trigger launches powershell then Start-Process -Verb RunAs. On a
+        # KVM-less TCG VM, powershell's cold start alone can take ~a minute, so
+        # the consent dialog often doesn't appear until well after a 30s wait.
+        # Poll server-side for up to 180s, and give the client transport an
+        # even longer read timeout so it doesn't give up first.
+        payload = await call(
+            session, "WaitForUACPrompt", {"timeout_ms": 180_000}, read_timeout=200
+        )
     except Exception as exc:
         _record(report, "WaitForUACPrompt returns dialog", False, f"call failed: {exc}", t0)
         return None
@@ -299,9 +350,13 @@ async def assert_click_dismisses_uac(
         return
 
     # Now verify UAC is no longer the input desktop. Issue a short-timeout
-    # WaitForUACPrompt — if it times out, secure desktop is no longer active.
+    # WaitForUACPrompt — if it reports fired=False, the dialog is gone. Keep the
+    # server poll short (it's an absence check) but give the transport a roomy
+    # read timeout so a slow broker round-trip on TCG doesn't error the call.
     await asyncio.sleep(2)
-    follow = await call(session, "WaitForUACPrompt", {"timeout_ms": 2_000})
+    follow = await call(
+        session, "WaitForUACPrompt", {"timeout_ms": 5_000}, read_timeout=60
+    )
     dismissed = follow.get("ok") is True and follow.get("fired") is False
     _record(
         report, "Click(Yes) under allow_all dismisses UAC",
