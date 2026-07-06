@@ -174,7 +174,23 @@ function Uv-Sync {
         # wheel under uv sync, so without this any change to src/ on
         # subsequent runs is silently ignored.
         Log "uv sync --reinstall-package windows-mcp (UV_INSECURE_HOST set for the sandbox MITM proxy)"
-        Invoke-Native "uv_sync.log" { & uv sync --reinstall-package windows-mcp }
+        # The sandbox routes package downloads through a MITM proxy that
+        # intermittently times out mid-transfer ("error decoding response
+        # body / operation timed out"), failing an otherwise-fine sync. uv
+        # caches every package it *did* fetch, so a retry only re-downloads
+        # the one that flaked. Retry a few times before giving up.
+        $maxTries = 5
+        for ($t = 1; $t -le $maxTries; $t++) {
+            try {
+                Invoke-Native "uv_sync.log" { & uv sync --reinstall-package windows-mcp }
+                break
+            } catch {
+                if ($t -eq $maxTries) { throw }
+                $delay = 5 * $t
+                Log "uv sync attempt $t/$maxTries failed ($($_.Exception.Message)); retrying in ${delay}s…"
+                Start-Sleep -Seconds $delay
+            }
+        }
         # Sanity check: confirm the freshly-installed code matches the source
         # we just robocopy'd. If anything still resolves to a cached wheel,
         # we want a loud failure now.
