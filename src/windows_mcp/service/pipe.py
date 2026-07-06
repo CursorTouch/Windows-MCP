@@ -7,7 +7,7 @@ Usage
     client = get_client()
     if client.is_available():
         name = client.desktop_name()  # "Default" | "Winlogon"
-        tree = client.uia_tree()
+        result = client.wait_for_uac_prompt(timeout_ms=60_000)
 """
 
 from __future__ import annotations
@@ -67,33 +67,9 @@ class HostServiceClient:
         """Return the name of the current input desktop ('Default' or 'Winlogon')."""
         return self._call("desktop_name", {})
 
-    def uia_windows(self) -> list[str]:
-        """Return top-level window titles visible on the input desktop."""
-        return self._call("uia_windows", {})
-
-    def uia_tree(self) -> list[dict]:
-        """Return the full UIA tree of the input desktop as a list of window dicts."""
-        return self._call("uia_tree", {})
-
-    def uia_invoke(self, name: str) -> bool:
-        """Find and invoke a named element (e.g. 'Yes', 'No') on the input desktop."""
-        return self._call("uia_invoke", {"name": name})
-
     def uia_click_at(self, x: int, y: int) -> bool:
         """Invoke the element at screen coordinates (x, y) on the input desktop."""
         return self._call("uia_click_at", {"x": x, "y": y})
-
-    def uia_type_at(self, x: int, y: int, text: str) -> bool:
-        """Set the value of the editable element at (x, y) on the input desktop."""
-        return self._call("uia_type_at", {"x": x, "y": y, "text": text})
-
-    def uia_drag_from_to(self, x1: int, y1: int, x2: int, y2: int) -> bool:
-        """Move the element at (x1, y1) onto (x2, y2) on the input desktop."""
-        return self._call("uia_drag_from_to", {"x1": x1, "y1": y1, "x2": x2, "y2": y2})
-
-    def get_uac_publisher(self) -> str | None:
-        """Return the publisher string from the active UAC dialog, or None."""
-        return self._call("get_uac_publisher", {})
 
     def wait_for_uac_prompt(self, timeout_ms: int = 60_000) -> dict | None:
         """Block until UAC fires on the input desktop, or until *timeout_ms* elapses.

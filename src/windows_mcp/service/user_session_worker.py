@@ -46,21 +46,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pub = sub.add_parser("publisher", help="Extract the UAC consent publisher string.")
     pub.add_argument("--consent-pid", type=int, default=0)
-    sub.add_parser("windows", help="List top-level window titles on the input desktop.")
-    iv = sub.add_parser("invoke", help="Invoke the named UIA element.")
-    iv.add_argument("name")
     cl = sub.add_parser("click_at", help="Invoke the UIA element at (x, y).")
     cl.add_argument("x", type=int)
     cl.add_argument("y", type=int)
-    ty = sub.add_parser("type_at", help="Type text into the UIA element at (x, y).")
-    ty.add_argument("x", type=int)
-    ty.add_argument("y", type=int)
-    ty.add_argument("text")
-    dr = sub.add_parser("drag_from_to", help="Drag from (x1, y1) to (x2, y2).")
-    dr.add_argument("x1", type=int)
-    dr.add_argument("y1", type=int)
-    dr.add_argument("x2", type=int)
-    dr.add_argument("y2", type=int)
     return p
 
 
@@ -104,16 +92,8 @@ def main() -> int:
             result = secure_desktop.uia_get_tree(consent_pid=args.consent_pid)
         elif args.op == "publisher":
             result = secure_desktop.get_uac_publisher(consent_pid=args.consent_pid)
-        elif args.op == "windows":
-            result = secure_desktop.uia_get_window_titles()
-        elif args.op == "invoke":
-            result = secure_desktop.uia_invoke_element(args.name)
         elif args.op == "click_at":
             result = secure_desktop.uia_click_at(args.x, args.y)
-        elif args.op == "type_at":
-            result = secure_desktop.uia_type_at(args.x, args.y, args.text)
-        elif args.op == "drag_from_to":
-            result = secure_desktop.uia_drag_from_to(args.x1, args.y1, args.x2, args.y2)
         else:
             json.dump({"ok": False, "error": f"unknown op: {args.op}"}, sys.stdout)
             return 1

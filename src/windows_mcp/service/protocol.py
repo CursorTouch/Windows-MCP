@@ -5,17 +5,11 @@ pipe.  One request → one response per connection.
 
 Methods
 -------
-ping            → "pong"
-desktop_name    → str ("Default" | "Winlogon")
-screenshot      → base64-encoded PNG bytes (full virtual screen)
-uia_windows     → list[str] of top-level window titles on input desktop
-uia_tree        → list[dict] of top-level windows serialized as UIA nodes
-uia_invoke      → bool — find named element and invoke it
-uia_click_at    → bool — invoke element at (x, y); policy-gated when desktop=Winlogon
-uia_type_at     → bool — SetValue on editable element at (x, y); policy-gated
-uia_drag_from_to→ bool — move element from (x1, y1) to (x2, y2); policy-gated
-get_uac_publisher → str | None — extract publisher string from active UAC dialog
+ping                → "pong"
+desktop_name        → str ("Default" | "Winlogon")
+uia_click_at        → bool — invoke element at (x, y); policy-gated when desktop=Winlogon
 wait_for_uac_prompt → dict | None — block until UAC fires (or timeout)
+policy_state        → dict — persisted Secure-Desktop policy + allowlist
 """
 
 from __future__ import annotations

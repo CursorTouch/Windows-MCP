@@ -94,7 +94,6 @@ _kernel32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
 
 # UIA constants
 _UIA_InvokePatternId = 10000
-_UIA_NamePropertyId = 30005
 _UIA_TreeScope_Descendants = 4
 
 
@@ -123,14 +122,12 @@ def _get_desktop_name(hdesk: int) -> str:
 
 
 @contextmanager
-def _input_desktop(prefer_winlogon: bool = True):  # noqa: ARG001 -- kept for callsite compatibility
+def _input_desktop():
     """Switch the thread to the input (Default) desktop, then restore on exit.
 
-    Pre-iter-8 this also tried `OpenDesktopW("Winlogon")` to walk the
-    UAC dialog cross-desktop; that whole path is gone now because the
-    secure-desktop install routes UAC to Default. The `prefer_winlogon`
-    argument is left as a stub so old callsites compile -- it is ignored.
-    Tries ALL_ACCESS first (needed for synthetic input), falls back to
+    The secure-desktop install routes UAC to the Default desktop, so this
+    only ever needs to attach to the interactive input desktop. Tries
+    ALL_ACCESS first (needed for synthetic input), falls back to
     DESKTOP_READ_ATTACH if that's all we can get.
     """
     hwinsta_prev = _user32.GetProcessWindowStation()
@@ -381,36 +378,6 @@ def get_input_desktop_name() -> str:
     finally:
         _user32.SetProcessWindowStation(hwinsta_prev)
         _user32.CloseWindowStation(hwinsta)
-
-
-def uia_get_window_titles() -> list[str]:
-    """Return names of top-level windows on the current input desktop."""
-
-    def _work() -> list[str]:
-        titles: list[str] = []
-        with _input_desktop():
-            iuia, _ = _create_uia()
-            root = iuia.GetRootElement()
-            walker = iuia.RawViewWalker
-            child = walker.GetFirstChildElement(root)
-            while child:
-                try:
-                    name = child.CurrentName
-                    if name:
-                        titles.append(name)
-                except Exception:
-                    pass
-                try:
-                    child = walker.GetNextSiblingElement(child)
-                except Exception:
-                    break
-            return titles
-
-    try:
-        return _run_on_fresh_thread(_work) or []
-    except Exception as exc:
-        logger.warning("uia_get_window_titles failed: %s", exc)
-        return []
 
 
 def _send_tab_key() -> None:
@@ -994,43 +961,6 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
         return []
 
 
-def uia_invoke_element(name: str) -> bool:
-    """Find a named element on the input desktop and invoke it via UIA.
-
-    Uses ``IUIAutomation.FindFirst`` + ``IUIAutomationInvokePattern.Invoke()``.
-    Direct COM call — no input injection needed, works from Session 0.
-    Runs on a fresh thread so COM binds to the Winlogon desktop.
-    """
-
-    def _work() -> bool:
-        with _input_desktop():
-            iuia, uia_core = _create_uia()
-            root = iuia.GetRootElement()
-            condition = iuia.CreatePropertyCondition(_UIA_NamePropertyId, name)
-            element = root.FindFirst(_UIA_TreeScope_Descendants, condition)
-            if element is None:
-                logger.warning("uia_invoke_element: no element named %r", name)
-                return False
-            pattern = element.GetCurrentPattern(_UIA_InvokePatternId)
-            if pattern is None:
-                logger.warning("uia_invoke_element: %r has no InvokePattern", name)
-                return False
-            invoke = pattern.QueryInterface(uia_core.IUIAutomationInvokePattern)
-            invoke.Invoke()
-            logger.info("uia_invoke_element: invoked %r", name)
-            return True
-
-    try:
-        return _run_on_fresh_thread(_work) or False
-    except Exception as exc:
-        logger.error("uia_invoke_element(%r) failed: %s", name, exc)
-        return False
-
-
-class _POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-
 def uia_click_at(x: int, y: int) -> bool:
     """Invoke the element at (x, y) on the input desktop via UIA ElementFromPoint.
 
@@ -1041,11 +971,10 @@ def uia_click_at(x: int, y: int) -> bool:
     def _work() -> bool:
         with _input_desktop():
             iuia, uia_core = _create_uia()
-            # ElementFromPoint wants the comtypes-generated POINT; our local
-            # ctypes _POINT is a different type and comtypes rejects it
-            # ("expected POINT instance instead of _POINT"). Pass a plain
-            # tuple (comtypes marshals it), and if the point query fails for
-            # any reason just fall straight through to the SendInput path --
+            # ElementFromPoint wants the comtypes-generated POINT type; pass a
+            # plain tuple (comtypes marshals it) rather than a hand-rolled
+            # ctypes struct, which comtypes rejects. If the point query fails
+            # for any reason just fall straight through to the SendInput path --
             # for the consent.exe XAML buttons (the reason this routes here at
             # all) there is no InvokePattern to use anyway.
             element = None
@@ -1082,76 +1011,6 @@ def uia_click_at(x: int, y: int) -> bool:
         return _run_on_fresh_thread(_work) or False
     except Exception as exc:
         logger.error("uia_click_at(%d,%d) failed: %s", x, y, exc)
-        return False
-
-
-# Additional UIA constants (for ValuePattern, used by Type)
-_UIA_ValuePatternId = 10002
-
-
-def uia_type_at(x: int, y: int, text: str) -> bool:
-    """Set the value of the editable element at (x, y) on the input desktop.
-
-    Uses the IUIAutomationValuePattern.SetValue method — works from Session 0
-    without any input injection, so it crosses the Winlogon boundary safely.
-    """
-
-    def _work() -> bool:
-        with _input_desktop():
-            iuia, uia_core = _create_uia()
-            element = iuia.ElementFromPoint(_POINT(x, y))
-            if element is None:
-                logger.warning("uia_type_at(%d,%d): no element found", x, y)
-                return False
-            pattern = element.GetCurrentPattern(_UIA_ValuePatternId)
-            if pattern is None:
-                logger.warning("uia_type_at(%d,%d): no ValuePattern", x, y)
-                return False
-            value = pattern.QueryInterface(uia_core.IUIAutomationValuePattern)
-            value.SetValue(text)
-            logger.info("uia_type_at(%d,%d): set value on %r", x, y, element.CurrentName)
-            return True
-
-    try:
-        return _run_on_fresh_thread(_work) or False
-    except Exception as exc:
-        logger.error("uia_type_at(%d,%d) failed: %s", x, y, exc)
-        return False
-
-
-def uia_drag_from_to(x1: int, y1: int, x2: int, y2: int) -> bool:
-    """Drag the element at (x1, y1) onto (x2, y2) using UIA DragPattern when present.
-
-    Cross-desktop drag with native Win32 input is unreliable because mouse_event
-    cannot be retargeted across Session 0's desktop boundary.  This implementation
-    relies on the source element supporting the legacy IAccessible "DoDefaultAction"
-    drag or a UIA Transform/Move pattern; it is best-effort and intentionally
-    narrower than the in-process drag the broker performs on the Default desktop.
-    Most UAC consent dialogs do not need drag, so this is here for completeness.
-    """
-    _UIA_TransformPatternId = 10016
-
-    def _work() -> bool:
-        with _input_desktop():
-            iuia, uia_core = _create_uia()
-            src = iuia.ElementFromPoint(_POINT(x1, y1))
-            if src is None:
-                return False
-            try:
-                pattern = src.GetCurrentPattern(_UIA_TransformPatternId)
-                if pattern is None:
-                    return False
-                transform = pattern.QueryInterface(uia_core.IUIAutomationTransformPattern)
-                transform.Move(x2, y2)
-                logger.info("uia_drag_from_to: moved %r to (%d,%d)", src.CurrentName, x2, y2)
-                return True
-            except Exception:
-                return False
-
-    try:
-        return _run_on_fresh_thread(_work) or False
-    except Exception as exc:
-        logger.error("uia_drag_from_to(%d,%d->%d,%d) failed: %s", x1, y1, x2, y2, exc)
         return False
 
 

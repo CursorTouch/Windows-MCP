@@ -229,8 +229,8 @@ def _build_pipe_sa() -> Any:
 def _enforce_policy(operation: str) -> tuple[bool, str]:
     """Return (allowed, reason) for an auto-input op on the current input desktop.
 
-    Read-only ops (screenshot, tree walks) are not gated — agents always need
-    visibility into UAC. Only auto-clicks/types/drags on the Secure Desktop are
+    Read-only ops (tree walks, publisher lookups) are not gated — agents always
+    need visibility into UAC. Only auto-clicks on the Secure Desktop are
     policy-gated, because those are the actions that bypass the human.
 
     Read-only ops on Default desktop are not gated either. We only enforce on
@@ -263,20 +263,6 @@ def _dispatch(req: Request) -> Response:
                 name = secure_desktop.get_input_desktop_name()
                 return Response(id=req.id, result=name)
 
-            case "uia_windows":
-                # Same Session 0 isolation as uia_invoke / uia_click_at —
-                # walk in the user session via the worker.
-                titles = secure_desktop._spawn_in_user_session("windows")
-                return Response(id=req.id, result=titles)
-
-            case "uia_tree":
-                tree = secure_desktop._spawn_in_user_session("tree")
-                return Response(id=req.id, result=tree)
-
-            case "get_uac_publisher":
-                pub = secure_desktop._spawn_in_user_session("publisher")
-                return Response(id=req.id, result=pub)
-
             case "wait_for_uac_prompt":
                 timeout_ms = int(req.params.get("timeout_ms", 60_000))
                 result = secure_desktop.wait_for_uac_prompt(timeout_ms=timeout_ms)
@@ -289,44 +275,12 @@ def _dispatch(req: Request) -> Response:
                     "publishers_allowlist": pol.publishers_allowlist,
                 })
 
-            case "uia_invoke":
-                allowed, reason = _enforce_policy("uia_invoke")
-                if not allowed:
-                    return Response(id=req.id, error=f"policy denied: {reason}")
-                # uia_invoke_element matches by name on the input desktop —
-                # session 0 isolation makes that empty for user-session windows,
-                # so route the actual UIA call through a user-session worker.
-                ok = secure_desktop._spawn_in_user_session("invoke", req.params["name"])
-                return Response(id=req.id, result=ok)
-
             case "uia_click_at":
                 allowed, reason = _enforce_policy("uia_click_at")
                 if not allowed:
                     return Response(id=req.id, error=f"policy denied: {reason}")
                 ok = secure_desktop._spawn_in_user_session(
                     "click_at", str(req.params["x"]), str(req.params["y"])
-                )
-                return Response(id=req.id, result=ok)
-
-            case "uia_type_at":
-                allowed, reason = _enforce_policy("uia_type_at")
-                if not allowed:
-                    return Response(id=req.id, error=f"policy denied: {reason}")
-                ok = secure_desktop._spawn_in_user_session(
-                    "type_at",
-                    str(req.params["x"]), str(req.params["y"]),
-                    req.params["text"],
-                )
-                return Response(id=req.id, result=ok)
-
-            case "uia_drag_from_to":
-                allowed, reason = _enforce_policy("uia_drag_from_to")
-                if not allowed:
-                    return Response(id=req.id, error=f"policy denied: {reason}")
-                ok = secure_desktop._spawn_in_user_session(
-                    "drag_from_to",
-                    str(req.params["x1"]), str(req.params["y1"]),
-                    str(req.params["x2"]), str(req.params["y2"]),
                 )
                 return Response(id=req.id, result=ok)
 

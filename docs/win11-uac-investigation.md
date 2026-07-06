@@ -202,8 +202,8 @@ restore-on-uninstall target stays at CPB=5 (the modern Win 11 default),
 so a clean install/uninstall cycle still leaves the machine on
 Microsoft defaults.
 
-Empirical result on Win 11 25H2 Dockur (commit 538237c,
-`tests/manual/vm_e2e/iter8-test.ps1`):
+Empirical result on Win 11 25H2 Dockur (commit 538237c, from a one-off
+CPB=4 validation run):
 
 ```
 [21:20:09] registry: EnableLUA=1 CPB=4 POSD=0
