@@ -1041,7 +1041,21 @@ def uia_click_at(x: int, y: int) -> bool:
     def _work() -> bool:
         with _input_desktop():
             iuia, uia_core = _create_uia()
-            element = iuia.ElementFromPoint(_POINT(x, y))
+            # ElementFromPoint wants the comtypes-generated POINT; our local
+            # ctypes _POINT is a different type and comtypes rejects it
+            # ("expected POINT instance instead of _POINT"). Pass a plain
+            # tuple (comtypes marshals it), and if the point query fails for
+            # any reason just fall straight through to the SendInput path --
+            # for the consent.exe XAML buttons (the reason this routes here at
+            # all) there is no InvokePattern to use anyway.
+            element = None
+            try:
+                element = iuia.ElementFromPoint((x, y))
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "uia_click_at(%d,%d): ElementFromPoint failed (%s); using SendInput",
+                    x, y, exc,
+                )
             pattern = None
             if element is not None:
                 try:
