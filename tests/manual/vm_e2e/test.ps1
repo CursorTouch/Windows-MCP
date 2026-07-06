@@ -133,6 +133,22 @@ try {
         -ErrorAction SilentlyContinue
     Push-Location $localRepo
     try {
+        # Sync the installed windows_mcp package from the share before testing,
+        # mirroring the mcp_client.py copy above, so the reboot-test exercises
+        # the CURRENT source without re-running setup.ps1's full robocopy. The
+        # user-session worker is spawned fresh per WaitForUACPrompt, so it picks
+        # up the synced code even though the already-running server keeps its
+        # old import in memory.
+        try {
+            $pkg = & uv run --project $localRepo python -c "import windows_mcp, os; print(os.path.dirname(windows_mcp.__file__))" 2>$null
+            if ($pkg) {
+                robocopy "$Repo\src\windows_mcp" "$pkg" /E /XD __pycache__ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                Log "Synced windows_mcp package from share into $pkg."
+            } else {
+                Log "Package sync skipped: could not resolve installed package dir."
+            }
+        } catch { Log "Package sync failed: $($_.Exception.Message)" }
+
         $allowJson = Join-Path $ResultsDir "results-allow_all.json"
         Remove-Item -Force $allowJson -ErrorAction SilentlyContinue
         Log "Running mcp_client.py --mode allow_all against $McpUrl …"
