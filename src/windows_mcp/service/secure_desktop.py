@@ -474,6 +474,89 @@ def _send_tab_key() -> None:
     )
 
 
+def _send_mouse_click(x: int, y: int) -> bool:
+    """Synthesize an absolute left-click at (x, y) via SendInput.
+
+    consent.exe renders its Yes/No buttons as XAML/Composition that may not
+    expose a UIA InvokePattern, so ``uia_click_at``'s programmatic invoke
+    can't activate them. But a physical mouse click does -- and because the
+    worker holds TokenUIAccess=1, UIPI exempts its SendInput from the
+    medium->System integrity block, so the click reaches the higher-
+    integrity UAC dialog. Coordinates are absolute virtual-screen pixels,
+    normalised to the 0..65535 range SendInput expects.
+
+    Returns True if SendInput accepted all three events (move, down, up).
+    """
+    INPUT_MOUSE = 0
+    MOUSEEVENTF_MOVE = 0x0001
+    MOUSEEVENTF_ABSOLUTE = 0x8000
+    MOUSEEVENTF_VIRTUALDESK = 0x4000
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP = 0x0004
+    SM_XVIRTUALSCREEN = 76
+    SM_YVIRTUALSCREEN = 77
+    SM_CXVIRTUALSCREEN = 78
+    SM_CYVIRTUALSCREEN = 79
+
+    ULONG_PTR = ctypes.c_size_t
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", ctypes.wintypes.WORD),
+            ("wScan", ctypes.wintypes.WORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.wintypes.DWORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _INPUT_UNION)]
+
+    # Normalise absolute pixel (x, y) into the 0..65535 range across the
+    # whole virtual desktop (all monitors), matching MOUSEEVENTF_VIRTUALDESK.
+    vx = _user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+    vy = _user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+    vw = _user32.GetSystemMetrics(SM_CXVIRTUALSCREEN) or 1
+    vh = _user32.GetSystemMetrics(SM_CYVIRTUALSCREEN) or 1
+    nx = int(round((x - vx) * 65535 / vw))
+    ny = int(round((y - vy) * 65535 / vh))
+
+    SendInput = _user32.SendInput
+    SendInput.argtypes = [ctypes.wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
+    SendInput.restype = ctypes.wintypes.UINT
+
+    move_flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+    move = _INPUT(type=INPUT_MOUSE, u=_INPUT_UNION(mi=_MOUSEINPUT(nx, ny, 0, move_flags, 0, 0)))
+    down = _INPUT(
+        type=INPUT_MOUSE,
+        u=_INPUT_UNION(mi=_MOUSEINPUT(nx, ny, 0, MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0, 0)),
+    )
+    up = _INPUT(
+        type=INPUT_MOUSE,
+        u=_INPUT_UNION(mi=_MOUSEINPUT(nx, ny, 0, MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0, 0)),
+    )
+    arr = (_INPUT * 3)(move, down, up)
+    sent = SendInput(3, arr, ctypes.sizeof(_INPUT))
+    logger.info(
+        "_send_mouse_click(%d,%d)->norm(%d,%d): SendInput sent=%d gle=%d",
+        x, y, nx, ny, sent, ctypes.GetLastError(),
+    )
+    return sent == 3
+
+
 def _capture_consent_via_focus_events(iuia, uia_core, walker, consent_pid, wait_ms=3000):
     """Strategy A: subscribe to UIA FocusChanged events and capture the
     consent.exe element when one fires.
@@ -922,17 +1005,27 @@ def uia_click_at(x: int, y: int) -> bool:
         with _input_desktop():
             iuia, uia_core = _create_uia()
             element = iuia.ElementFromPoint(_POINT(x, y))
-            if element is None:
-                logger.warning("uia_click_at(%d,%d): no element found", x, y)
-                return False
-            pattern = element.GetCurrentPattern(_UIA_InvokePatternId)
-            if pattern is None:
-                logger.warning("uia_click_at(%d,%d): no InvokePattern", x, y)
-                return False
-            invoke = pattern.QueryInterface(uia_core.IUIAutomationInvokePattern)
-            invoke.Invoke()
-            logger.info("uia_click_at(%d,%d): invoked %r", x, y, element.CurrentName)
-            return True
+            pattern = None
+            if element is not None:
+                try:
+                    pattern = element.GetCurrentPattern(_UIA_InvokePatternId)
+                except Exception:  # noqa: BLE001
+                    pattern = None
+            if pattern is not None:
+                invoke = pattern.QueryInterface(uia_core.IUIAutomationInvokePattern)
+                invoke.Invoke()
+                logger.info("uia_click_at(%d,%d): invoked %r via InvokePattern", x, y, element.CurrentName)
+                return True
+            # No InvokePattern -- consent.exe's XAML Yes/No buttons expose no
+            # UIA pattern the walker/point-query can activate. Fall back to a
+            # synthesized physical click; the worker's UIAccess token exempts
+            # its SendInput from UIPI, so it reaches the System-integrity UAC
+            # dialog.
+            logger.info(
+                "uia_click_at(%d,%d): no InvokePattern (element=%r) -- falling back to SendInput click",
+                x, y, (element.CurrentName if element is not None else None),
+            )
+            return _send_mouse_click(x, y)
 
     try:
         return _run_on_fresh_thread(_work) or False
