@@ -217,3 +217,4 @@ tests/manual/vm_e2e/.work/
 /uac-diag.bat
 /uac-diag.txt
 /server-diag.txt
+/redeploy-worker.bat
