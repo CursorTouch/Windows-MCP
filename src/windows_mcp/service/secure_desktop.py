@@ -772,6 +772,25 @@ def _synthesize_uac_buttons(dialog_bbox: dict) -> list[dict]:
     return [_btn("Yes", yes_cx, cy), _btn("No", no_cx, cy)]
 
 
+def _ensure_uac_buttons(node: dict | None) -> None:
+    """Attach synthesized Yes/No buttons to a childless UAC dialog window node.
+
+    consent.exe renders its Yes/No buttons as XAML/Composition the UIA walker
+    can't descend into cross-integrity, so *whichever* strategy locates the
+    dialog window (FocusChanged event, GetFocusedElement walk-up, FindAll, or
+    ElementFromHandle) ends up with a window node that has no walkable
+    children. Apply this to every such return path so downstream callers can
+    always find the buttons by name + center coords; the Click tool resolves
+    the real XAML element via ElementFromPoint at click time.
+    """
+    if (
+        node
+        and not node.get("children")
+        and "Account Control" in (node.get("name") or "")
+    ):
+        node["children"] = _synthesize_uac_buttons(node.get("bbox") or {})
+
+
 def uia_get_tree(consent_pid: int = 0) -> list[dict]:
     """Return the full UIA tree of the current input desktop.
 
@@ -805,6 +824,7 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                         iuia, uia_core, walker, consent_pid, wait_ms=4000
                     )
                     if focus_node:
+                        _ensure_uac_buttons(focus_node)
                         focus_node["_diag"] = (
                             f"consent_pid={consent_pid} | path=FocusEvent"
                         )
@@ -848,6 +868,7 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                             cur = parent
                         node = _serialize_element(cur, walker)
                         if node:
+                            _ensure_uac_buttons(node)
                             node["_diag"] = " | ".join(diag_lines) + " | path=GetFocusedElement+walk-up"
                             nodes.append(node)
                             return nodes
@@ -871,6 +892,7 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                                 continue
                             node = _serialize_element(elem, walker)
                             if node:
+                                _ensure_uac_buttons(node)
                                 if not nodes:
                                     node["_diag"] = " | ".join(diag_lines) + " | path=FindAll(ProcessId)"
                                 nodes.append(node)
@@ -894,22 +916,10 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                             continue
                         node = _serialize_element(elem, walker)
                         if node:
-                            # consent.exe renders Yes/No as XAML/Composition
-                            # that the UIA walker can't descend into cross-
-                            # integrity. If this is the UAC dialog window with
-                            # no walkable children, synthesize Yes/No nodes
-                            # from the bbox so downstream callers can locate
-                            # them by name + center coords. The Click tool
-                            # uses ElementFromPoint at click time to resolve
-                            # the actual button under those coords.
-                            if (
-                                not node.get("children")
-                                and "Account Control" in (node.get("name") or "")
-                            ):
-                                synth = _synthesize_uac_buttons(node["bbox"])
-                                node["children"] = synth
+                            _ensure_uac_buttons(node)
+                            if node.get("children"):
                                 diag_lines.append(
-                                    f"synthesized_yes_no={len(synth)} from bbox={node['bbox']}"
+                                    f"synthesized_yes_no={len(node['children'])} from bbox={node['bbox']}"
                                 )
                             if not nodes:
                                 node["_diag"] = " | ".join(diag_lines) + f" | path=ElementFromHandle(0x{hwnd:x})"
