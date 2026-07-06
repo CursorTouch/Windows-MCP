@@ -211,3 +211,4 @@ tests/manual/vm_e2e/.work/
 /restart-host.bat
 /copy-host-log.bat
 /dump-host-log.bat
+/run-setup.bat
