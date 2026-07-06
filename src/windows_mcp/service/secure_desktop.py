@@ -818,10 +818,14 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                 # (System integrity): root walk, FindAll(ProcessId)=0,
                 # ElementFromHandle returns only the OS frame. UIA event
                 # delivery is *push* and is what Narrator/Magnifier use for
-                # cross-integrity access -- try that first (strategy A).
+                # cross-integrity access -- try that first (strategy A). Keep
+                # the wait short: in practice consent.exe rarely delivers a
+                # focus event to the UIAccess worker, so a long wait mostly
+                # just burns the per-spawn budget before the more reliable
+                # ElementFromHandle path gets to run.
                 try:
                     focus_node = _capture_consent_via_focus_events(
-                        iuia, uia_core, walker, consent_pid, wait_ms=4000
+                        iuia, uia_core, walker, consent_pid, wait_ms=2000
                     )
                     if focus_node:
                         _ensure_uac_buttons(focus_node)
@@ -932,6 +936,22 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
                         )
                 if walked_any:
                     return nodes
+                # Every scoped strategy failed to reach consent.exe. Do NOT
+                # fall through to the full-desktop root walk below: that walks
+                # and serializes every top-level window on the Default desktop
+                # (recursively), which is pointless here (consent.exe isn't in
+                # it) and slow enough on a TCG VM to blow the thread timeout,
+                # turning a clean "not found" into an empty result. Return a
+                # diagnostic placeholder immediately so the host can retry.
+                return [{
+                    "name": "(consent-not-reached)",
+                    "control_type": "",
+                    "bbox": {"left": 0, "top": 0, "right": 0, "bottom": 0, "width": 0, "height": 0},
+                    "center": {"x": 0, "y": 0},
+                    "can_invoke": False,
+                    "children": [],
+                    "_diag": " | ".join(diag_lines) + " | path=consent-scoped-empty",
+                }]
             root = iuia.GetRootElement()
             child = walker.GetFirstChildElement(root)
             first = True
@@ -961,7 +981,14 @@ def uia_get_tree(consent_pid: int = 0) -> list[dict]:
         return nodes
 
     try:
-        return _run_on_fresh_thread(_work) or []
+        # The default 15s is too short once we're doing the multi-strategy
+        # consent walk (a ~4s FocusChanged wait plus several cross-integrity
+        # COM calls) on a slow TCG VM -- the thread would time out and return
+        # None, which surfaces as an empty tree. Give it room (kept below the
+        # broker's per-spawn timeout so the broker, not this thread, owns the
+        # hard deadline).
+        thread_timeout = 40.0 if consent_pid else 15.0
+        return _run_on_fresh_thread(_work, timeout=thread_timeout) or []
     except Exception as exc:
         logger.error("uia_get_tree failed: %s", exc)
         return []
