@@ -79,9 +79,30 @@ try {
     Log "WindowsMCPHost is Running (self-started)."
 
     # ----- 2. Wait for MCP server to come up on its own -----------------------
-    Log "Waiting up to 120s for MCP server at $McpUrl …"
-    if (-not (Wait-For-Url $McpUrl 120)) {
-        throw "MCP server never came up at $McpUrl. Check the windows-mcp-server scheduled task."
+    # The MCP server's first `windows-mcp serve` cold-start pulls in a heavy
+    # import chain (comtypes, pywin32, pillow, numpy, fastmcp, uvicorn). On a
+    # KVM-less TCG VM (~10x slower) that can take well past two minutes, so the
+    # old 120s deadline gave up while the server was still importing. Give it
+    # 300s. On failure, dump the server's own logs + task state to the share so
+    # the run is self-diagnosing (no VNC archaeology needed).
+    $serverWaitSec = 300
+    Log "Waiting up to ${serverWaitSec}s for MCP server at $McpUrl …"
+    if (-not (Wait-For-Url $McpUrl $serverWaitSec)) {
+        $cfg = "$env:USERPROFILE\.windows-mcp"
+        $diag = Join-Path $ResultsDir "server-diag.txt"
+        try {
+            "=== server-not-up diagnostics $(Get-Date -Format o) ===" | Set-Content -Path $diag
+            "--- schtasks windows-mcp-server ---" | Add-Content $diag
+            (schtasks /Query /TN windows-mcp-server /V /FO LIST 2>&1) | Add-Content $diag
+            "--- server.error.log (tail 80) ---" | Add-Content $diag
+            if (Test-Path "$cfg\server.error.log") { Get-Content "$cfg\server.error.log" -Tail 80 | Add-Content $diag } else { "NO server.error.log" | Add-Content $diag }
+            "--- server.log (tail 40) ---" | Add-Content $diag
+            if (Test-Path "$cfg\server.log") { Get-Content "$cfg\server.log" -Tail 40 | Add-Content $diag } else { "NO server.log" | Add-Content $diag }
+            "--- port 8000 ---" | Add-Content $diag
+            (netstat -ano | Select-String ':8000') | Add-Content $diag
+            Log "Wrote server-not-up diagnostics to $diag"
+        } catch { Log "diag dump failed: $($_.Exception.Message)" }
+        throw "MCP server never came up at $McpUrl in ${serverWaitSec}s. See server-diag.txt on the share."
     }
     Log "MCP server reachable."
 

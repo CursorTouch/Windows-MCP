@@ -212,3 +212,5 @@ tests/manual/vm_e2e/.work/
 /copy-host-log.bat
 /dump-host-log.bat
 /run-setup.bat
+/server-diag.bat
+/run-test-now.bat
