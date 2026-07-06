@@ -218,3 +218,5 @@ tests/manual/vm_e2e/.work/
 /uac-diag.txt
 /server-diag.txt
 /redeploy-worker.bat
+/copy-hostlog.bat
+/installed-sha.txt
