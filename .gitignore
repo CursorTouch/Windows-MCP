@@ -215,3 +215,5 @@ tests/manual/vm_e2e/.work/
 /server-diag.bat
 /run-test-now.bat
 /uac-diag.bat
+/uac-diag.txt
+/server-diag.txt
