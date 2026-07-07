@@ -30,11 +30,33 @@ class ToolsConfig:
     exclude: list[str] = field(default_factory=list)
 
 
+SECURE_DESKTOP_POLICIES = ("block", "allow_with_match", "allow_all")
+
+
+@dataclass
+class SecureDesktopConfig:
+    """Policy for how the LocalSystem host service may handle UAC consent prompts.
+
+    ``policy`` values:
+      - ``block``           — service exposes the dialog to the agent but
+                              REFUSES to auto-click Yes/No. Human approval
+                              still required. (default)
+      - ``allow_with_match``— auto-click only if the requesting binary's
+                              publisher (CommonName from the Authenticode
+                              signature) matches one of ``publishers_allowlist``.
+      - ``allow_all``       — auto-click any UAC prompt. Only safe in sandboxed
+                              VMs. Opt-in.
+    """
+    policy: str = "block"
+    publishers_allowlist: list[str] = field(default_factory=list)
+
+
 @dataclass
 class WindowsMCPConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    secure_desktop: SecureDesktopConfig = field(default_factory=SecureDesktopConfig)
     source_path: Path | None = None
 
 
@@ -117,6 +139,19 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     if "exclude" in tools:
         cfg.tools.exclude = _list_of_strings(tools["exclude"], "tools.exclude")
 
+    secure_desktop = data.get("secure_desktop", {})
+    if "policy" in secure_desktop:
+        p = str(secure_desktop["policy"])
+        if p not in SECURE_DESKTOP_POLICIES:
+            raise ValueError(
+                f"secure_desktop.policy must be one of {SECURE_DESKTOP_POLICIES}, got {p!r}"
+            )
+        cfg.secure_desktop.policy = p
+    if "publishers_allowlist" in secure_desktop:
+        cfg.secure_desktop.publishers_allowlist = _list_of_strings(
+            secure_desktop["publishers_allowlist"], "secure_desktop.publishers_allowlist"
+        )
+
     cfg.source_path = path
     return cfg
 
@@ -159,5 +194,15 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     if cfg.tools.exclude:
         items = ', '.join(f'"{t}"' for t in cfg.tools.exclude)
         lines += ['[tools]', f'exclude = [{items}]', '']
+
+    sd_cfg, sd_def = cfg.secure_desktop, SecureDesktopConfig()
+    sd_lines: list[str] = []
+    if sd_cfg.policy != sd_def.policy:
+        sd_lines.append(f'policy = "{sd_cfg.policy}"')
+    if sd_cfg.publishers_allowlist:
+        items = ', '.join(f'"{p}"' for p in sd_cfg.publishers_allowlist)
+        sd_lines.append(f'publishers_allowlist = [{items}]')
+    if sd_lines:
+        lines += ['[secure_desktop]'] + sd_lines + ['']
 
     path.write_text('\n'.join(lines), encoding='utf-8')

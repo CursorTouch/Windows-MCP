@@ -6,13 +6,12 @@ Usage
 
     client = get_client()
     if client.is_available():
-        png = client.screenshot()   # bytes
         name = client.desktop_name()  # "Default" | "Winlogon"
+        result = client.wait_for_uac_prompt(timeout_ms=60_000)
 """
 
 from __future__ import annotations
 
-import base64
 import logging
 import time
 from typing import Any
@@ -68,26 +67,21 @@ class HostServiceClient:
         """Return the name of the current input desktop ('Default' or 'Winlogon')."""
         return self._call("desktop_name", {})
 
-    def screenshot(self) -> bytes:
-        """Capture the current input desktop (incl. UAC). Returns PNG bytes."""
-        encoded = self._call("screenshot", {})
-        return base64.b64decode(encoded)
-
-    def uia_windows(self) -> list[str]:
-        """Return top-level window titles visible on the input desktop."""
-        return self._call("uia_windows", {})
-
-    def uia_tree(self) -> list[dict]:
-        """Return the full UIA tree of the input desktop as a list of window dicts."""
-        return self._call("uia_tree", {})
-
-    def uia_invoke(self, name: str) -> bool:
-        """Find and invoke a named element (e.g. 'Yes', 'No') on the input desktop."""
-        return self._call("uia_invoke", {"name": name})
-
     def uia_click_at(self, x: int, y: int) -> bool:
         """Invoke the element at screen coordinates (x, y) on the input desktop."""
         return self._call("uia_click_at", {"x": x, "y": y})
+
+    def wait_for_uac_prompt(self, timeout_ms: int = 60_000) -> dict | None:
+        """Block until UAC fires on the input desktop, or until *timeout_ms* elapses.
+
+        Returns a dict ``{"desktop": "Winlogon", "publisher": str|None, "tree": [...]}``
+        on success, or ``None`` on timeout.
+        """
+        return self._call("wait_for_uac_prompt", {"timeout_ms": timeout_ms})
+
+    def policy_state(self) -> dict:
+        """Return the persisted Secure-Desktop policy and allowlist."""
+        return self._call("policy_state", {})
 
     # ------------------------------------------------------------------
     # Internal
@@ -98,22 +92,7 @@ class HostServiceClient:
             raise RuntimeError("pywin32 is not available")
 
         req = Request(method=method, params=params)
-
-        try:
-            # Block until the pipe is available (or timeout).
-            win32pipe.WaitNamedPipe(PIPE_NAME, CALL_TIMEOUT_MS)
-
-            handle = win32file.CreateFile(
-                PIPE_NAME,
-                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                0,
-                None,
-                win32file.OPEN_EXISTING,
-                0,
-                None,
-            )
-        except pywintypes.error as exc:
-            raise RuntimeError(f"Cannot connect to host service pipe: {exc}") from exc
+        handle = self._open_with_retry()
 
         try:
             # Switch to message read mode so we get whole messages back.
@@ -137,6 +116,40 @@ class HostServiceClient:
         if resp.error:
             raise RuntimeError(f"Host service error ({method}): {resp.error}")
         return resp.result
+
+    def _open_with_retry(self, *, attempts: int = 30, gap_ms: int = 100) -> Any:
+        """Open the named pipe, retrying on the brief race window where the
+        server has connected one instance but not yet recreated the next.
+
+        WaitNamedPipe returns ERROR_FILE_NOT_FOUND (not ERROR_SEM_TIMEOUT)
+        when no instance of the pipe is currently in WAITING_FOR_CONNECT
+        state. The host service spends ~20-50 ms between accepting one
+        connection and creating the next instance; back-to-back broker
+        calls (e.g. is_available() ping immediately followed by an actual
+        operation) often land inside that window. Retry with a short gap.
+        """
+        last_exc: Any = None
+        for _ in range(attempts):
+            try:
+                win32pipe.WaitNamedPipe(PIPE_NAME, CALL_TIMEOUT_MS)
+                return win32file.CreateFile(
+                    PIPE_NAME,
+                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    0,
+                    None,
+                    win32file.OPEN_EXISTING,
+                    0,
+                    None,
+                )
+            except pywintypes.error as exc:
+                last_exc = exc
+                if exc.winerror in (2, 231):  # FILE_NOT_FOUND, PIPE_BUSY
+                    time.sleep(gap_ms / 1000.0)
+                    continue
+                raise RuntimeError(f"Cannot connect to host service pipe: {exc}") from exc
+        raise RuntimeError(
+            f"Cannot connect to host service pipe after {attempts} retries: {last_exc}"
+        )
 
 
 _client: HostServiceClient | None = None

@@ -5,10 +5,11 @@ pipe.  One request → one response per connection.
 
 Methods
 -------
-ping            → "pong"
-desktop_name    → str ("Default" | "Winlogon")
-screenshot      → base64-encoded PNG bytes (full virtual screen)
-uia_windows     → list[str] of top-level window titles on input desktop
+ping                → "pong"
+desktop_name        → str ("Default" | "Winlogon")
+uia_click_at        → bool — invoke element at (x, y); policy-gated when desktop=Winlogon
+wait_for_uac_prompt → dict | None — block until UAC fires (or timeout)
+policy_state        → dict — persisted Secure-Desktop policy + allowlist
 """
 
 from __future__ import annotations

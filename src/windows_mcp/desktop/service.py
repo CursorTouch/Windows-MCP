@@ -38,6 +38,50 @@ import io
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+def _is_consent_target(x: int, y: int) -> bool:
+    """Return True if the screen pixel at (x, y) is owned by consent.exe.
+
+    Used to detect when a Click should be routed through the SYSTEM host
+    service's UIAccess worker instead of the broker's medium-integrity
+    uia.Click, which UIPI blocks against the UAC dialog.
+    """
+    try:
+        hwnd = win32gui.WindowFromPoint((x, y))
+        if not hwnd:
+            return False
+        # WindowFromPoint may return a child HWND; walk up to the top.
+        top = win32gui.GetAncestor(hwnd, win32con.GA_ROOT)
+        _, pid = win32process.GetWindowThreadProcessId(top or hwnd)
+        if not pid:
+            return False
+        try:
+            name = Process(pid).name().lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return name == "consent.exe"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _route_click_through_host(x: int, y: int) -> bool:
+    """Best-effort click via the SYSTEM host service. Returns True if it took.
+
+    Lazy-imports the pipe client so non-UAC code paths don't pay the cost.
+    """
+    try:
+        from windows_mcp.service.pipe import get_client
+        client = get_client()
+        if not client.is_available():
+            return False
+        ok = bool(client.uia_click_at(x, y))
+        if ok:
+            logger.info("Click(%d,%d) routed through host UIAccess worker", x, y)
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("host-routed click failed, falling back to local: %s", exc)
+        return False
+
 import windows_mcp.uia as uia  # noqa: E402
 
 # Key name aliases for shortcut keys that differ from UIA SpecialKeyNames
@@ -121,15 +165,11 @@ class Desktop:
         capture_rect = self.get_display_union_rect(display_indices) if display_indices else None
         screenshot_region = self._rect_to_bounding_box(capture_rect) if capture_rect else None
 
-        # Fast path for Screenshot tool (use_ui_tree=False): skip window enumeration.
-        # UIAutomation calls (get_controls_handles / get_windows / get_active_window)
-        # can hang when an app is launching and not responding to WM messages.
-        # Also skip when the Secure Desktop is active (UAC prompt): UIA cannot
-        # cross the Winlogon desktop boundary from user mode, so all calls
-        # return None and crash attempting to walk the accessibility tree.
-        from windows_mcp.desktop.screenshot import is_secure_desktop_active
-        uac_active = is_secure_desktop_active()
-        if use_ui_tree and not uac_active:
+        # Fast path for Screenshot tool (use_ui_tree=False): skip window
+        # enumeration. UIAutomation calls (get_controls_handles / get_windows
+        # / get_active_window) can hang when an app is launching and not
+        # responding to WM messages.
+        if use_ui_tree:
             controls_handles = self.get_controls_handles()  # Taskbar,Program Manager,Apps, Dialogs
             windows, windows_handles = self.get_windows(controls_handles=controls_handles)  # Apps
             active_window = self.get_active_window(windows=windows)  # Active Window
@@ -163,10 +203,7 @@ class Desktop:
         logger.debug(f"Active window: {active_window or 'No Active Window Found'}")
         logger.debug(f"Windows: {windows}")
 
-        if uac_active and use_ui_tree:
-            # UIA tree via the host service — the only way to read the UAC dialog.
-            tree_state = self._build_uac_tree_state()
-        elif use_ui_tree:
+        if use_ui_tree:
             other_windows_handles = list(controls_handles - windows_handles)
             tree_state = self.tree.get_state(
                 active_window_handle, other_windows_handles, use_dom=use_dom
@@ -647,22 +684,16 @@ class Desktop:
         else:
             x, y = loc
 
-        # With PromptOnSecureDesktop disabled (set by `windows-mcp service install`),
-        # UAC prompts appear on the Default desktop and uia.Click() reaches them via
-        # SendInput — hardware-level input that bypasses UIPI.
-        # The service route below is a fallback for the rare case where the policy
-        # wasn't applied (secure desktop still active).
-        from windows_mcp.desktop.screenshot import is_secure_desktop_active
-        if button == "left" and is_secure_desktop_active():
-            from windows_mcp.service import get_host_client
-            try:
-                get_host_client().uia_click_at(x, y)
-            except Exception as exc:
-                logger.warning("UAC click via service failed: %s", exc)
-            return
-
         if clicks == 0:
             uia.SetCursorPos(x, y)
+            return
+        # UAC routing: consent.exe runs at System integrity. UIPI blocks
+        # mouse input from medium-integrity processes, so a normal uia.Click
+        # at the dialog's Yes/No coords silently fails to dismiss UAC. The
+        # SYSTEM host service has a UIAccess-tokened user-session worker
+        # that CAN invoke across integrity; route the click there if the
+        # target pixel is owned by consent.exe.
+        if _is_consent_target(x, y) and _route_click_through_host(x, y):
             return
         match button:
             case "left":
@@ -688,6 +719,7 @@ class Desktop:
         press_enter: bool | str = False,
     ):
         x, y = loc
+
         uia.Click(x, y)
         if caret_position == "start":
             uia.SendKeys("{Home}", waitTime=0.05)
@@ -738,11 +770,12 @@ class Desktop:
                 return 'Invalid type. Use "horizontal" or "vertical".'
         return None
 
-    def drag(self, loc: tuple[int, int]|list[int]):
+    def drag(self, loc: tuple[int, int] | list[int]):
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
             x, y = loc
+
         sleep(0.5)
         cx, cy = uia.GetCursorPos()
         uia.DragDrop(cx, cy, x, y, moveSpeed=1)
@@ -846,48 +879,6 @@ class Desktop:
         if secondary_taskbar_hwnd := win32gui.FindWindow("Shell_SecondaryTrayWnd", None):
             handles.add(secondary_taskbar_hwnd)
         return handles
-
-    def _build_uac_tree_state(self) -> TreeState:
-        """Build a TreeState from the host service UIA tree (used during UAC)."""
-        from windows_mcp.service import get_host_client
-        try:
-            raw = get_host_client().uia_tree()
-        except Exception as exc:
-            logger.warning("_build_uac_tree_state: service call failed: %s", exc)
-            return TreeState(status=False)
-
-        interactive: list[TreeElementNode] = []
-
-        def _walk(node: dict, window_name: str) -> None:
-            bbox = node.get("bbox", {})
-            center = node.get("center", {})
-            ctrl = node.get("control_type", "")
-            name = node.get("name", "")
-            can_invoke = node.get("can_invoke", False)
-
-            # Include buttons and any invokable element as interactive nodes.
-            if bbox and center and (can_invoke or ctrl.lower() in ("button",)):
-                bb = BoundingBox(
-                    left=bbox["left"], top=bbox["top"],
-                    right=bbox["right"], bottom=bbox["bottom"],
-                    width=bbox["width"], height=bbox["height"],
-                )
-                c = Center(x=center["x"], y=center["y"])
-                interactive.append(TreeElementNode(
-                    name=name,
-                    control_type=ctrl + "Control" if ctrl else "Control",
-                    window_name=window_name,
-                    bounding_box=bb,
-                    center=c,
-                    metadata={},
-                ))
-            for child in node.get("children", []):
-                _walk(child, window_name)
-
-        for top in raw:
-            _walk(top, top.get("name", "Secure Desktop"))
-
-        return TreeState(status=True, interactive_nodes=interactive)
 
     def get_active_window(self, windows: list[Window] | None = None) -> Window | None:
         try:
