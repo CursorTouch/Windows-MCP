@@ -1,6 +1,3 @@
-import ctypes
-import ctypes.wintypes
-import io
 import logging
 import os
 
@@ -214,69 +211,6 @@ class _MssBackend(_ScreenshotBackend):
         # mss.grab(monitor) already captures exactly the requested region,
         # so no further cropping is needed.
         return image
-
-
-# ---------------------------------------------------------------------------
-# UAC / Secure Desktop detection (user-mode, no elevation needed)
-# ---------------------------------------------------------------------------
-
-_UOI_NAME = 2
-_DESKTOP_READOBJECTS = 0x0001
-
-
-def is_secure_desktop_active() -> bool:
-    """Return True if the Secure Desktop (UAC prompt) is currently the input desktop.
-
-    Works from any privilege level — we only need DESKTOP_READOBJECTS to read
-    the desktop name.  Returns False on any error so callers degrade safely.
-    """
-    try:
-        hdesk = ctypes.windll.user32.OpenInputDesktop(0, False, _DESKTOP_READOBJECTS)
-        if not hdesk:
-            return False
-        try:
-            buf = ctypes.create_unicode_buffer(256)
-            needed = ctypes.wintypes.DWORD()
-            ctypes.windll.user32.GetUserObjectInformationW(
-                hdesk, _UOI_NAME, buf, ctypes.sizeof(buf), ctypes.byref(needed)
-            )
-            return buf.value.lower() == "winlogon"
-        finally:
-            ctypes.windll.user32.CloseDesktop(hdesk)
-    except Exception:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Service backend (routes through the LocalSystem host service when installed)
-# ---------------------------------------------------------------------------
-
-
-class _ServiceBackend(_ScreenshotBackend):
-    """Capture via the Windows MCP host service.
-
-    Used automatically when the service is installed AND the Secure Desktop is
-    active (UAC prompt).  During normal desktop use this backend is skipped so
-    there is zero pipe overhead on every screenshot.
-    """
-
-    name = "service"
-    priority = 5  # lower number = tried first; beats dxcam (10), mss (20), pillow (100)
-
-    def is_available(self, capture_rect: "uia.Rect | None") -> bool:
-        if not is_secure_desktop_active():
-            return False
-        try:
-            from windows_mcp.service.pipe import get_client
-            return get_client().is_available()
-        except Exception:
-            return False
-
-    def capture(self, capture_rect: "uia.Rect | None") -> Image.Image:
-        from windows_mcp.service.pipe import get_client
-        png_bytes = get_client().screenshot()
-        img = Image.open(io.BytesIO(png_bytes))
-        return _crop_screenshot(img, capture_rect)
 
 
 # ---------------------------------------------------------------------------
