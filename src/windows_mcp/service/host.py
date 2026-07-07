@@ -227,17 +227,22 @@ def _build_pipe_sa() -> Any:
 # ---------------------------------------------------------------------------
 
 def _enforce_policy(operation: str) -> tuple[bool, str]:
-    """Return (allowed, reason) for an auto-input op on the current input desktop.
+    """Return (allowed, reason) for an auto-click on the UAC consent dialog.
 
-    Read-only ops (tree walks, publisher lookups) are not gated — agents always
-    need visibility into UAC. Only auto-clicks on the Secure Desktop are
-    policy-gated, because those are the actions that bypass the human.
+    Every click routed to the host is a consent-dialog click — the broker only
+    forwards clicks whose target pixel is owned by ``consent.exe`` — so the
+    consent policy is always the deciding factor.
 
-    Read-only ops on Default desktop are not gated either. We only enforce on
-    Winlogon because that is where consent prompts live.
+    Read-only ops (tree walks, publisher lookups) are not gated; agents always
+    need visibility into UAC. Only the auto-click is gated, because that is the
+    action that would bypass the human.
+
+    Earlier revisions additionally short-circuited to "allowed" unless the input
+    desktop reported ``Winlogon``. That read is racy while UAC is up with
+    ``PromptOnSecureDesktop=0`` (it flips between ``Default`` and ``Winlogon``),
+    which made ``block`` / ``allow_with_match`` enforce only intermittently, so
+    the desktop check is dropped in favour of unconditional enforcement.
     """
-    if secure_desktop.get_input_desktop_name().lower() != "winlogon":
-        return True, "input desktop is not Winlogon"
     pol = policy.read_from_registry()
     try:
         publisher = secure_desktop._spawn_in_user_session("publisher", timeout=15.0)
@@ -246,7 +251,7 @@ def _enforce_policy(operation: str) -> tuple[bool, str]:
         publisher = None
     allowed, reason = pol.allows_auto_click(publisher)
     logger.info(
-        "policy check: op=%s desktop=Winlogon policy=%s publisher=%r → %s (%s)",
+        "policy check: op=%s policy=%s publisher=%r → %s (%s)",
         operation, pol.policy, publisher, allowed, reason,
     )
     return allowed, reason
