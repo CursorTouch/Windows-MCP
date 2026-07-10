@@ -23,6 +23,7 @@ from markdownify import markdownify
 from fuzzywuzzy import process
 from time import sleep, time, perf_counter
 from psutil import Process
+import math
 import win32process
 import win32gui
 import win32con
@@ -770,14 +771,90 @@ class Desktop:
                 return 'Invalid type. Use "horizontal" or "vertical".'
         return None
 
-    def drag(self, loc: tuple[int, int] | list[int]):
+    def _normalize_drag_duration(self, duration: float | int | str | None) -> float | None:
+        if duration is None:
+            return None
+        try:
+            effective_duration = float(duration)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("duration must be a finite number of seconds") from exc
+        if not math.isfinite(effective_duration):
+            raise ValueError("duration must be a finite number of seconds")
+        if effective_duration < 0 or effective_duration > 10:
+            raise ValueError("duration must be between 0 and 10 seconds")
+        return effective_duration
+
+    def _assert_foreground_target(
+        self,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
+    ) -> dict[str, object] | None:
+        if expected_window_title is None and expected_process is None:
+            return None
+
+        active_window = self.get_foreground_window()
+        if active_window is None:
+            raise ValueError("No foreground window is available for target validation")
+
+        title = active_window.Name or ""
+        process_name = ""
+        if expected_process is not None:
+            try:
+                process_name = Process(active_window.ProcessId).name()
+            except Exception as exc:
+                raise ValueError("Failed to resolve foreground process name") from exc
+
+        if (
+            expected_window_title is not None
+            and expected_window_title.casefold() not in title.casefold()
+        ):
+            raise ValueError(
+                "Foreground window title did not match expected_window_title: "
+                f"expected substring {expected_window_title!r}, actual {title!r}"
+            )
+
+        if expected_process is not None:
+            expected_basename = os.path.basename(expected_process).casefold()
+            if process_name.casefold() != expected_basename:
+                raise ValueError(
+                    "Foreground process did not match expected_process: "
+                    f"expected {expected_basename!r}, actual {process_name!r}"
+                )
+
+        return {
+            "title": title,
+            "process": process_name or None,
+            "process_id": active_window.ProcessId,
+        }
+
+    def drag(
+        self,
+        loc: tuple[int, int] | list[int],
+        from_loc: tuple[int, int] | list[int] | None = None,
+        duration: float | int | str | None = None,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
+    ) -> dict[str, object]:
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
             x, y = loc
+        foreground = self._assert_foreground_target(expected_window_title, expected_process)
+        effective_duration = self._normalize_drag_duration(duration)
         sleep(0.5)
-        cx, cy = uia.GetCursorPos()
-        uia.DragDrop(cx, cy, x, y, moveSpeed=1)
+        if from_loc is None:
+            cx, cy = uia.GetCursorPos()
+        elif isinstance(from_loc, list):
+            cx, cy = from_loc[0], from_loc[1]
+        else:
+            cx, cy = from_loc
+        uia.DragDrop(cx, cy, x, y, moveSpeed=1, duration=effective_duration)
+        return {
+            "start": [cx, cy],
+            "end": [x, y],
+            "duration": effective_duration,
+            "foreground": foreground,
+        }
 
     def move(self, loc: tuple[int, int]):
         x, y = loc
@@ -931,7 +1008,9 @@ class Desktop:
                 sleep(self._UIA_RETRY_SLEEP_MS / 1000.0)
                 continue
         if last_error is not None:
-            logger.error(f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}")
+            logger.error(
+                f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}"
+            )
         return None
 
     def get_foreground_window(self) -> uia.Control | None:

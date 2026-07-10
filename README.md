@@ -691,7 +691,11 @@ MCP Client can access the following tools to interact with Windows:
 - `Click`: Click on the screen at the given coordinates.
 - `Type`: Type text on an element (optionally clears existing text).
 - `Scroll`: Scroll vertically or horizontally on the window or specific regions.
-- `Move`: Move mouse pointer or drag (set drag=True) to coordinates.
+- `Move`: Move mouse pointer or drag (set drag=True) to coordinates. For deterministic
+  drag, set `from_loc=[x, y]` with `drag=True` to press at an explicit start point and
+  release at `loc` in one tool call. Optional `duration` adds bounded intermediate
+  movement, and `expected_window_title` / `expected_process` fail before input if the
+  foreground target does not match.
 - `Shortcut`: Press keyboard shortcuts (`Ctrl+c`, `Alt+Tab`, etc).
 - `Wait`: Pause for a defined duration.
 - `WaitFor`: Wait until text, an active window, an element, or a focused element appears by polling UI state inside one tool call.

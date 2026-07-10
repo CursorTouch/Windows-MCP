@@ -301,7 +301,10 @@ def register(
         description=(
             "Moves mouse cursor to coordinates [x, y] or passing a UI element's label/id. "
             "Set drag=True to perform a drag-and-drop operation from the current mouse position "
-            "to the target coordinates. Default (drag=False) is a simple cursor move (hover). "
+            "to the target coordinates, or provide from_loc=[x, y] to make the drag explicit-start "
+            "and atomic in one tool call. Optional duration controls bounded intermediate movement. "
+            "Optional expected_window_title and expected_process guards fail before input if the "
+            "foreground target does not match. Default (drag=False) is a simple cursor move (hover). "
             "Provide either loc or label."
         ),
         annotations=ToolAnnotations(
@@ -317,21 +320,54 @@ def register(
         loc: list[int] | str | None = None,
         label: int | None = None,
         drag: bool | str = False,
+        from_loc: list[int] | str | None = None,
+        duration: float | int | str | None = None,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
         loc = _as_loc(loc)
-        drag = drag is True or (isinstance(drag, str) and drag.lower() == "true")
+        from_loc = _as_loc(from_loc)
+        drag = _as_bool(drag)
         if loc is None and label is None:
             raise ValueError("Either loc or label must be provided.")
         if label is not None:
             loc = _resolve_label(desktop, label)
         if len(loc) != 2:
             raise ValueError("loc must be a list of exactly 2 integers [x, y]")
+        if from_loc is not None and len(from_loc) != 2:
+            raise ValueError("from_loc must be a list of exactly 2 integers [x, y]")
+        has_drag_only_options = any(
+            value is not None
+            for value in (
+                from_loc,
+                duration,
+                expected_window_title,
+                expected_process,
+            )
+        )
+        if has_drag_only_options and not drag:
+            raise ValueError(
+                "from_loc, duration, expected_window_title, and expected_process require drag=True"
+            )
         x, y = loc[0], loc[1]
         if drag:
-            desktop.drag(loc)
-            return f"Dragged to ({x},{y})."
+            result = desktop.drag(
+                loc,
+                from_loc=from_loc,
+                duration=duration,
+                expected_window_title=expected_window_title,
+                expected_process=expected_process,
+            )
+            start_x, start_y = result["start"]
+            effective_duration = result["duration"]
+            if effective_duration is None:
+                return f"Dragged from ({start_x},{start_y}) to ({x},{y})."
+            return (
+                f"Dragged from ({start_x},{start_y}) to ({x},{y}) "
+                f"over {effective_duration:.3f} seconds."
+            )
         else:
             desktop.move(loc)
             return f"Moved the mouse pointer to ({x},{y})."
