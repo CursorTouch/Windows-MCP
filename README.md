@@ -708,6 +708,11 @@ MCP Client can access the following tools to interact with Windows:
 - `Notification`: Send a Windows toast notification with a title and message.
 - `Registry`: Read, write, delete, or list Windows Registry values and keys.
 
+Input tools that send foreground input (`Click`, `Type`, `Scroll`, `Move`, and `Shortcut`) also
+accept optional `expected_window_title` and `expected_process` guards. When supplied, Windows-MCP
+checks the current foreground root window before sending input and fails before the action if the
+title substring or exact process basename does not match.
+
 
 ## 🤝 Connect with Us
 Stay updated and join our community:

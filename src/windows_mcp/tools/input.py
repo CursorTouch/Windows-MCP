@@ -178,6 +178,18 @@ def _validate_wait_for_args(
     return normalized
 
 
+def _assert_input_target(
+    desktop: Any,
+    expected_window_title: str | None,
+    expected_process: str | None,
+) -> None:
+    if expected_window_title is not None or expected_process is not None:
+        desktop.assert_foreground_target(
+            expected_window_title=expected_window_title,
+            expected_process=expected_process,
+        )
+
+
 def register(
     mcp: Any,
     *,
@@ -206,6 +218,8 @@ def register(
         label: int | None = None,
         button: Literal["left", "right", "middle"] = "left",
         clicks: int = 1,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -217,6 +231,7 @@ def register(
         if len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
+        _assert_input_target(desktop, expected_window_title, expected_process)
         desktop.click(loc=loc, button=button, clicks=clicks)
         num_clicks = {0: "Hover", 1: "Single", 2: "Double"}
         return f"{num_clicks.get(clicks)} {button} clicked at ({x},{y})."
@@ -240,6 +255,8 @@ def register(
         clear: bool | str = False,
         caret_position: Literal["start", "idle", "end"] = "idle",
         press_enter: bool | str = False,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -251,6 +268,7 @@ def register(
         if len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
+        _assert_input_target(desktop, expected_window_title, expected_process)
         desktop.type(
             loc=loc,
             text=text,
@@ -278,6 +296,8 @@ def register(
         type: Literal["horizontal", "vertical"] = "vertical",
         direction: Literal["up", "down", "left", "right"] = "down",
         wheel_times: int = 1,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -286,6 +306,7 @@ def register(
             loc = _resolve_label(desktop, label)
         if loc and len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
+        _assert_input_target(desktop, expected_window_title, expected_process)
         response = desktop.scroll(loc, type, direction, wheel_times)
         if response:
             return response
@@ -317,6 +338,8 @@ def register(
         loc: list[int] | str | None = None,
         label: int | None = None,
         drag: bool | str = False,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
@@ -329,6 +352,7 @@ def register(
         if len(loc) != 2:
             raise ValueError("loc must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
+        _assert_input_target(desktop, expected_window_title, expected_process)
         if drag:
             desktop.drag(loc)
             return f"Dragged to ({x},{y})."
@@ -348,8 +372,15 @@ def register(
         ),
     )
     @with_analytics(get_analytics(), "Shortcut-Tool")
-    def shortcut_tool(shortcut: str, ctx: Context = None):
-        get_desktop().shortcut(shortcut)
+    def shortcut_tool(
+        shortcut: str,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
+        ctx: Context = None,
+    ):
+        desktop = get_desktop()
+        _assert_input_target(desktop, expected_window_title, expected_process)
+        desktop.shortcut(shortcut)
         return f"Pressed {shortcut}."
 
     @mcp.tool(

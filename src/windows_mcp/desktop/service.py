@@ -770,6 +770,49 @@ class Desktop:
                 return 'Invalid type. Use "horizontal" or "vertical".'
         return None
 
+    def assert_foreground_target(
+        self,
+        expected_window_title: str | None = None,
+        expected_process: str | None = None,
+    ) -> dict[str, object] | None:
+        if expected_window_title is None and expected_process is None:
+            return None
+
+        active_window = self.get_foreground_window()
+        if active_window is None:
+            raise ValueError("No foreground window is available for target validation")
+
+        title = active_window.Name or ""
+        process_name = ""
+        if expected_process is not None:
+            try:
+                process_name = Process(active_window.ProcessId).name()
+            except Exception as exc:
+                raise ValueError("Failed to resolve foreground process name") from exc
+
+        if (
+            expected_window_title is not None
+            and expected_window_title.casefold() not in title.casefold()
+        ):
+            raise ValueError(
+                "Foreground window title did not match expected_window_title: "
+                f"expected substring {expected_window_title!r}, actual {title!r}"
+            )
+
+        if expected_process is not None:
+            expected_basename = os.path.basename(expected_process).casefold()
+            if process_name.casefold() != expected_basename:
+                raise ValueError(
+                    "Foreground process did not match expected_process: "
+                    f"expected {expected_basename!r}, actual {process_name!r}"
+                )
+
+        return {
+            "title": title,
+            "process": process_name or None,
+            "process_id": active_window.ProcessId,
+        }
+
     def drag(self, loc: tuple[int, int] | list[int]):
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
@@ -931,7 +974,9 @@ class Desktop:
                 sleep(self._UIA_RETRY_SLEEP_MS / 1000.0)
                 continue
         if last_error is not None:
-            logger.error(f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}")
+            logger.error(
+                f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}"
+            )
         return None
 
     def get_foreground_window(self) -> uia.Control | None:
