@@ -649,6 +649,9 @@ class DisplayInfo:
     device_name: str
     rect: "Rect"
     primary: bool
+    work_rect: "Rect | None" = None
+    effective_dpi: int | None = None
+    scale: float | None = None
 
 
 class _MonitorInfoExW(ctypes.Structure):
@@ -670,6 +673,24 @@ class _DisplayDeviceW(ctypes.Structure):
         ("DeviceID", ctypes.wintypes.WCHAR * 128),
         ("DeviceKey", ctypes.wintypes.WCHAR * 128),
     ]
+
+
+def _get_monitor_effective_dpi(hMonitor: int) -> tuple[int | None, float | None]:
+    try:
+        dpi_x = ctypes.c_uint()
+        dpi_y = ctypes.c_uint()
+        result = ctypes.windll.shcore.GetDpiForMonitor(
+            ctypes.c_void_p(hMonitor),
+            0,
+            ctypes.byref(dpi_x),
+            ctypes.byref(dpi_y),
+        )
+        if result != 0:
+            return None, None
+        dpi = int(dpi_x.value)
+        return dpi, round(dpi / 96, 6)
+    except Exception:
+        return None, None
 
 
 def _active_display_indices() -> Dict[str, int]:
@@ -729,6 +750,12 @@ def GetDisplays() -> List[DisplayInfo]:
                 info.rcMonitor.right,
                 info.rcMonitor.bottom,
             )
+            work_rect = Rect(
+                info.rcWork.left,
+                info.rcWork.top,
+                info.rcWork.right,
+                info.rcWork.bottom,
+            )
             device_name = info.szDevice
             index = display_indices.get(device_name.upper(), next_fallback_index())
             primary = bool(info.dwFlags & 1)
@@ -739,9 +766,11 @@ def GetDisplays() -> List[DisplayInfo]:
                 lprcMonitor.contents.right,
                 lprcMonitor.contents.bottom,
             )
+            work_rect = None
             index = next_fallback_index()
             device_name = f"DISPLAY{index}"
             primary = False
+        effective_dpi, scale = _get_monitor_effective_dpi(hMonitor)
 
         displays.append(
             DisplayInfo(
@@ -749,6 +778,9 @@ def GetDisplays() -> List[DisplayInfo]:
                 device_name=device_name,
                 rect=rect,
                 primary=primary,
+                work_rect=work_rect,
+                effective_dpi=effective_dpi,
+                scale=scale,
             )
         )
         return 1
