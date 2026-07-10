@@ -616,6 +616,154 @@ class Desktop:
         except Exception as e:
             logger.exception(f"Failed to bring window to top: {e}")
 
+    def _window_process_name(self, process_id: int) -> str | None:
+        try:
+            return Process(process_id).name()
+        except Exception:
+            return None
+
+    def _client_bounds(self, handle: int) -> dict[str, int]:
+        left, top, right, bottom = win32gui.GetClientRect(handle)
+        screen_left, screen_top = win32gui.ClientToScreen(handle, (left, top))
+        width = right - left
+        height = bottom - top
+        return {
+            "left": screen_left,
+            "top": screen_top,
+            "width": width,
+            "height": height,
+            "right": screen_left + width,
+            "bottom": screen_top + height,
+        }
+
+    def _outer_bounds(self, handle: int) -> dict[str, int]:
+        left, top, right, bottom = win32gui.GetWindowRect(handle)
+        return {
+            "left": left,
+            "top": top,
+            "width": right - left,
+            "height": bottom - top,
+            "right": right,
+            "bottom": bottom,
+        }
+
+    def _window_identity(self, window: Window) -> dict[str, object]:
+        handle = window.handle
+        return {
+            "handle": handle,
+            "process_id": window.process_id,
+            "process": self._window_process_name(window.process_id),
+            "title": window.name,
+            "status": window.status.value,
+            "outer": self._outer_bounds(handle),
+            "client": self._client_bounds(handle),
+        }
+
+    def find_exact_windows(
+        self,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+        process: str | None = None,
+        process_id: int | None = None,
+        handle: int | None = None,
+    ) -> list[dict[str, object]]:
+        if title_match not in {"exact", "contains"}:
+            raise ValueError('title_match must be "exact" or "contains"')
+
+        windows, _ = self.get_windows()
+        matches = []
+        expected_process = os.path.basename(process).casefold() if process else None
+        for window in windows:
+            if handle is not None and window.handle != handle:
+                continue
+            if process_id is not None and window.process_id != process_id:
+                continue
+            if title is not None:
+                actual_title = window.name.casefold()
+                expected_title = title.casefold()
+                if title_match == "exact" and actual_title != expected_title:
+                    continue
+                if title_match == "contains" and expected_title not in actual_title:
+                    continue
+            if expected_process is not None:
+                process_name = self._window_process_name(window.process_id)
+                if process_name is None or process_name.casefold() != expected_process:
+                    continue
+            if not win32gui.IsWindow(window.handle):
+                continue
+            matches.append(self._window_identity(window))
+        return matches
+
+    def _require_exact_window(
+        self,
+        handle: int,
+        process_id: int | None = None,
+        process: str | None = None,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+    ) -> dict[str, object]:
+        if not win32gui.IsWindow(handle):
+            raise ValueError("Invalid or stale window handle")
+        matches = self.find_exact_windows(
+            title=title,
+            title_match=title_match,
+            process=process,
+            process_id=process_id,
+            handle=handle,
+        )
+        if not matches:
+            raise ValueError("No window matched the supplied identity")
+        if len(matches) > 1:
+            raise ValueError("Window identity was ambiguous")
+        return matches[0]
+
+    def activate_exact_window(
+        self,
+        handle: int,
+        process_id: int | None = None,
+        process: str | None = None,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+    ) -> dict[str, object]:
+        window = self._require_exact_window(handle, process_id, process, title, title_match)
+        self.bring_window_to_top(handle)
+        foreground_handle = win32gui.GetForegroundWindow()
+        if foreground_handle != handle:
+            raise ValueError(
+                f"Failed to activate exact window: foreground handle is {foreground_handle}"
+            )
+        return window
+
+    def set_exact_window_bounds(
+        self,
+        handle: int,
+        outer: list[int] | None = None,
+        client: list[int] | None = None,
+        process_id: int | None = None,
+        process: str | None = None,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+    ) -> dict[str, object]:
+        if outer is not None and client is not None:
+            raise ValueError("Provide only one of outer or client bounds")
+        window = self._require_exact_window(handle, process_id, process, title, title_match)
+        if outer is None and client is None:
+            return window
+
+        if outer is not None:
+            x, y, width, height = outer
+        else:
+            current_outer = self._outer_bounds(handle)
+            current_client = self._client_bounds(handle)
+            client_x, client_y, client_width, client_height = client
+            x = client_x - (current_client["left"] - current_outer["left"])
+            y = client_y - (current_client["top"] - current_outer["top"])
+            width = client_width + (current_outer["width"] - current_client["width"])
+            height = client_height + (current_outer["height"] - current_client["height"])
+
+        win32gui.MoveWindow(handle, int(x), int(y), int(width), int(height), True)
+        return self._require_exact_window(handle, process_id, process, title, title_match)
+
     def get_coordinates_from_label(self, label: int) -> tuple[int, int]:
         tree_state = self.desktop_state.tree_state
         if label < len(tree_state.interactive_nodes):
@@ -931,7 +1079,9 @@ class Desktop:
                 sleep(self._UIA_RETRY_SLEEP_MS / 1000.0)
                 continue
         if last_error is not None:
-            logger.error(f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}")
+            logger.error(
+                f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}"
+            )
         return None
 
     def get_foreground_window(self) -> uia.Control | None:
