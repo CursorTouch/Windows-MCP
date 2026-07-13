@@ -719,7 +719,9 @@ MCP Client can access the following tools to interact with Windows:
 - `DisplayInventory`: Read display layout, work areas, effective DPI, and scale metadata.
 - `Screenshot`: Fast screenshot-first desktop capture with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports `display=[0]` or `display=[0,1]` using zero-based active Windows display indices. After capture, a brief orange-red glowing border is drawn inside the captured area as a visual confirmation (set `WINDOWS_MCP_DISABLE_FLASH=1` to disable).
 - `Snapshot`: Full desktop state capture for workflows that need interactive element ids, scrollable regions, or `use_dom=True` browser extraction. Supports `use_vision=True` for including screenshots and `display=[0]` or `display=[0,1]` using zero-based active Windows display indices.
-- `App`: Launch an application by Start Menu name or strictly by executable path with separated argv and optional cwd; resize, move, and switch between windows.
+- `App`: Launch an application by Start Menu name or strictly by executable path; resize or
+  switch windows by convenient name matching; or find, activate, and set outer/client bounds
+  using exact native window identity.
 - `PowerShell`: To execute PowerShell commands.
 - `FileSystem`: Read, write, copy, move, delete, list, search, and inspect files and directories.
 - `Scrape`: To scrape the entire webpage for information.

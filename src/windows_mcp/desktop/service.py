@@ -15,6 +15,7 @@ from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
 from windows_mcp.desktop import flash_overlay
+from windows_mcp.desktop.window import ExactWindowController
 from windows_mcp.infrastructure import validate_url
 from urllib.parse import urljoin
 from locale import getpreferredencoding
@@ -81,6 +82,7 @@ class Desktop:
         self.encoding = getpreferredencoding()
         self.tree = Tree(self)
         self.desktop_state = None
+        self._exact_window = ExactWindowController(self)
 
     def get_state(
         self,
@@ -616,6 +618,61 @@ class Desktop:
 
         except Exception as e:
             logger.exception(f"Failed to bring window to top: {e}")
+
+    def find_exact_windows(
+        self,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+        process: str | None = None,
+        process_id: int | None = None,
+        handle: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Find top-level windows using explicit identity filters."""
+        return self._exact_window.find_exact_windows(
+            title=title,
+            title_match=title_match,
+            process=process,
+            process_id=process_id,
+            handle=handle,
+        )
+
+    def activate_exact_window(
+        self,
+        handle: int,
+        process_id: int | None = None,
+        process: str | None = None,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+    ) -> dict[str, object]:
+        """Activate an exact window and verify foreground readback."""
+        return self._exact_window.activate_exact_window(
+            handle,
+            process_id,
+            process,
+            title,
+            title_match,
+        )
+
+    def set_exact_window_bounds(
+        self,
+        handle: int,
+        outer: list[int] | None = None,
+        client: list[int] | None = None,
+        process_id: int | None = None,
+        process: str | None = None,
+        title: str | None = None,
+        title_match: Literal["exact", "contains"] = "contains",
+    ) -> dict[str, object]:
+        """Set an exact window's outer or client bounds."""
+        return self._exact_window.set_exact_window_bounds(
+            handle,
+            outer,
+            client,
+            process_id,
+            process,
+            title,
+            title_match,
+        )
 
     def get_coordinates_from_label(self, label: int) -> tuple[int, int]:
         tree_state = self.desktop_state.tree_state
