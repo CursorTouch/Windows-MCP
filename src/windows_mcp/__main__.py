@@ -161,6 +161,23 @@ class OptionsMiddleware:
             await self.app(scope, receive, send)
 
 
+def _watchdog_enabled() -> bool:
+    """Whether the UIA focus WatchDog should run.
+
+    Reads the ``WINDOWS_MCP_WATCHDOG`` environment variable. Disabling values
+    (case-insensitive, whitespace-trimmed): ``off``, ``0``, ``false``, ``no``,
+    ``disabled``. Anything else, including unset, keeps the watchdog enabled so
+    the default behavior is unchanged.
+
+    Returns:
+        ``True`` when the watchdog should be started, ``False`` to skip it.
+    """
+    value = os.getenv("WINDOWS_MCP_WATCHDOG")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"off", "0", "false", "no", "disabled"}
+
+
 def _build_mcp() -> FastMCP:
     """Create the MCP server instance."""
     global _mcp
@@ -171,7 +188,6 @@ def _build_mcp() -> FastMCP:
     from windows_mcp.infrastructure import PostHogAnalytics
     from windows_mcp.desktop.service import Desktop
     from windows_mcp.tools import register_all
-    from windows_mcp.watchdog.service import WatchDog
 
     @asynccontextmanager
     async def lifespan(app: FastMCP):
@@ -181,12 +197,21 @@ def _build_mcp() -> FastMCP:
         if os.getenv("ANONYMIZED_TELEMETRY", "true").lower() != "false":
             analytics = PostHogAnalytics()
         desktop = Desktop()
-        watchdog = WatchDog()
         screen_size = desktop.get_screen_size()
-        watchdog.set_focus_callback(desktop.tree.on_focus_change)
+
+        if _watchdog_enabled():
+            # Imported lazily so a disabled watchdog never loads comtypes.
+            from windows_mcp.watchdog.service import WatchDog
+
+            watchdog = WatchDog()
+            watchdog.set_focus_callback(desktop.tree.on_focus_change)
+        else:
+            watchdog = None
+            logger.debug("WatchDog disabled via WINDOWS_MCP_WATCHDOG")
 
         try:
-            watchdog.start()
+            if watchdog:
+                watchdog.start()
             await asyncio.sleep(1)  # Simulate startup latency
             logger.debug("Server started, entering main loop")
             yield
