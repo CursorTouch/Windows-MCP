@@ -1,6 +1,7 @@
 """Input tools — Click, Type, Scroll, Move, Shortcut, Wait, WaitFor."""
 
 import json
+import math
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, Literal
@@ -39,6 +40,11 @@ def _as_bool(value: bool | str, name: str) -> bool:
         if normalized == "false":
             return False
     raise ValueError(f"{name} must be true or false")
+
+
+def _validate_finite_number(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
 
 
 def _as_loc(value: list | str | None) -> list | None:
@@ -166,6 +172,9 @@ def _validate_wait_for_args(
     timeout: float,
     interval: float,
 ) -> WaitForCondition:
+    _validate_finite_number(timeout, "timeout")
+    _validate_finite_number(interval, "interval")
+
     normalized = condition.strip().lower().replace("-", "_")
     aliases = {
         "text": "text_exists",

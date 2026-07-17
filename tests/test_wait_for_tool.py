@@ -202,6 +202,31 @@ def test_wait_for_rejects_invalid_use_dom_boolean_before_capture() -> None:
     assert desktop.calls == []
 
 
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("timeout", True),
+        ("interval", False),
+        ("timeout", float("nan")),
+        ("interval", float("inf")),
+    ],
+)
+def test_wait_for_rejects_invalid_timing_before_capture(argument: str, value: object) -> None:
+    desktop = FakeDesktop([_state()])
+    tools = _register_tools(desktop)
+
+    with pytest.raises(ValueError, match=rf"{argument} must be a finite number"):
+        asyncio.run(
+            tools["WaitFor"](
+                condition="text_exists",
+                text="ready",
+                **{argument: value},
+            )
+        )
+
+    assert desktop.calls == []
+
+
 def test_wait_for_timeout_reports_last_observed_state() -> None:
     desktop = FakeDesktop([_state(active_window_name="Explorer")])
     tools = _register_tools(desktop)
