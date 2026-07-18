@@ -342,6 +342,13 @@ def _build_mcp() -> FastMCP:
         finally:
             await notifier.close()
             try:
+                # Release the stateful Pointer hold before stopping the
+                # controller, whose input ledger provides a final retry.
+                if desktop:
+                    try:
+                        desktop.close()
+                    except Exception:
+                        logger.exception("Failed to release desktop input during shutdown")
                 controller.stop()
             finally:
                 try:
