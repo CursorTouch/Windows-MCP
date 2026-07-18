@@ -713,6 +713,10 @@ MCP Client can access the following tools to interact with Windows:
   drag, set `from_loc=[x, y]` with `drag=True` to press at an explicit start point and
   release at `loc` in one tool call. Optional `duration` adds bounded intermediate
   movement.
+- `Pointer`: Build a stateful gesture across calls with `down`, one or more `move`
+  actions, and `up`. Use `cancel` for recovery; held buttons are automatically released
+  after 30 seconds by default (maximum 120 seconds). Prefer `Move(drag=True)` for a
+  simple atomic drag.
 - `Shortcut`: Press keyboard shortcuts (`Ctrl+c`, `Alt+Tab`, etc).
 - `Wait`: Pause for a defined duration.
 - `WaitFor`: Wait until text, an active window, an element, or a focused element appears by polling UI state inside one tool call.
