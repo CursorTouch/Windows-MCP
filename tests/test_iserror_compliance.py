@@ -85,3 +85,69 @@ def test_registry_tool_error_is_error_true(monkeypatch, mcp):
     with pytest.raises(ToolError) as exc_info:
         asyncio.run(mcp.call_tool("Registry", {"mode": "get", "path": "HKLM\\X", "name": "Nope"}))
     assert error_msg in str(exc_info.value)
+
+
+def test_text_cursor_tool_error_is_error_true(monkeypatch, mcp):
+    """TextCursor UIA failures must surface as ToolError."""
+    import windows_mcp.text_cursor as implementation
+    from windows_mcp.tools.text_cursor import register as text_cursor_tool_reg
+
+    text_cursor_tool_reg(mcp, get_desktop=lambda: None, get_analytics=lambda: None)
+    error_msg = "synthetic UIA failure"
+
+    def _raise(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError(error_msg)
+
+    monkeypatch.setattr(implementation, "co_initialize_mta", lambda: True)
+    monkeypatch.setattr(implementation, "co_uninitialize", lambda: None)
+    monkeypatch.setattr(implementation, "run_get_info", _raise)
+
+    with pytest.raises(ToolError) as exc_info:
+        asyncio.run(
+            mcp.call_tool(
+                "TextCursor",
+                {"action": {"mode": "get_info"}},
+            )
+        )
+    assert error_msg in str(exc_info.value)
+
+
+def test_text_cursor_verification_failure_raises(monkeypatch):
+    """A failed write verification must not return a successful MCP payload."""
+    import windows_mcp.text_cursor as implementation
+
+    action = implementation.MoveAbsoluteAction(mode="move_absolute", offset=10)
+    caret_info = object()
+    before = implementation.CursorSnapshot(
+        provider="fake",
+        type="caret",
+        caret_offset_units=1,
+    )
+    after = implementation.CursorSnapshot(
+        provider="fake",
+        type="caret",
+        caret_offset_units=3,
+    )
+    snapshots = iter([before, after])
+
+    monkeypatch.setattr(implementation, "find_caret_provider", lambda: caret_info)
+    monkeypatch.setattr(
+        implementation,
+        "make_snapshot",
+        lambda *args, **kwargs: next(snapshots),
+    )
+    monkeypatch.setattr(
+        implementation,
+        "apply_write",
+        lambda *args, **kwargs: implementation.WriteActionResult(
+            False,
+            {"target_offset_units": 5},
+        ),
+    )
+
+    with pytest.raises(implementation.TextCursorVerificationError) as exc_info:
+        implementation.run_write(action)
+
+    assert "move_absolute" in str(exc_info.value)
+    assert "target_offset_units" in str(exc_info.value)
+    assert "'caret_offset_units': 3" in str(exc_info.value)
