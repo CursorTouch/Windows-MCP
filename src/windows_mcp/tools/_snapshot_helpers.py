@@ -12,7 +12,7 @@ import time
 from fastmcp.utilities.types import Image
 from textwrap import dedent
 from windows_mcp.desktop.service import Desktop, Size
-from windows_mcp.desktop.utils import remove_private_use_chars
+from windows_mcp.desktop.utils import remove_private_use_chars, snapshot_profile_enabled
 
 
 logger = logging.getLogger(__name__)
@@ -33,11 +33,6 @@ def _screenshot_scale() -> float:
     return scale
 
 
-def _snapshot_profile_enabled() -> bool:
-    value = os.getenv("WINDOWS_MCP_PROFILE_SNAPSHOT", "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _as_bool(value: bool | str) -> bool:
     return value is True or (isinstance(value, str) and value.lower() == "true")
 
@@ -54,7 +49,7 @@ def capture_desktop_state(
     display: list[int] | None,
     tool_name: str,
 ):
-    profile_enabled = _snapshot_profile_enabled()
+    profile_enabled = snapshot_profile_enabled()
     profile_started_at = time.perf_counter()
     stage_started_at = profile_started_at
     desktop_state_ms = 0.0
@@ -192,7 +187,7 @@ def build_snapshot_response(
     if ui_detail_note:
         metadata_text += f"{ui_detail_note}\n"
 
-    response_text = dedent(f'''
+    response_text = dedent(f"""
     {metadata_text}
     Active Desktop:
     {active_desktop}
@@ -205,12 +200,12 @@ def build_snapshot_response(
 
     Opened Windows:
     {windows}
-    ''')
+    """)
     if include_ui_details:
-        response_text += dedent(f'''
+        response_text += dedent(f"""
 
     UI Tree:
-    {semantic_tree or "No elements found."}''')
+    {semantic_tree or "No elements found."}""")
 
     response = [response_text]
     if screenshot_bytes:

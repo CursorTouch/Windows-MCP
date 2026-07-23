@@ -297,7 +297,13 @@ class _LegacyAwareGroup(click.Group):
 def _apply_tool_filter(
     mcp, explicit_tools: list[str] | None, exclude_tools: list[str] | None
 ) -> None:
-    """Remove disabled tools from the MCP registry."""
+    """Remove disabled tools from the MCP registry.
+
+    WARNING: this relies on FastMCP private attributes (_tool_manager,
+    _tools, _local_provider, _components). These are not part of the
+    public FastMCP API and may break on minor version upgrades.
+    If FastMCP exposes a public tool-removal API, switch to it.
+    """
     tool_mgr = getattr(mcp, "_tool_manager", None)
     tools_dict = getattr(tool_mgr, "_tools", None)
     if tools_dict is None:

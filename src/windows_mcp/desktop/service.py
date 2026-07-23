@@ -1,5 +1,6 @@
 from windows_mcp.desktop.utils import (
     resolve_known_folder_guid_path,
+    snapshot_profile_enabled,
 )
 from windows_mcp.powershell.utils import ps_quote
 from windows_mcp.powershell import PowerShellExecutor
@@ -20,7 +21,7 @@ from urllib.parse import urljoin
 from locale import getpreferredencoding
 from typing import Literal
 from markdownify import markdownify
-from fuzzywuzzy import process
+from thefuzz import process
 from time import sleep, time, perf_counter
 from psutil import Process
 import math
@@ -50,11 +51,6 @@ _KEY_ALIASES = {
     "command": "Win",
     "option": "Alt",
 }
-
-
-def _snapshot_profile_enabled() -> bool:
-    value = os.getenv("WINDOWS_MCP_PROFILE_SNAPSHOT", "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _escape_text_for_sendkeys(text: str) -> str:
@@ -110,7 +106,7 @@ class Desktop:
             raise ValueError("use_dom=True requires use_ui_tree=True")
 
         start_time = time()
-        profile_enabled = _snapshot_profile_enabled()
+        profile_enabled = snapshot_profile_enabled()
         profile_started_at = perf_counter()
         stage_started_at = profile_started_at
         desktop_context_ms = 0.0
@@ -724,8 +720,20 @@ class Desktop:
         except Exception:
             pass
         uia.SetClipboardText(text)
-        # Tiny pause so the OS clipboard write settles before Ctrl+V reads.
-        sleep(0.05)
+        # Wait for the OS clipboard to settle before reading it.
+        # A fixed sleep is racy under load; poll with a short timeout instead.
+        clipboard_ready = False
+        for _ in range(20):
+            sleep(0.05)
+            try:
+                current = uia.GetClipboardText()
+                if current == text:
+                    clipboard_ready = True
+                    break
+            except Exception:
+                continue
+        if not clipboard_ready:
+            logger.debug("Clipboard may not have settled before Ctrl+V")
         uia.SendKeys("{Ctrl}v", waitTime=0.05)
         # Restore prior clipboard so we don't surprise other tools.
         if prior is not None:
@@ -851,12 +859,12 @@ class Desktop:
             x, y, text = loc
             self.type((x, y), text=text, clear=True)
 
-    def scrape(self, url: str) -> str:
+    def scrape(self, url: str, max_content_length: int = 1_000_000) -> str:
         current_url = url
         try:
             for _ in range(5):
                 validate_url(current_url)
-                response = requests.get(current_url, timeout=10, allow_redirects=False)
+                response = requests.get(current_url, timeout=10, allow_redirects=False, stream=True)
                 if not response.is_redirect:
                     break
                 location = response.headers.get("Location")
@@ -872,7 +880,21 @@ class Desktop:
             raise ConnectionError(f"Failed to connect to {current_url}: {e}") from e
         except requests.exceptions.Timeout as e:
             raise TimeoutError(f"Request timed out for {current_url}: {e}") from e
-        html = response.text
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > max_content_length:
+            raise ValueError(
+                f"Response too large: Content-Length {content_length} exceeds max_content_length={max_content_length}"
+            )
+        downloaded = 0
+        chunks = []
+        for chunk in response.iter_content(chunk_size=65536):
+            downloaded += len(chunk)
+            if downloaded > max_content_length:
+                raise ValueError(
+                    f"Response exceeded max_content_length={max_content_length} while streaming"
+                )
+            chunks.append(chunk)
+        html = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
         content = markdownify(html=html)
         return content
 

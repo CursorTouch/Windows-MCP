@@ -8,7 +8,7 @@ authors = [
 readme = "README.md"
 license = { file = "LICENSE.md" }
 keywords = ["windows", "mcp", "ai", "desktop", "ai agent"]
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
@@ -23,8 +23,7 @@ dependencies = [
     "comtypes>=1.4.15",
     "dxcam>=0.3.0",
     "fastmcp>=3.0",
-    "fuzzywuzzy>=0.18.0",
-    "markdownify>=1.1.0",
+    "thefuzz>=0.22.1",
     "pillow>=11.2.1",
     "platformdirs>=4.3.8",
     "posthog>=7.4.0",
@@ -34,7 +33,6 @@ dependencies = [
     "pywin32>=311",
     "requests>=2.33.0",
     "tabulate>=0.9.0",
-    "thefuzz>=0.22.1",
     "uuid7>=0.1.0",
 ]
 
@@ -66,7 +64,7 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
-ignore = ["E501"]
+ignore = ["E501"]  # long strings for PowerShell, JSON configs, UIA traversal
 
 [tool.ruff.lint.per-file-ignores]
 "src/windows_mcp/uia/*.py" = ["F403", "F405"]

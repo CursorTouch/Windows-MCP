@@ -10,12 +10,14 @@ __all__ = [
     "resolve_known_folder_guid_path",
     "remove_private_use_chars",
     "is_elevated",
+    "snapshot_profile_enabled",
 ]
 
 
 def is_elevated() -> bool:
     """Check if the current process has administrative privileges."""
     import ctypes
+
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except (AttributeError, Exception):
@@ -59,14 +61,20 @@ def resolve_known_folder_guid_path(path_text: str) -> str:
 
 
 _PRIVATE_USE_RE = re.compile(
-    r'['
-    r'\uE000-\uF8FF'          # BMP Private Use Area
-    r'\U000F0000-\U000FFFFD'  # Supplementary Private Use Area-A
-    r'\U00100000-\U0010FFFD'  # Supplementary Private Use Area-B
-    r']+'
+    r"["
+    r"\uE000-\uF8FF"  # BMP Private Use Area
+    r"\U000F0000-\U000FFFFD"  # Supplementary Private Use Area-A
+    r"\U00100000-\U0010FFFD"  # Supplementary Private Use Area-B
+    r"]+"
 )
 
 
 def remove_private_use_chars(text: str) -> str:
     """Remove Unicode Private Use Area characters that may cause rendering issues."""
-    return _PRIVATE_USE_RE.sub('', text)
+    return _PRIVATE_USE_RE.sub("", text)
+
+
+def snapshot_profile_enabled() -> bool:
+    """Whether Snapshot/Screenshot profiling is enabled via env var."""
+    value = os.getenv("WINDOWS_MCP_PROFILE_SNAPSHOT", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}

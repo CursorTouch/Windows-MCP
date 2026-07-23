@@ -24,4 +24,4 @@ def register(mcp, *, get_desktop, get_analytics):
             response, status_code = PowerShellExecutor.execute_command(command, timeout)
             return f"Response: {response}\nStatus Code: {status_code}"
         except Exception as e:
-            raise
+            raise RuntimeError(f"PowerShell execution failed: {e}") from e
