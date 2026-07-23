@@ -2,9 +2,14 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from comtypes import COMError
 from pydantic import ValidationError
 
 import windows_mcp.text_cursor as text_cursor
+from windows_mcp.text_cursor import ranges, service, snapshots
+from windows_mcp.text_cursor.constants import MAX_SELECTED_TEXT_CHARS, MAX_TEXT_UNIT_MOVE
+from windows_mcp.text_cursor.operations import WriteActionResult
+from windows_mcp.text_cursor.uia import TextRange, TextRangeEndpoint, TextUnit
 from windows_mcp.tools.text_cursor import _description
 
 
@@ -24,8 +29,8 @@ class FakeTextRange:
         self.start = position
         self.end = position
 
-    def move(self, unit: text_cursor.TextUnit, count: int) -> int:
-        assert unit is text_cursor.TextUnit.Character
+    def move(self, unit: TextUnit, count: int) -> int:
+        assert unit is TextUnit.Character
         assert self.start == self.end
 
         target = min(max(self.start + count, 0), self.document_length)
@@ -48,21 +53,21 @@ class FakeTextPattern:
     [
         (
             text_cursor.MoveRelativeAction,
-            {"mode": "move_relative", "delta": text_cursor.MAX_TEXT_UNIT_MOVE + 1},
+            {"mode": "move_relative", "delta": MAX_TEXT_UNIT_MOVE + 1},
         ),
         (
             text_cursor.MoveRelativeAction,
-            {"mode": "move_relative", "delta": -text_cursor.MAX_TEXT_UNIT_MOVE - 1},
+            {"mode": "move_relative", "delta": -MAX_TEXT_UNIT_MOVE - 1},
         ),
         (
             text_cursor.MoveAbsoluteAction,
-            {"mode": "move_absolute", "offset": text_cursor.MAX_TEXT_UNIT_MOVE + 1},
+            {"mode": "move_absolute", "offset": MAX_TEXT_UNIT_MOVE + 1},
         ),
         (
             text_cursor.SelectRelativeAction,
             {
                 "mode": "select_relative",
-                "start_delta": -text_cursor.MAX_TEXT_UNIT_MOVE - 1,
+                "start_delta": -MAX_TEXT_UNIT_MOVE - 1,
                 "end_delta": 0,
             },
         ),
@@ -71,15 +76,15 @@ class FakeTextPattern:
             {
                 "mode": "select_relative",
                 "start_delta": 0,
-                "end_delta": text_cursor.MAX_TEXT_UNIT_MOVE + 1,
+                "end_delta": MAX_TEXT_UNIT_MOVE + 1,
             },
         ),
         (
             text_cursor.SelectAbsoluteAction,
             {
                 "mode": "select_absolute",
-                "start": text_cursor.MAX_TEXT_UNIT_MOVE + 1,
-                "end": text_cursor.MAX_TEXT_UNIT_MOVE + 1,
+                "start": MAX_TEXT_UNIT_MOVE + 1,
+                "end": MAX_TEXT_UNIT_MOVE + 1,
             },
         ),
     ],
@@ -97,8 +102,8 @@ def test_character_offset_round_trips_through_document_position():
         text_pattern=FakeTextPattern(document_length),
     )
 
-    offset = text_cursor.endpoint_offset(info, text_cursor.TextRangeEndpoint.Start)
-    target, actual = text_cursor.document_position(info, offset)
+    offset = snapshots.endpoint_offset(info, TextRangeEndpoint.Start)
+    target, actual = ranges.document_position(info, offset)
 
     assert offset == position
     assert actual == position
@@ -111,15 +116,15 @@ def test_selection_endpoint_offsets_use_character_units():
         text_range=FakeTextRange(12, 34, 100),
     )
 
-    assert text_cursor.endpoint_offset(info, text_cursor.TextRangeEndpoint.Start) == 12
-    assert text_cursor.endpoint_offset(info, text_cursor.TextRangeEndpoint.End) == 34
+    assert snapshots.endpoint_offset(info, TextRangeEndpoint.Start) == 12
+    assert snapshots.endpoint_offset(info, TextRangeEndpoint.End) == 34
 
 
 def test_snapshot_fails_when_character_offset_is_unavailable(monkeypatch):
-    monkeypatch.setattr(text_cursor, "endpoint_offset", lambda *args, **kwargs: None)
+    monkeypatch.setattr(snapshots, "endpoint_offset", lambda *args, **kwargs: None)
 
     with pytest.raises(text_cursor.TextCursorError, match="TextUnit_Character offsets"):
-        text_cursor.make_snapshot(object(), context_chars=40)
+        snapshots.make_snapshot(object(), context_chars=40)
 
 
 def test_snapshot_contract_names_character_unit_fields():
@@ -144,7 +149,7 @@ def test_tool_descriptions_use_character_units():
 
 
 def test_text_range_get_text_normalizes_none_to_empty_text():
-    text_range = text_cursor.TextRange(
+    text_range = TextRange(
         SimpleNamespace(GetText=lambda max_length: None),
     )
 
@@ -153,13 +158,13 @@ def test_text_range_get_text_normalizes_none_to_empty_text():
 
 def test_text_range_get_text_propagates_com_error():
     def fail_get_text(max_length):
-        raise text_cursor.COMError(-2147467259, "provider unavailable", None)
+        raise COMError(-2147467259, "provider unavailable", None)
 
-    text_range = text_cursor.TextRange(
+    text_range = TextRange(
         SimpleNamespace(GetText=fail_get_text),
     )
 
-    with pytest.raises(text_cursor.COMError, match="provider unavailable"):
+    with pytest.raises(COMError, match="provider unavailable"):
         text_range.get_text()
 
 
@@ -177,8 +182,8 @@ async def test_cancelled_delay_does_not_reach_com_worker(monkeypatch):
         nonlocal execute_called
         execute_called = True
 
-    monkeypatch.setattr(text_cursor.asyncio, "sleep", blocking_sleep)
-    monkeypatch.setattr(text_cursor, "execute_sync", fake_execute)
+    monkeypatch.setattr(service.asyncio, "sleep", blocking_sleep)
+    monkeypatch.setattr(service, "execute_sync", fake_execute)
 
     task = asyncio.create_task(
         text_cursor.run_tool(text_cursor.GetInfoAction(mode="get_info", delay=300))
@@ -206,12 +211,12 @@ def test_snapshot_warns_when_provider_returns_multiple_selections(monkeypatch):
         selection_count=3,
     )
     monkeypatch.setattr(
-        text_cursor,
+        snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is text_cursor.TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
     )
 
-    snapshot = text_cursor.make_snapshot(caret_info, context_chars=40)
+    snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
 
     assert snapshot.selection_start_units == 4
     assert snapshot.selection_end_units == 12
@@ -220,7 +225,7 @@ def test_snapshot_warns_when_provider_returns_multiple_selections(monkeypatch):
 
 
 def test_snapshot_truncates_long_selected_text_with_ellipsis(monkeypatch):
-    limit = text_cursor.MAX_SELECTED_TEXT_CHARS
+    limit = MAX_SELECTED_TEXT_CHARS
     # The wrapper is asked for limit + 1 chars; the provider returns that many,
     # which signals the real selection is longer than the limit.
     caret_info = SimpleNamespace(
@@ -236,12 +241,12 @@ def test_snapshot_truncates_long_selected_text_with_ellipsis(monkeypatch):
         selection_count=1,
     )
     monkeypatch.setattr(
-        text_cursor,
+        snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 0 if endpoint is text_cursor.TextRangeEndpoint.Start else 10_000,
+        lambda info, endpoint: 0 if endpoint is TextRangeEndpoint.Start else 10_000,
     )
 
-    snapshot = text_cursor.make_snapshot(caret_info, context_chars=40)
+    snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
 
     assert len(snapshot.selected_text) == limit + 1  # limit chars + ellipsis
     assert snapshot.selected_text.endswith("…")
@@ -250,7 +255,7 @@ def test_snapshot_truncates_long_selected_text_with_ellipsis(monkeypatch):
 
 
 def test_snapshot_keeps_selected_text_at_limit_untruncated(monkeypatch):
-    limit = text_cursor.MAX_SELECTED_TEXT_CHARS
+    limit = MAX_SELECTED_TEXT_CHARS
     # A selection exactly at the limit: the provider returns fewer than the
     # requested limit + 1 chars, so it must not be flagged as truncated.
     caret_info = SimpleNamespace(
@@ -266,12 +271,12 @@ def test_snapshot_keeps_selected_text_at_limit_untruncated(monkeypatch):
         selection_count=1,
     )
     monkeypatch.setattr(
-        text_cursor,
+        snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 0 if endpoint is text_cursor.TextRangeEndpoint.Start else limit,
+        lambda info, endpoint: 0 if endpoint is TextRangeEndpoint.Start else limit,
     )
 
-    snapshot = text_cursor.make_snapshot(caret_info, context_chars=40)
+    snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
 
     assert snapshot.selected_text == "b" * limit
     assert "…" not in snapshot.selected_text
@@ -290,12 +295,12 @@ def test_snapshot_preserves_genuinely_empty_selected_text(monkeypatch):
         selection_count=1,
     )
     monkeypatch.setattr(
-        text_cursor,
+        snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is text_cursor.TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
     )
 
-    snapshot = text_cursor.make_snapshot(
+    snapshot = snapshots.make_snapshot(
         caret_info,
         context_chars=40,
         include_context=False,
@@ -307,7 +312,7 @@ def test_snapshot_preserves_genuinely_empty_selected_text(monkeypatch):
 
 def test_snapshot_omits_selected_text_and_warns_on_com_error(monkeypatch):
     def fail_get_text(max_length=-1):
-        raise text_cursor.COMError(-2147467259, "provider unavailable", None)
+        raise COMError(-2147467259, "provider unavailable", None)
 
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
@@ -320,12 +325,12 @@ def test_snapshot_omits_selected_text_and_warns_on_com_error(monkeypatch):
         selection_count=1,
     )
     monkeypatch.setattr(
-        text_cursor,
+        snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is text_cursor.TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
     )
 
-    snapshot = text_cursor.make_snapshot(
+    snapshot = snapshots.make_snapshot(
         caret_info,
         context_chars=40,
         include_context=False,
@@ -339,7 +344,7 @@ def test_snapshot_omits_selected_text_and_warns_on_com_error(monkeypatch):
 
 def test_snapshot_reads_context_fields_independently_on_com_error(monkeypatch):
     def fail_text_before(count):
-        raise text_cursor.COMError(-2147467259, "provider unavailable", None)
+        raise COMError(-2147467259, "provider unavailable", None)
 
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
@@ -352,9 +357,9 @@ def test_snapshot_reads_context_fields_independently_on_com_error(monkeypatch):
         exact_caret=True,
         selection_count=1,
     )
-    monkeypatch.setattr(text_cursor, "endpoint_offset", lambda info, endpoint: 7)
+    monkeypatch.setattr(snapshots, "endpoint_offset", lambda info, endpoint: 7)
 
-    snapshot = text_cursor.make_snapshot(caret_info, context_chars=40)
+    snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
 
     assert snapshot.caret_offset_units == 7
     assert snapshot.text_before is None
@@ -382,13 +387,13 @@ def test_snapshot_does_not_hide_programming_errors_when_reading_text(
         selection_count=1,
     )
     monkeypatch.setattr(
-        text_cursor,
+        snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is text_cursor.TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
     )
 
     with pytest.raises(error_type, match="broken text range wrapper"):
-        text_cursor.make_snapshot(
+        snapshots.make_snapshot(
             caret_info,
             context_chars=40,
             include_context=False,
@@ -414,16 +419,16 @@ def test_run_write_propagates_warning_from_before_snapshot(monkeypatch):
     )
     providers = iter([object(), object()])
 
-    monkeypatch.setattr(text_cursor, "find_caret_provider", lambda: next(providers))
+    monkeypatch.setattr(service, "find_caret_provider", lambda: next(providers))
     snapshots = iter([before, after])
-    monkeypatch.setattr(text_cursor, "make_snapshot", lambda *args, **kwargs: next(snapshots))
+    monkeypatch.setattr(service, "make_snapshot", lambda *args, **kwargs: next(snapshots))
     monkeypatch.setattr(
-        text_cursor,
+        service,
         "apply_write",
-        lambda action, caret_info: text_cursor.WriteActionResult(None, {}),
+        lambda action, caret_info: WriteActionResult(None, {}),
     )
 
-    result = text_cursor.run_write(
+    result = service.run_write(
         text_cursor.MoveAbsoluteAction(mode="move_absolute", offset=2, verify=False)
     )
 
@@ -444,22 +449,22 @@ def test_run_write_distinguishes_target_from_read_back_actual(monkeypatch):
     providers = iter([object(), object()])
     snapshots = iter([before, after])
 
-    monkeypatch.setattr(text_cursor, "find_caret_provider", lambda: next(providers))
+    monkeypatch.setattr(service, "find_caret_provider", lambda: next(providers))
     monkeypatch.setattr(
-        text_cursor,
+        service,
         "make_snapshot",
         lambda *args, **kwargs: next(snapshots),
     )
     monkeypatch.setattr(
-        text_cursor,
+        service,
         "apply_write",
-        lambda action, caret_info: text_cursor.WriteActionResult(
+        lambda action, caret_info: WriteActionResult(
             None,
             {"target_offset_units": 5},
         ),
     )
 
-    result = text_cursor.run_write(
+    result = service.run_write(
         text_cursor.MoveAbsoluteAction(
             mode="move_absolute",
             offset=5,
@@ -482,7 +487,7 @@ def test_snapshot_position_reports_real_selection_coordinates():
         selection_end_units=12,
     )
 
-    assert text_cursor.snapshot_position(snapshot) == {
+    assert snapshots.snapshot_position(snapshot) == {
         "type": "range",
         "selection_start_units": 4,
         "selection_end_units": 12,

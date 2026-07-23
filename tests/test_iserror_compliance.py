@@ -89,7 +89,7 @@ def test_registry_tool_error_is_error_true(monkeypatch, mcp):
 
 def test_text_cursor_tool_error_is_error_true(monkeypatch, mcp):
     """TextCursor UIA failures must surface as ToolError."""
-    import windows_mcp.text_cursor as implementation
+    from windows_mcp.text_cursor import service
     from windows_mcp.tools.text_cursor import register as text_cursor_tool_reg
 
     text_cursor_tool_reg(mcp, get_desktop=lambda: None, get_analytics=lambda: None)
@@ -98,9 +98,8 @@ def test_text_cursor_tool_error_is_error_true(monkeypatch, mcp):
     def _raise(*args, **kwargs):  # noqa: ARG001
         raise RuntimeError(error_msg)
 
-    monkeypatch.setattr(implementation, "co_initialize_mta", lambda: True)
-    monkeypatch.setattr(implementation, "co_uninitialize", lambda: None)
-    monkeypatch.setattr(implementation, "run_get_info", _raise)
+    # run_get_info raises before find_caret_provider, so no real COM init runs.
+    monkeypatch.setattr(service, "run_get_info", _raise)
 
     with pytest.raises(ToolError) as exc_info:
         asyncio.run(
@@ -115,6 +114,7 @@ def test_text_cursor_tool_error_is_error_true(monkeypatch, mcp):
 def test_text_cursor_verification_failure_raises(monkeypatch):
     """A failed write verification must not return a successful MCP payload."""
     import windows_mcp.text_cursor as implementation
+    from windows_mcp.text_cursor import operations, service
 
     action = implementation.MoveAbsoluteAction(mode="move_absolute", offset=10)
     caret_info = object()
@@ -130,23 +130,23 @@ def test_text_cursor_verification_failure_raises(monkeypatch):
     )
     snapshots = iter([before, after])
 
-    monkeypatch.setattr(implementation, "find_caret_provider", lambda: caret_info)
+    monkeypatch.setattr(service, "find_caret_provider", lambda: caret_info)
     monkeypatch.setattr(
-        implementation,
+        service,
         "make_snapshot",
         lambda *args, **kwargs: next(snapshots),
     )
     monkeypatch.setattr(
-        implementation,
+        service,
         "apply_write",
-        lambda *args, **kwargs: implementation.WriteActionResult(
+        lambda *args, **kwargs: operations.WriteActionResult(
             False,
             {"target_offset_units": 5},
         ),
     )
 
     with pytest.raises(implementation.TextCursorVerificationError) as exc_info:
-        implementation.run_write(action)
+        service.run_write(action)
 
     assert "move_absolute" in str(exc_info.value)
     assert "target_offset_units" in str(exc_info.value)
