@@ -1,3 +1,5 @@
+[![mcpindex](https://mcpindex.ai/api/v1/badge/io-github-cursortouch-windows-mcp)](https://mcpindex.ai/server/io-github-cursortouch-windows-mcp)
+
 <div align="center">
   <h1>🪟 Windows-MCP</h1>
 
