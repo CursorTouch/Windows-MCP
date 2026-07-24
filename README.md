@@ -729,6 +729,7 @@ MCP Client can access the following tools to interact with Windows:
 - `Process`: List running processes or terminate them by PID or name.
 - `Notification`: Send a Windows toast notification with a title and message.
 - `Registry`: Read, write, delete, or list Windows Registry values and keys.
+- `TextCursor`: Inspect or manipulate the caret/selection of the focused text control via UIA — read caret/selection info, move the caret (relative or absolute), select a text range, select all, or collapse a selection. Requires a control that exposes the UIA TextPattern.
 
 
 ## 🤝 Connect with Us
@@ -793,7 +794,7 @@ For detailed information on what data is collected and how it is handled, please
 
 ## 📝 Limitations
 
-- Selecting specific sections of the text in a paragraph, as the MCP is relying on a11y tree. (⌛ Working on it.)
+- Selecting a specific section of text within a paragraph is supported by the `TextCursor` tool for controls that expose the UIA TextPattern; controls that do not expose it remain unsupported.
 - `Type-Tool` is meant for typing text, not programming in IDE because of it types program as a whole in a file. (⌛ Working on it.)
 - This MCP server can't be used to play video games 🎮.
 
