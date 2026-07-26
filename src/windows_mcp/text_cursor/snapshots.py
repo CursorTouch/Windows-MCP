@@ -5,27 +5,57 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from comtypes import COMError
+from windows_mcp.uia import TextPatternRangeEndpoint, TextRange, TextUnit
 
 from .constants import MAX_SELECTED_TEXT_CHARS
+from .discovery import UIACaretInfo
 from .errors import TextCursorError
-from .models import CursorSnapshot
-from .uia import UIACaretInfo, TextRangeEndpoint, range_start_offset
+from .models import CursorSnapshot, ScreenRect
 
 
 def endpoint_offset(
     caret_info: UIACaretInfo,
-    endpoint: TextRangeEndpoint,
+    endpoint: TextPatternRangeEndpoint,
 ) -> Optional[int]:
     """Return the character offset from the document start to the given
     endpoint (Start or End) of the caret/selection range."""
-    marker = caret_info.text_range.clone()
+    marker = caret_info.text_range.Clone()
+    marker.Collapse(toEnd=(endpoint == TextPatternRangeEndpoint.End))
 
-    if endpoint == TextRangeEndpoint.End:
-        marker.collapse_range(to_end=True)
-    else:
-        marker.collapse_range(to_end=False)
+    try:
+        return marker.GetStartOffset()
+    except (COMError, AttributeError, TypeError):
+        return None
 
-    return range_start_offset(marker)
+
+def bounding_screen_rects(
+    text_range: TextRange,
+    try_again_if_err: bool = True,
+) -> list[ScreenRect]:
+    """Return the range's bounding boxes as `ScreenRect`s (one per visible line)."""
+    try:
+        rects = [
+            ScreenRect(
+                left=float(rect.left),
+                top=float(rect.top),
+                width=float(rect.width()),
+                height=float(rect.height()),
+            )
+            for rect in text_range.GetBoundingRectangles()
+        ]
+        if len(rects) == 0 and text_range.IsDegenerate() and try_again_if_err:
+            # A caret (degenerate range) sometimes has no bounding rectangle;
+            # extend it by one character and try once more.
+            adjacent = text_range.Clone()
+            moved = adjacent.MoveEndpointByUnit(
+                TextPatternRangeEndpoint.End, TextUnit.Character, 1, waitTime=0
+            )
+            if int(moved) != 0:
+                return bounding_screen_rects(adjacent, False)  # avoid recursion
+        return rects
+
+    except (COMError, AttributeError, TypeError, ValueError):
+        return []
 
 
 def make_snapshot(
@@ -35,7 +65,7 @@ def make_snapshot(
     include_context: bool = True,
     include_selected_text: bool = True,
 ) -> CursorSnapshot:
-    start = endpoint_offset(caret_info, TextRangeEndpoint.Start)
+    start = endpoint_offset(caret_info, TextPatternRangeEndpoint.Start)
     # A caret is a degenerate range: both endpoints resolve to the same offset,
     # and only caret_offset_units (== start) is emitted. Computing the End
     # endpoint would be a second full Move(-MAX) walk back to DocumentRange
@@ -45,7 +75,7 @@ def make_snapshot(
     if start is not None and caret_info.exact_caret:
         end = start
     else:
-        end = endpoint_offset(caret_info, TextRangeEndpoint.End)
+        end = endpoint_offset(caret_info, TextPatternRangeEndpoint.End)
 
     if start is None or end is None:
         raise TextCursorError(
@@ -60,7 +90,7 @@ def make_snapshot(
         # Read one extra character so a selection sitting exactly on the limit
         # is not mistaken for a truncated one.
         try:
-            selected_text = caret_info.text_range.get_text(MAX_SELECTED_TEXT_CHARS + 1)
+            selected_text = caret_info.text_range.GetText(MAX_SELECTED_TEXT_CHARS + 1)
         except COMError:
             warnings.append(
                 "The provider did not allow reading selected_text. The field was omitted; "
@@ -77,14 +107,14 @@ def make_snapshot(
 
     if include_context:
         try:
-            before = caret_info.text_range.text_before(context_chars)
+            before = caret_info.text_range.GetTextBefore(context_chars)
         except COMError:
             warnings.append(
                 "The provider did not allow reading text_before. The field was omitted."
             )
 
         try:
-            after = caret_info.text_range.text_after(context_chars)
+            after = caret_info.text_range.GetTextAfter(context_chars)
         except COMError:
             warnings.append("The provider did not allow reading text_after. The field was omitted.")
 
@@ -108,9 +138,14 @@ def make_snapshot(
             "selection_end_units offsets still describe the full selection."
         )
 
+    try:
+        element_name = caret_info.element.Name or None
+    except COMError:
+        element_name = None
+
     return CursorSnapshot(
         provider=caret_info.source,
-        element_name=(caret_info.element.get_name() or None),
+        element_name=element_name,
         type="caret" if caret_info.exact_caret else "range",
         caret_offset_units=start if caret_info.exact_caret else None,  # caret only
         selection_start_units=(start if not caret_info.exact_caret else None),  # range only
@@ -118,7 +153,7 @@ def make_snapshot(
         selected_text=selected_text,
         text_before=before,
         text_after=after,
-        bounding_rects=caret_info.text_range.bounding_rectangles(),
+        bounding_rects=bounding_screen_rects(caret_info.text_range),
         warnings=warnings,
     )
 

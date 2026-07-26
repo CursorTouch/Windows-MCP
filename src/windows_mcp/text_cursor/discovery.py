@@ -1,43 +1,51 @@
-"""Locate the focused UIA element that exposes the caret/selection TextPattern.
+"""Locate the focused UIA control that exposes the caret/selection TextPattern.
 
-This sits above the pure UIA wrappers in `uia` because it depends on the COM
-worker thread (`worker.get_thread_automation`). Keeping it here lets `uia` stay
-a leaf module that `worker` can import without forming a cycle.
+Runs on the server's main-thread STA and reuses the shared `windows_mcp.uia`
+client, so it can use `GetFocusedControl` and `Control` navigation directly.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass
 
 from comtypes import COMError
-
-from .constants import UIA_TEXT_PATTERN_ID
-from .uia import UIACaretInfo, UIAElement, UIAModule
-from .worker import get_thread_automation
+from windows_mcp.uia import Control, GetFocusedControl, PatternId, TextPattern, TextRange
 
 
-def try_get_caret_on_element(uia: UIAModule, element: UIAElement) -> Optional[UIACaretInfo]:
+@dataclass
+class UIACaretInfo:
+    """UIA provider and text range that describe the current caret or selection."""
+
+    element: Control
+    text_pattern: TextPattern
+    text_range: TextRange
+    source: str
+    exact_caret: bool
+    selection_count: int = 1
+
+
+def try_get_caret_on_element(control: Control) -> UIACaretInfo | None:
     # Use TextPattern.GetSelection rather than TextPattern2.GetCaretRange:
     # GetCaretRange does not expose the actual selection range, so handling it
     # separately is not worth the effort. The first selection is kept as-is:
     # a degenerate range is treated as a caret (exact_caret=True), and a
     # non-empty one as a range whose active caret endpoint is unknown.
-    text_pattern = element.get_pattern(
-        UIA_TEXT_PATTERN_ID,
-        uia.raw_module.IUIAutomationTextPattern,
-    )
+    text_pattern = control.GetPattern(PatternId.TextPattern)
 
     if text_pattern is not None:
-        selections = text_pattern.get_selections()
+        try:
+            selections = text_pattern.GetSelection()
+        except (COMError, AttributeError, TypeError, ValueError):
+            selections = []
 
         if selections:
             selection = selections[0]
             return UIACaretInfo(
-                element=element,
+                element=control,
                 text_pattern=text_pattern,
                 text_range=selection,
                 source="TextPattern.GetSelection",
-                exact_caret=selection.is_degenerate(),
+                exact_caret=selection.IsDegenerate(),
                 selection_count=len(selections),
             )
 
@@ -46,31 +54,32 @@ def try_get_caret_on_element(uia: UIAModule, element: UIAElement) -> Optional[UI
 
 def find_caret_provider(max_parent_levels: int = 8) -> UIACaretInfo:
     """
-    Start at the focused UIA element and walk up RawView parents.
+    Start at the focused UIA control and walk up RawView parents.
     Some controls expose TextPattern on an ancestor rather than on the exact
     focused child.
     """
-    uia, automation = get_thread_automation()
+    control = GetFocusedControl()
 
-    element = automation.get_focused_element()
-
-    if not element:
+    if control is None:
         raise RuntimeError("UI Automation returned no focused element.")
 
-    element_name = element.get_name()
+    try:
+        element_name = control.Name
+    except COMError:
+        element_name = ""
 
     tried_cnt = 0
-    while element and tried_cnt < max_parent_levels + 1:
+    while control is not None and tried_cnt < max_parent_levels + 1:
         tried_cnt += 1
-        result = try_get_caret_on_element(uia, element)
+        result = try_get_caret_on_element(control)
 
         if result is not None:
             return result
 
         try:
-            element = element.parent()
+            control = control.GetParentControl()
         except COMError:
-            element = None
+            control = None
 
     raise RuntimeError(
         f"The focused element {f'"{element_name}" ' if element_name else ''}and "

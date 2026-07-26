@@ -4,32 +4,36 @@ from types import SimpleNamespace
 import pytest
 from comtypes import COMError
 from pydantic import ValidationError
+from windows_mcp.uia import TextPatternRangeEndpoint, TextRange, TextUnit
 
 import windows_mcp.text_cursor as text_cursor
 from windows_mcp.text_cursor import ranges, service, snapshots
 from windows_mcp.text_cursor.constants import MAX_SELECTED_TEXT_CHARS, MAX_TEXT_UNIT_MOVE
 from windows_mcp.text_cursor.operations import WriteActionResult
-from windows_mcp.text_cursor.uia import TextRange, TextRangeEndpoint, TextUnit
 from windows_mcp.tools.text_cursor import _description
 
 
 class FakeTextRange:
-    """Minimal in-memory text range for offset calculations."""
+    """Minimal in-memory text range for offset calculations.
+
+    Duck-types the subset of the `windows_mcp.uia.TextRange` API that the
+    offset helpers exercise.
+    """
 
     def __init__(self, start: int, end: int, document_length: int) -> None:
         self.start = start
         self.end = end
         self.document_length = document_length
 
-    def clone(self) -> "FakeTextRange":
+    def Clone(self) -> "FakeTextRange":
         return FakeTextRange(self.start, self.end, self.document_length)
 
-    def collapse_range(self, *, to_end: bool) -> None:
-        position = self.end if to_end else self.start
+    def Collapse(self, toEnd: bool = False, waitTime: float = 0.0) -> None:
+        position = self.end if toEnd else self.start
         self.start = position
         self.end = position
 
-    def move(self, unit: TextUnit, count: int) -> int:
+    def Move(self, unit: TextUnit, count: int, waitTime: float = 0.0) -> int:
         assert unit is TextUnit.Character
         assert self.start == self.end
 
@@ -39,12 +43,16 @@ class FakeTextRange:
         self.end = target
         return moved
 
+    def GetStartOffset(self, waitTime: float = 0.0) -> int:
+        return self.start
+
 
 class FakeTextPattern:
     def __init__(self, document_length: int) -> None:
         self.document_length = document_length
 
-    def document_range(self) -> FakeTextRange:
+    @property
+    def DocumentRange(self) -> FakeTextRange:
         return FakeTextRange(0, self.document_length, self.document_length)
 
 
@@ -102,7 +110,7 @@ def test_character_offset_round_trips_through_document_position():
         text_pattern=FakeTextPattern(document_length),
     )
 
-    offset = snapshots.endpoint_offset(info, TextRangeEndpoint.Start)
+    offset = snapshots.endpoint_offset(info, TextPatternRangeEndpoint.Start)
     target, actual = ranges.document_position(info, offset)
 
     assert offset == position
@@ -116,8 +124,8 @@ def test_selection_endpoint_offsets_use_character_units():
         text_range=FakeTextRange(12, 34, 100),
     )
 
-    assert snapshots.endpoint_offset(info, TextRangeEndpoint.Start) == 12
-    assert snapshots.endpoint_offset(info, TextRangeEndpoint.End) == 34
+    assert snapshots.endpoint_offset(info, TextPatternRangeEndpoint.Start) == 12
+    assert snapshots.endpoint_offset(info, TextPatternRangeEndpoint.End) == 34
 
 
 def test_snapshot_fails_when_character_offset_is_unavailable(monkeypatch):
@@ -153,7 +161,7 @@ def test_text_range_get_text_normalizes_none_to_empty_text():
         SimpleNamespace(GetText=lambda max_length: None),
     )
 
-    assert text_range.get_text() == ""
+    assert text_range.GetText() == ""
 
 
 def test_text_range_get_text_propagates_com_error():
@@ -165,11 +173,45 @@ def test_text_range_get_text_propagates_com_error():
     )
 
     with pytest.raises(COMError, match="provider unavailable"):
-        text_range.get_text()
+        text_range.GetText()
+
+
+def test_apply_change_stops_when_focus_fails():
+    select_called = False
+
+    def select(*, waitTime: float) -> bool:
+        nonlocal select_called
+        select_called = True
+        return True
+
+    caret_info = SimpleNamespace(element=SimpleNamespace(SetFocus=lambda: False))
+    target = SimpleNamespace(Select=select)
+
+    with pytest.raises(text_cursor.TextCursorError, match="focus"):
+        ranges.apply_change(caret_info, target)
+
+    assert select_called is False
+
+
+def test_apply_change_fails_when_provider_rejects_selection():
+    caret_info = SimpleNamespace(element=SimpleNamespace(SetFocus=lambda: True))
+    target = SimpleNamespace(Select=lambda *, waitTime: False)
+
+    with pytest.raises(text_cursor.TextCursorError, match="did not accept"):
+        ranges.apply_change(caret_info, target)
+
+
+def test_verify_returns_false_when_selection_read_back_fails():
+    def fail_get_selection():
+        raise COMError(-2147467259, "provider unavailable", None)
+
+    caret_info = SimpleNamespace(text_pattern=SimpleNamespace(GetFirstSelection=fail_get_selection))
+
+    assert ranges.verify(caret_info, object(), need_verify=True) is False
 
 
 @pytest.mark.asyncio
-async def test_cancelled_delay_does_not_reach_com_worker(monkeypatch):
+async def test_cancelled_delay_does_not_reach_com(monkeypatch):
     sleep_started = asyncio.Event()
     execute_called = False
 
@@ -178,12 +220,12 @@ async def test_cancelled_delay_does_not_reach_com_worker(monkeypatch):
         sleep_started.set()
         await asyncio.Event().wait()
 
-    def fake_execute(action) -> None:
+    def fake_get_info(action) -> None:
         nonlocal execute_called
         execute_called = True
 
     monkeypatch.setattr(service.asyncio, "sleep", blocking_sleep)
-    monkeypatch.setattr(service, "execute_sync", fake_execute)
+    monkeypatch.setattr(service, "run_get_info", fake_get_info)
 
     task = asyncio.create_task(
         text_cursor.run_tool(text_cursor.GetInfoAction(mode="get_info", delay=300))
@@ -200,12 +242,12 @@ async def test_cancelled_delay_does_not_reach_com_worker(monkeypatch):
 def test_snapshot_warns_when_provider_returns_multiple_selections(monkeypatch):
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            get_text=lambda max_length=-1: "selected",
-            text_before=lambda count: "before",
-            text_after=lambda count: "after",
-            bounding_rectangles=lambda: [],
+            GetText=lambda max_length=-1: "selected",
+            GetTextBefore=lambda count: "before",
+            GetTextAfter=lambda count: "after",
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=False,
         selection_count=3,
@@ -213,7 +255,7 @@ def test_snapshot_warns_when_provider_returns_multiple_selections(monkeypatch):
     monkeypatch.setattr(
         snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextPatternRangeEndpoint.Start else 12,
     )
 
     snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
@@ -230,12 +272,12 @@ def test_snapshot_truncates_long_selected_text_with_ellipsis(monkeypatch):
     # which signals the real selection is longer than the limit.
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            get_text=lambda max_length=-1: "a" * max_length,
-            text_before=lambda count: "",
-            text_after=lambda count: "",
-            bounding_rectangles=lambda: [],
+            GetText=lambda max_length=-1: "a" * max_length,
+            GetTextBefore=lambda count: "",
+            GetTextAfter=lambda count: "",
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=False,
         selection_count=1,
@@ -243,7 +285,7 @@ def test_snapshot_truncates_long_selected_text_with_ellipsis(monkeypatch):
     monkeypatch.setattr(
         snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 0 if endpoint is TextRangeEndpoint.Start else 10_000,
+        lambda info, endpoint: 0 if endpoint is TextPatternRangeEndpoint.Start else 10_000,
     )
 
     snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
@@ -260,12 +302,12 @@ def test_snapshot_keeps_selected_text_at_limit_untruncated(monkeypatch):
     # requested limit + 1 chars, so it must not be flagged as truncated.
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            get_text=lambda max_length=-1: "b" * limit,
-            text_before=lambda count: "",
-            text_after=lambda count: "",
-            bounding_rectangles=lambda: [],
+            GetText=lambda max_length=-1: "b" * limit,
+            GetTextBefore=lambda count: "",
+            GetTextAfter=lambda count: "",
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=False,
         selection_count=1,
@@ -273,7 +315,7 @@ def test_snapshot_keeps_selected_text_at_limit_untruncated(monkeypatch):
     monkeypatch.setattr(
         snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 0 if endpoint is TextRangeEndpoint.Start else limit,
+        lambda info, endpoint: 0 if endpoint is TextPatternRangeEndpoint.Start else limit,
     )
 
     snapshot = snapshots.make_snapshot(caret_info, context_chars=40)
@@ -286,10 +328,10 @@ def test_snapshot_keeps_selected_text_at_limit_untruncated(monkeypatch):
 def test_snapshot_preserves_genuinely_empty_selected_text(monkeypatch):
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            get_text=lambda max_length=-1: "",
-            bounding_rectangles=lambda: [],
+            GetText=lambda max_length=-1: "",
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=False,
         selection_count=1,
@@ -297,7 +339,7 @@ def test_snapshot_preserves_genuinely_empty_selected_text(monkeypatch):
     monkeypatch.setattr(
         snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextPatternRangeEndpoint.Start else 12,
     )
 
     snapshot = snapshots.make_snapshot(
@@ -316,10 +358,10 @@ def test_snapshot_omits_selected_text_and_warns_on_com_error(monkeypatch):
 
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            get_text=fail_get_text,
-            bounding_rectangles=lambda: [],
+            GetText=fail_get_text,
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=False,
         selection_count=1,
@@ -327,7 +369,7 @@ def test_snapshot_omits_selected_text_and_warns_on_com_error(monkeypatch):
     monkeypatch.setattr(
         snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextPatternRangeEndpoint.Start else 12,
     )
 
     snapshot = snapshots.make_snapshot(
@@ -348,11 +390,11 @@ def test_snapshot_reads_context_fields_independently_on_com_error(monkeypatch):
 
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            text_before=fail_text_before,
-            text_after=lambda count: "after",
-            bounding_rectangles=lambda: [],
+            GetTextBefore=fail_text_before,
+            GetTextAfter=lambda count: "after",
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=True,
         selection_count=1,
@@ -378,10 +420,10 @@ def test_snapshot_does_not_hide_programming_errors_when_reading_text(
 
     caret_info = SimpleNamespace(
         text_range=SimpleNamespace(
-            get_text=fail_get_text,
-            bounding_rectangles=lambda: [],
+            GetText=fail_get_text,
+            GetBoundingRectangles=lambda: [],
         ),
-        element=SimpleNamespace(get_name=lambda: "editor"),
+        element=SimpleNamespace(Name="editor"),
         source="TextPattern.GetSelection",
         exact_caret=False,
         selection_count=1,
@@ -389,7 +431,7 @@ def test_snapshot_does_not_hide_programming_errors_when_reading_text(
     monkeypatch.setattr(
         snapshots,
         "endpoint_offset",
-        lambda info, endpoint: 4 if endpoint is TextRangeEndpoint.Start else 12,
+        lambda info, endpoint: 4 if endpoint is TextPatternRangeEndpoint.Start else 12,
     )
 
     with pytest.raises(error_type, match="broken text range wrapper"):

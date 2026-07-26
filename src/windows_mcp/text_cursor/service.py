@@ -1,8 +1,9 @@
-"""Orchestrate TextCursor actions on the dedicated COM worker thread.
+"""Orchestrate TextCursor actions on the server's main-thread STA.
 
 Collaborators (find_caret_provider, make_snapshot, apply_write,
-snapshot_position, execute_sync) are referenced by their module-level names so
-that tests can substitute them with monkeypatch.setattr on this module.
+snapshot_position, run_get_info, run_write) are referenced by their
+module-level names so that tests can substitute them with
+monkeypatch.setattr on this module.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from .models import CursorAction, CursorToolResult, GetInfoAction
 from .discovery import find_caret_provider
 from .operations import WriteAction, apply_write
 from .snapshots import make_snapshot, snapshot_position
-from .worker import EXECUTOR
 
 
 def run_get_info(action: GetInfoAction) -> CursorToolResult:
@@ -75,18 +75,6 @@ def run_write(action: WriteAction) -> CursorToolResult:
     )
 
 
-def execute_sync(action: CursorAction) -> CursorToolResult:
-    """Execute one action on the dedicated COM worker thread.
-
-    COM is initialized once per worker thread and the UIA client is cached on
-    first use; there is no per-call CoInitialize/CoUninitialize or CreateObject.
-    """
-    if isinstance(action, GetInfoAction):
-        return run_get_info(action)
-
-    return run_write(action)
-
-
 async def run_tool(action: CursorAction) -> CursorToolResult:
     """
     Inspect or manipulate the focused Windows text control through UIA.
@@ -108,9 +96,6 @@ async def run_tool(action: CursorAction) -> CursorToolResult:
     if action.delay > 0:
         await asyncio.sleep(action.delay)
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        EXECUTOR,
-        execute_sync,
-        action,
-    )
+    if isinstance(action, GetInfoAction):
+        return run_get_info(action)
+    return run_write(action)

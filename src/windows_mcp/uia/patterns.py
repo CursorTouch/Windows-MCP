@@ -1519,10 +1519,12 @@ class TextRange:
         """
         Call IUIAutomationTextRange::GetText.
         maxLength: int, the maximum length of the string to return, or -1 if no limit is required.
-        Return str, the plain text of the text range.
+        Return str, the plain text of the text range. A provider that yields no
+            text is normalized to an empty string so callers can treat the
+            result as a str unconditionally.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtextrange-gettext
         """
-        return self.textRange.GetText(maxLength)
+        return self.textRange.GetText(maxLength) or ""
 
     def Move(self, unit: int, count: int, waitTime: float = OPERATION_WAIT_TIME) -> int:
         """
@@ -1626,6 +1628,68 @@ class TextRange:
         time.sleep(waitTime)
         return ret
 
+    def IsDegenerate(self) -> bool:
+        """
+        Return bool, True if this is an empty (degenerate) range such as a caret,
+            i.e. its Start and End endpoints are at the same location.
+        A convenience built on CompareEndpoints(Start, self, End) == 0.
+        """
+        return self.CompareEndpoints(TextPatternRangeEndpoint.Start, self, TextPatternRangeEndpoint.End) == 0
+
+    def Collapse(self, toEnd: bool = False, waitTime: float = 0.0) -> bool:
+        """
+        Collapse the range to a single point (a degenerate range), discarding its span.
+        toEnd: bool, False collapses to the Start endpoint, True collapses to the End endpoint.
+        waitTime: float, defaults to 0 because this only manipulates the client-side range
+            and does not drive any UI.
+        Return bool, True if succeed otherwise False.
+        A convenience built on MoveEndpointByRange.
+        """
+        if toEnd:
+            return self.MoveEndpointByRange(
+                TextPatternRangeEndpoint.Start, self, TextPatternRangeEndpoint.End, waitTime
+            )
+        return self.MoveEndpointByRange(
+            TextPatternRangeEndpoint.End, self, TextPatternRangeEndpoint.Start, waitTime
+        )
+
+    def GetStartOffset(self, waitTime: float = 0.0) -> int:
+        """
+        Return int, the offset of this range's Start endpoint from DocumentRange start,
+            in TextUnit.Character steps. Derived by walking a collapsed clone back to the
+            document start, so cost can be O(offset) on providers with a linear Move.
+        waitTime: float, defaults to 0 because this is a read-only query.
+        """
+        clone = self.Clone()
+        clone.Collapse(toEnd=False, waitTime=waitTime)
+        # 0x7FFFFFFF (INT32 max) is larger than any real document, so a single
+        # backward Move lands on DocumentRange start; negate the (negative)
+        # moved count to get the positive offset.
+        moved = clone.Move(TextUnit.Character, -0x7FFFFFFF, waitTime)
+        return -moved
+
+    def GetTextBefore(self, count: int, waitTime: float = 0.0) -> str:
+        """
+        Return str, up to `count` characters immediately before this range's Start endpoint.
+        waitTime: float, defaults to 0 because this is a read-only query.
+        """
+        clone = self.Clone()
+        clone.Collapse(toEnd=False, waitTime=waitTime)
+        clone.MoveEndpointByUnit(
+            TextPatternRangeEndpoint.Start, TextUnit.Character, -count, waitTime
+        )
+        return clone.GetText()
+
+    def GetTextAfter(self, count: int, waitTime: float = 0.0) -> str:
+        """
+        Return str, up to `count` characters immediately after this range's End endpoint.
+        waitTime: float, defaults to 0 because this is a read-only query.
+        """
+        clone = self.Clone()
+        clone.Collapse(toEnd=True, waitTime=waitTime)
+        clone.MoveEndpointByUnit(TextPatternRangeEndpoint.End, TextUnit.Character, count, waitTime)
+        return clone.GetText()
+
 
 class TextChildPattern:
     def __init__(self, pattern=None):
@@ -1720,6 +1784,14 @@ class TextPattern:
                 textRanges.append(TextRange(textRange=ele))
             return textRanges
         return []
+
+    def GetFirstSelection(self) -> TextRange | None:
+        """
+        Return `TextRange` or None, the first currently selected range, or None if the
+            control has no selection. A convenience over GetSelection()[0].
+        """
+        selections = self.GetSelection()
+        return selections[0] if selections else None
 
     def GetVisibleRanges(self) -> List[TextRange]:
         """

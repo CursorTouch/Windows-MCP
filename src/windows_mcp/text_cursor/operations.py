@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple, Union
 
+from windows_mcp.uia import TextUnit
+
+from .discovery import UIACaretInfo
 from .models import (
     CollapseSelectionAction,
     MoveAbsoluteAction,
@@ -19,7 +22,6 @@ from .ranges import (
     make_range,
     verify,
 )
-from .uia import UIACaretInfo, TextUnit
 
 
 class WriteActionResult(NamedTuple):
@@ -30,7 +32,7 @@ class WriteActionResult(NamedTuple):
 def apply_move_relative(action: MoveRelativeAction, caret_info: UIACaretInfo) -> WriteActionResult:
     # For a selection, resolve which endpoint the move is relative to.
     target = get_origin_from_range(caret_info, action.origin)
-    target_delta = target.move(TextUnit.Character, action.delta)
+    target_delta = target.Move(TextUnit.Character, action.delta, waitTime=0)
     apply_change(caret_info, target)
     verified = verify(caret_info, target, action.verify)
     return WriteActionResult(verified, {"target_delta": target_delta})
@@ -48,11 +50,11 @@ def apply_select_relative(
 ) -> WriteActionResult:
     origin = get_origin_from_range(caret_info, action.origin)
 
-    start_marker = origin.clone()
-    end_marker = origin.clone()
+    start_marker = origin.Clone()
+    end_marker = origin.Clone()
 
-    target_start_delta = start_marker.move(TextUnit.Character, action.start_delta)
-    target_end_delta = end_marker.move(TextUnit.Character, action.end_delta)
+    target_start_delta = start_marker.Move(TextUnit.Character, action.start_delta, waitTime=0)
+    target_end_delta = end_marker.Move(TextUnit.Character, action.end_delta, waitTime=0)
 
     target = make_range(start_marker, end_marker)
 
@@ -93,7 +95,7 @@ def apply_select_all(
     action: SelectAllAction,
     caret_info: UIACaretInfo,
 ) -> WriteActionResult:
-    target = caret_info.text_pattern.document_range()
+    target = caret_info.text_pattern.DocumentRange
     apply_change(caret_info, target)
     verified = verify(caret_info, target, action.verify)
     return WriteActionResult(verified, {})
@@ -103,8 +105,8 @@ def apply_collapse_selection(
     action: CollapseSelectionAction,
     caret_info: UIACaretInfo,
 ) -> WriteActionResult:
-    target = caret_info.text_range.clone()
-    target.collapse_range(to_end=(action.edge == "end"))
+    target = caret_info.text_range.Clone()
+    target.Collapse(toEnd=(action.edge == "end"))
 
     apply_change(caret_info, target)
     verified = verify(caret_info, target, action.verify)
