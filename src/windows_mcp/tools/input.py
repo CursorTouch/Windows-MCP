@@ -55,7 +55,10 @@ def _as_loc(value: list | str | None) -> list | None:
     """
     if value is None or isinstance(value, list):
         return value
-    return json.loads(value)
+    parsed = json.loads(value)
+    if not isinstance(parsed, list):
+        raise ValueError("Location must be a JSON list")
+    return parsed
 
 
 def _as_point(value: object, name: str) -> list[int]:

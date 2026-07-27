@@ -1,6 +1,4 @@
-import os
 
-import pytest
 
 from windows_mcp.filesystem.service import (
     read_file,

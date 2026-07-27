@@ -104,6 +104,10 @@ def _prepare_env() -> dict[str, str]:
     priority and registry entries are appended to fill in missing paths.
     """
     env = os.environ.copy()
+    # PYTHONHOME belongs to the server's interpreter and must not leak into
+    # user PowerShell sessions, where it can redirect another Python install
+    # to the server's standard library.
+    env.pop("PYTHONHOME", None)
 
     try:
         machine_vars, machine_path, machine_pathext = _read_reg_env(
