@@ -4,6 +4,7 @@ from windows_mcp.tree.views import (
     BoundingBox,
     Center,
     ScrollElementNode,
+    SemanticNode,
     TreeElementNode,
     TreeState,
 )
@@ -63,6 +64,48 @@ class TestTreeState:
     def test_interactive_elements_to_string_empty(self):
         ts = TreeState()
         assert ts.interactive_elements_to_string() == "No interactive elements"
+
+    def test_truncated_appends_note_to_interactive_elements(
+        self, sample_tree_element_node: TreeElementNode
+    ) -> None:
+        ts = TreeState(
+            interactive_nodes=[sample_tree_element_node], truncated=True, element_limit=500
+        )
+        result = ts.interactive_elements_to_string()
+        assert "500-element capture limit" in result
+        assert "WINDOWS_MCP_MAX_TREE_ELEMENTS" in result
+
+    def test_truncated_appends_note_to_scrollable_elements(
+        self, sample_scroll_element_node: ScrollElementNode
+    ) -> None:
+        ts = TreeState(scrollable_nodes=[sample_scroll_element_node], truncated=True, element_limit=42)
+        result = ts.scrollable_elements_to_string()
+        assert "42-element capture limit" in result
+
+    def test_not_truncated_omits_note(self, sample_tree_element_node: TreeElementNode) -> None:
+        ts = TreeState(interactive_nodes=[sample_tree_element_node], truncated=False)
+        result = ts.interactive_elements_to_string()
+        assert "truncated" not in result
+
+    def test_truncated_with_no_elements_still_shows_note(self) -> None:
+        ts = TreeState(truncated=True, element_limit=10)
+        result = ts.interactive_elements_to_string()
+        assert result == "No interactive elements"
+
+    def test_truncated_appends_note_to_semantic_tree(self) -> None:
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(control_type="Window", element_type="window", name="Notepad")
+        root.add_child(window)
+        ts = TreeState(semantic_tree_root=root, truncated=True, element_limit=500)
+        result = ts.semantic_tree_to_string()
+        assert 'window "Notepad"' in result
+        assert "500-element capture limit" in result
+
+    def test_semantic_tree_not_truncated_omits_note(self) -> None:
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        ts = TreeState(semantic_tree_root=root, truncated=False)
+        result = ts.semantic_tree_to_string()
+        assert "truncated" not in result
 
     def test_interactive_elements_to_string_with_elements(
         self, sample_tree_element_node: TreeElementNode

@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 import pytest
 from windows_mcp.desktop.views import Size
+from windows_mcp.tree.budget import TreeElementBudget
 from windows_mcp.tree.service import Tree, _is_comtypes_variant_ord_typeerror
 from windows_mcp.tree.views import BoundingBox, SemanticNode
 from windows_mcp.uia import Rect
@@ -180,3 +181,134 @@ class TestTreeTraversal:
 
         assert interactive_nodes == []
         assert semantic_root.children == []
+
+
+def _make_button_child(name: str, left: int) -> MagicMock:
+    child = MagicMock()
+    child.CachedIsOffscreen = False
+    child.CachedControlTypeName = "ButtonControl"
+    child.CachedIsControlElement = True
+    child.CachedBoundingRectangle = Rect(left, 10, left + 40, 60)
+    child.CachedIsEnabled = True
+    child.CachedHasKeyboardFocus = False
+    child.CachedName = name
+    child.CachedLocalizedControlType = "button"
+    child.CachedAcceleratorKey = ""
+    child.CachedHelpText = ""
+    child.GetCachedPropertyValue.return_value = 43
+    return child
+
+
+def _make_pane_parent() -> MagicMock:
+    parent = MagicMock()
+    parent.CachedIsOffscreen = False
+    parent.CachedControlTypeName = "PaneControl"
+    parent.CachedIsControlElement = True
+    parent.CachedBoundingRectangle = Rect(0, 0, 500, 500)
+    parent.CachedIsEnabled = True
+    parent.CachedIsKeyboardFocusable = False
+    parent.CachedName = ""
+    # Disable the scrollable-container branch — irrelevant to this test and
+    # would otherwise call random_point_within_bounding_box on an unconfigured mock.
+    parent.GetCachedPattern.return_value = None
+    return parent
+
+
+class TestElementBudgetStopsTraversal:
+    """A huge flat list/grid (e.g. thousands of UIA rows) must not be walked in full —
+    see budget.py. These tests exercise the wiring in tree_traversal / get_window_wise_nodes.
+    """
+
+    def test_stops_appending_and_recursing_once_budget_exhausted(
+        self, tree_instance, monkeypatch
+    ):
+        parent = _make_pane_parent()
+        children = [_make_button_child(f"btn{i}", 10 * i) for i in range(5)]
+
+        def fake_get_children(node, cache_request):
+            return children if node is parent else []
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            fake_get_children,
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {43: "PushButton"})
+
+        tree_instance.element_budget = TreeElementBudget(limit=3)
+
+        interactive_nodes = []
+        tree_instance.tree_traversal(
+            parent,
+            Rect(0, 0, 500, 500),
+            "Window",
+            False,
+            interactive_nodes,
+            [],
+            [],
+            [],
+        )
+
+        assert len(interactive_nodes) == 3
+        assert tree_instance.element_budget.truncated is True
+        assert tree_instance.element_budget.count == 3
+
+    def test_all_elements_captured_when_under_budget(self, tree_instance, monkeypatch):
+        parent = _make_pane_parent()
+        children = [_make_button_child(f"btn{i}", 10 * i) for i in range(5)]
+
+        def fake_get_children(node, cache_request):
+            return children if node is parent else []
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            fake_get_children,
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {43: "PushButton"})
+
+        tree_instance.element_budget = TreeElementBudget(limit=10)
+
+        interactive_nodes = []
+        tree_instance.tree_traversal(
+            parent,
+            Rect(0, 0, 500, 500),
+            "Window",
+            False,
+            interactive_nodes,
+            [],
+            [],
+            [],
+        )
+
+        assert len(interactive_nodes) == 5
+        assert tree_instance.element_budget.truncated is False
+
+    def test_get_window_wise_nodes_skips_remaining_windows_once_exhausted(
+        self, tree_instance, monkeypatch
+    ):
+        tree_instance.element_budget = TreeElementBudget(limit=1)
+        tree_instance.element_budget.try_consume(1)
+        assert tree_instance.element_budget.exhausted is True
+
+        # `tree_instance.desktop` is a weakref.proxy to a mock that only lives for the
+        # duration of the fixture — swap in a plain, still-alive mock before touching it.
+        live_desktop = MagicMock()
+        live_desktop.is_window_browser.return_value = False
+        tree_instance.desktop = live_desktop
+
+        calls = []
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.ControlFromHandle",
+            lambda handle: MagicMock(ClassName="SomeWindow", Name="Some Window"),
+        )
+
+        def fake_get_nodes(self, handle, is_browser=False, wait_time=0, use_dom=False):
+            calls.append(handle)
+            return ([], [], [], None)
+
+        monkeypatch.setattr(Tree, "get_nodes", fake_get_nodes)
+
+        tree_instance.get_window_wise_nodes(
+            windows_handles=[111, 222, 333], active_window_flag=False
+        )
+
+        assert calls == []

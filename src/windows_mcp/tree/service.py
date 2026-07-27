@@ -5,6 +5,7 @@ from _ctypes import COMError
 from windows_mcp.tree.config import INTERACTIVE_CONTROL_TYPE_NAMES, DOCUMENT_CONTROL_TYPE_NAMES, INFORMATIVE_CONTROL_TYPE_NAMES, DEFAULT_ACTIONS, INTERACTIVE_ROLES, THREAD_MAX_RETRIES, STRUCTURAL_CONTROL_TYPE_NAMES
 from windows_mcp.tree.views import TreeElementNode, ScrollElementNode, TextElementNode, Center, BoundingBox, TreeState, SemanticNode, _prune_structural, _reverse_children_order
 from windows_mcp.tree.cache_utils import CacheRequestFactory, CachedControlHelper
+from windows_mcp.tree.budget import TreeElementBudget, resolve_max_tree_elements
 from windows_mcp.tree.utils import random_point_within_bounding_box
 from windows_mcp.tree import ia2 as ia2_traversal
 from typing import TYPE_CHECKING,Optional,Any
@@ -51,6 +52,7 @@ class Tree:
         self.dom_is_ia2:bool=False
         self.screen_box=desktop.get_screen_box()
         self.tree_state=None
+        self.element_budget=TreeElementBudget(resolve_max_tree_elements())
 
 
     def get_state(self,active_window_handle:int|None,other_windows_handles:list[int],use_dom:bool=False)->TreeState:
@@ -58,6 +60,9 @@ class Tree:
         self.dom = None
         self.dom_bounding_box = None
         self.dom_is_ia2 = False
+        # Fresh budget per capture — huge lists/grids (e.g. thousands of rows) must not
+        # stall UI Automation or blow up the serialized response.
+        self.element_budget = TreeElementBudget(resolve_max_tree_elements())
         start_time = perf_counter()
         profile_enabled = _snapshot_profile_enabled()
 
@@ -129,9 +134,16 @@ class Tree:
         if not status:
             logger.warning(f"[Tree] {len(failed_handles)} window(s) failed to capture — UI services may be loading")
         end_time = perf_counter()
+        if self.element_budget.truncated:
+            logger.warning(
+                "[Tree] Capture truncated at %d elements (limit=%d) — some UI elements were "
+                "not visited. Set WINDOWS_MCP_MAX_TREE_ELEMENTS to raise the limit.",
+                self.element_budget.count,
+                self.element_budget.limit,
+            )
         if profile_enabled:
             logger.info(
-                "Snapshot tree profile: windows=%d active_window=%s interactive_nodes=%d scrollable_nodes=%d dom_nodes=%d failed_windows=%d total_ms=%.1f use_dom=%s",
+                "Snapshot tree profile: windows=%d active_window=%s interactive_nodes=%d scrollable_nodes=%d dom_nodes=%d failed_windows=%d total_ms=%.1f use_dom=%s truncated=%s",
                 len(windows_handles),
                 active_window_handle is not None,
                 len(interactive_nodes),
@@ -140,6 +152,7 @@ class Tree:
                 len(failed_handles),
                 (end_time - start_time) * 1000,
                 use_dom,
+                self.element_budget.truncated,
             )
         logger.info(f"[Tree] Tree State capture took {end_time - start_time:.2f} seconds")
         return TreeState(
@@ -151,6 +164,8 @@ class Tree:
             dom_informative_nodes=dom_informative_nodes,
             capture_sec=end_time - start_time,
             semantic_tree_root=desktop_root,
+            truncated=self.element_budget.truncated,
+            element_limit=self.element_budget.limit,
         )
 
     def get_window_wise_nodes(self,windows_handles:list[int],active_window_flag:bool,use_dom:bool=False) -> tuple[list[TreeElementNode],list[ScrollElementNode],list[TextElementNode],list[int],list[SemanticNode]]:
@@ -180,6 +195,13 @@ class Tree:
 
         retry_counts = {handle: 0 for handle in windows_handles}
         for handle, is_browser in task_inputs:
+            if self.element_budget.exhausted:
+                logger.debug(
+                    "[Tree] Element budget exhausted (%d/%d) — skipping remaining windows",
+                    self.element_budget.count,
+                    self.element_budget.limit,
+                )
+                break
             for attempt in range(THREAD_MAX_RETRIES + 1):
                 try:
                     result = self.get_nodes(handle, is_browser, wait_time=0.5 * (2 ** (attempt - 1)) if attempt > 0 else 0, use_dom=use_dom)
@@ -358,6 +380,7 @@ class Tree:
                             metadata['vertical_scroll_percent']=round(scroll_pattern.VerticalScrollPercent,2) if scroll_pattern.VerticallyScrollable else 0
 
                             sem_scroll_name = name.strip() or automation_id or localized_control_type.capitalize() or "''"
+                            self.element_budget.try_consume()
                             scrollable_nodes.append(ScrollElementNode(**{
                                 'name':sem_scroll_name,
                                 'control_type':localized_control_type.title(),
@@ -574,6 +597,7 @@ class Tree:
                                     'window_name':window_name,
                                     'metadata':metadata
                                 })
+                                self.element_budget.try_consume()
                                 dom_interactive_nodes.append(tree_node)
                                 self._dom_correction(node, dom_interactive_nodes, window_name)
                             else:
@@ -588,6 +612,7 @@ class Tree:
                                         'window_name':window_name,
                                         'metadata':metadata
                                     })
+                                    self.element_budget.try_consume()
                                     interactive_nodes.append(tree_node)
                                     if current_semantic_node is not None:
                                         current_semantic_node.add_child(SemanticNode(
@@ -652,6 +677,11 @@ class Tree:
 
             # Recursively traverse the tree the right to left for normal apps and for DOM traverse from left to right
             for child in (children if is_dom else reversed(children)):
+                if self.element_budget.exhausted:
+                    # Stop descending once the element budget is spent — this is what
+                    # bounds traversal time on huge flat lists/grids (thousands of rows),
+                    # not just the size of the appended node lists.
+                    break
                 try:
                     # Check if the child is a DOM element
                     if is_browser and child.CachedAutomationId=="RootWebArea":
@@ -773,8 +803,21 @@ class Tree:
                     )
                     ia2_ms = (perf_counter() - ia2_t0) * 1000
                     if ia2_result:
-                        dom_interactive_nodes.extend(ia2_result.interactive_nodes)
-                        dom_informative_nodes.extend(ia2_result.informative_nodes)
+                        # traverse_window() already walked the whole IAccessible tree before
+                        # returning, so this can't bound traversal time — but it still caps
+                        # how much of the result gets appended/serialized.
+                        remaining = self.element_budget.remaining
+                        capped_interactive = ia2_result.interactive_nodes[:remaining]
+                        remaining_after_interactive = max(0, remaining - len(capped_interactive))
+                        capped_informative = ia2_result.informative_nodes[:remaining_after_interactive]
+                        if (
+                            len(capped_interactive) < len(ia2_result.interactive_nodes)
+                            or len(capped_informative) < len(ia2_result.informative_nodes)
+                        ):
+                            self.element_budget.truncated = True
+                        self.element_budget.try_consume(len(capped_interactive) + len(capped_informative))
+                        dom_interactive_nodes.extend(capped_interactive)
+                        dom_informative_nodes.extend(capped_informative)
                         # Pin the bbox to the FIRST Firefox window walked (the active
                         # one — it's first in windows_handles). Subsequent windows
                         # contribute nodes but mustn't clobber the active window's bbox.
