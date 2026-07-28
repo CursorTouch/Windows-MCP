@@ -20,7 +20,15 @@ DEFAULT_MAX_TREE_ELEMENTS = 500
 
 
 def resolve_max_tree_elements(env: "os._Environ[str] | dict[str, str] | None" = None) -> int:
-    """Read WINDOWS_MCP_MAX_TREE_ELEMENTS, falling back to the default on any invalid value."""
+    """Read the tree-capture element limit from the environment.
+
+    Args:
+        env: Mapping to read from. Defaults to ``os.environ``.
+
+    Returns:
+        The configured limit, or ``DEFAULT_MAX_TREE_ELEMENTS`` if the
+        variable is unset, blank, non-numeric, or not a positive integer.
+    """
     source = os.environ if env is None else env
     raw = source.get("WINDOWS_MCP_MAX_TREE_ELEMENTS", "")
     if not raw.strip():
@@ -47,7 +55,7 @@ def resolve_max_tree_elements(env: "os._Environ[str] | dict[str, str] | None" = 
 class TreeElementBudget:
     """Tracks how many output-affecting elements a tree traversal has captured."""
 
-    def __init__(self, limit: int = DEFAULT_MAX_TREE_ELEMENTS):
+    def __init__(self, limit: int = DEFAULT_MAX_TREE_ELEMENTS) -> None:
         self.limit = max(1, limit)
         self.count = 0
         self.truncated = False
@@ -65,10 +73,16 @@ class TreeElementBudget:
 
         Returns False (and marks the budget truncated) once the limit is
         reached; the caller should then stop appending/recursing further.
+        `count` is hard-capped at `limit` — a single over-large `amount`
+        cannot push it past the configured budget.
         """
         if amount <= 0:
             return not self.exhausted
         if self.exhausted:
+            self.truncated = True
+            return False
+        if amount > self.remaining:
+            self.count = self.limit
             self.truncated = True
             return False
         self.count += amount

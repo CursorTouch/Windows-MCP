@@ -650,6 +650,7 @@ class Tree:
                          if is_text:
                              if is_browser and is_dom:
                                  name = node.CachedName
+                                 self.element_budget.try_consume()
                                  dom_informative_nodes.append(TextElementNode(
                                      text=name.strip(),
                                  ))

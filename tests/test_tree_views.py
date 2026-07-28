@@ -98,7 +98,7 @@ class TestTreeState:
         root.add_child(window)
         ts = TreeState(semantic_tree_root=root, truncated=True, element_limit=500)
         result = ts.semantic_tree_to_string()
-        assert 'window "Notepad"' in result
+        assert "window \"Notepad\"" in result
         assert "500-element capture limit" in result
 
     def test_semantic_tree_not_truncated_omits_note(self) -> None:

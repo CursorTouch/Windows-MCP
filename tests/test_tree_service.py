@@ -199,6 +199,18 @@ def _make_button_child(name: str, left: int) -> MagicMock:
     return child
 
 
+def _make_text_child(text: str, left: int) -> MagicMock:
+    child = MagicMock()
+    child.CachedIsOffscreen = False
+    child.CachedControlTypeName = "TextControl"
+    child.CachedIsControlElement = True
+    child.CachedBoundingRectangle = Rect(left, 10, left + 40, 60)
+    child.CachedIsEnabled = True
+    child.CachedIsKeyboardFocusable = False
+    child.CachedName = text
+    return child
+
+
 def _make_pane_parent() -> MagicMock:
     parent = MagicMock()
     parent.CachedIsOffscreen = False
@@ -281,6 +293,40 @@ class TestElementBudgetStopsTraversal:
 
         assert len(interactive_nodes) == 5
         assert tree_instance.element_budget.truncated is False
+
+    def test_dom_informative_text_nodes_consume_budget(self, tree_instance, monkeypatch):
+        # Text-heavy DOM pages must not bypass the budget just because the nodes
+        # are informative rather than interactive — see PR review finding on
+        # unbudgeted `dom_informative_nodes.append(TextElementNode(...))`.
+        parent = _make_pane_parent()
+        children = [_make_text_child(f"paragraph {i}", 10 * i) for i in range(5)]
+
+        def fake_get_children(node, cache_request):
+            return children if node is parent else []
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            fake_get_children,
+        )
+
+        tree_instance.element_budget = TreeElementBudget(limit=3)
+
+        dom_informative_nodes = []
+        tree_instance.tree_traversal(
+            parent,
+            Rect(0, 0, 500, 500),
+            "Window",
+            True,
+            [],
+            [],
+            [],
+            dom_informative_nodes,
+            is_dom=True,
+        )
+
+        assert len(dom_informative_nodes) == 3
+        assert tree_instance.element_budget.truncated is True
+        assert tree_instance.element_budget.count == 3
 
     def test_get_window_wise_nodes_skips_remaining_windows_once_exhausted(
         self, tree_instance, monkeypatch

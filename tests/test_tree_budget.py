@@ -35,8 +35,8 @@ class TestTreeElementBudget:
     def test_try_consume_batch_exceeding_remaining(self):
         budget = TreeElementBudget(limit=5)
         assert budget.try_consume(3) is True
-        assert budget.try_consume(10) is True
-        assert budget.count == 13
+        assert budget.try_consume(10) is False
+        assert budget.count == 5
         assert budget.truncated is True
 
     def test_try_consume_zero_amount_does_not_change_count(self):
@@ -52,6 +52,7 @@ class TestTreeElementBudget:
         budget = TreeElementBudget(limit=2)
         budget.try_consume(10)
         assert budget.remaining == 0
+        assert budget.count == 2
 
 
 class TestResolveMaxTreeElements:
@@ -59,7 +60,10 @@ class TestResolveMaxTreeElements:
         assert resolve_max_tree_elements({}) == DEFAULT_MAX_TREE_ELEMENTS
 
     def test_default_when_blank(self):
-        assert resolve_max_tree_elements({"WINDOWS_MCP_MAX_TREE_ELEMENTS": "  "}) == DEFAULT_MAX_TREE_ELEMENTS
+        assert (
+            resolve_max_tree_elements({"WINDOWS_MCP_MAX_TREE_ELEMENTS": "  "})
+            == DEFAULT_MAX_TREE_ELEMENTS
+        )
 
     def test_valid_override(self):
         assert resolve_max_tree_elements({"WINDOWS_MCP_MAX_TREE_ELEMENTS": "150"}) == 150
