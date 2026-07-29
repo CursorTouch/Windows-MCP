@@ -22,7 +22,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from textwrap import dedent
 from enum import Enum
-from typing import Any
+from typing import Any, NoReturn
 import logging
 import asyncio
 import shlex
@@ -178,6 +178,27 @@ def _watchdog_enabled() -> bool:
     return value.strip().lower() not in {"off", "0", "false", "no", "disabled"}
 
 
+def _exit_missing_dependency(exc: ModuleNotFoundError) -> NoReturn:
+    """Report a missing runtime dependency on stderr and exit non-zero.
+
+    A partially populated venv -- an interrupted `uv sync`, or one invalidated
+    by an interpreter change -- leaves `windows_mcp` importable next to missing
+    third-party packages. Without this guard the traceback is the only output,
+    and MCP hosts do not surface it: Claude Desktop reports "Server
+    disconnected" alone, so neither the failing module nor the remedy reaches
+    the user. Written to stderr because stdout carries the stdio protocol
+    stream. `uv sync` repairs any declared dependency, so the message points
+    there rather than mapping the import name back to its distribution.
+    """
+    logger.debug("Startup import failed", exc_info=exc)
+    click.echo(
+        f"windows-mcp: cannot start -- {exc}. The environment looks partially "
+        f"installed; run `uv sync` in the extension directory, then restart the client.",
+        err=True,
+    )
+    sys.exit(1)
+
+
 def _build_mcp() -> FastMCP:
     """Create the MCP server instance."""
     global _mcp
@@ -185,9 +206,12 @@ def _build_mcp() -> FastMCP:
     if _mcp is not None:
         return _mcp
 
-    from windows_mcp.infrastructure import PostHogAnalytics
-    from windows_mcp.desktop.service import Desktop
-    from windows_mcp.tools import register_all
+    try:
+        from windows_mcp.infrastructure import PostHogAnalytics
+        from windows_mcp.desktop.service import Desktop
+        from windows_mcp.tools import register_all
+    except ModuleNotFoundError as exc:
+        _exit_missing_dependency(exc)
 
     @asynccontextmanager
     async def lifespan(app: FastMCP):
