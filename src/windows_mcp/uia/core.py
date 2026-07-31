@@ -46,6 +46,7 @@ TreeNode = Any
 from .enums import *  # noqa: E402
 from .enums import _INPUTUnion  # noqa: E402
 from .exceptions import from_com_error  # noqa: E402
+from .comtypes_cache import safe_get_module  # noqa: E402
 
 
 class _AutomationClient:
@@ -66,7 +67,9 @@ class _AutomationClient:
         tryCount = 3
         for retry in range(tryCount):
             try:
-                self.UIAutomationCore = comtypes.client.GetModule("UIAutomationCore.dll")
+                self.UIAutomationCore = safe_get_module(
+                    "UIAutomationCore.dll", required_attr="IUIAutomation"
+                )
                 self.IUIAutomation = comtypes.client.CreateObject(
                     "{ff48dba4-60ef-4201-aa87-54103eef594e}",
                     interface=self.UIAutomationCore.IUIAutomation,

@@ -46,7 +46,9 @@ def _iaccessible():
         import comtypes.client
         from comtypes import GUID
 
-        comtypes.client.GetModule("oleacc.dll")
+        from windows_mcp.uia.comtypes_cache import safe_get_module
+
+        safe_get_module("oleacc.dll", required_attr="IAccessible")
         from comtypes.gen.Accessibility import IAccessible  # type: ignore
 
         _IAccessible = IAccessible
