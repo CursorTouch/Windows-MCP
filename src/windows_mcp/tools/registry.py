@@ -47,5 +47,5 @@ def register(mcp, *, get_desktop, get_analytics):
                 return registry.list_key(path=path)
             else:
                 return 'Error: mode must be "get", "set", "delete", or "list".'
-        except Exception as e:
+        except Exception:
             raise

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,7 +48,25 @@ class WindowsMCPConfig:
     source_path: Path | None = None
 
 
-CONFIG_DIR = Path("~/.windows-mcp").expanduser()
+def _resolve_config_dir() -> Path:
+    """Resolve a writable config directory even without a user home."""
+    explicit = os.environ.get("WINDOWS_MCP_CONFIG_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if home:
+        return Path(home) / ".windows-mcp"
+
+    fallback = (
+        os.environ.get("LOCALAPPDATA")
+        or os.environ.get("APPDATA")
+        or tempfile.gettempdir()
+    )
+    return Path(fallback) / "windows-mcp"
+
+
+CONFIG_DIR = _resolve_config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 

@@ -38,5 +38,5 @@ def register(mcp, *, get_desktop, get_analytics):
                 return process.kill_process(name=name, pid=pid, force=force)
             else:
                 return 'Error: mode must be either "list" or "kill".'
-        except Exception as e:
+        except Exception:
             raise

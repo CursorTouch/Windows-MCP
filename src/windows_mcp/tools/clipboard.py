@@ -48,5 +48,5 @@ def register(mcp, *, get_desktop, get_analytics):
                     win32clipboard.CloseClipboard()
             else:
                 return 'Error: mode must be either "get" or "set".'
-        except Exception as e:
+        except Exception:
             raise

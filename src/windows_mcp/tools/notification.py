@@ -41,5 +41,5 @@ def register(mcp, *, get_desktop, get_analytics):
     ) -> str:
         try:
             return notifications.send_notification(title, message, app_id)
-        except Exception as e:
+        except Exception:
             raise

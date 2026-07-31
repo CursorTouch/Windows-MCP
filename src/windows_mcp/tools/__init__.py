@@ -5,17 +5,23 @@ from windows_mcp.tools import (
     clipboard,
     display,
     filesystem,
+    health,
     input,
     multi,
     notification,
     process,
     registry,
+    safety_dry_run,
     scrape,
     shell,
     snapshot,
+    system_query,
 )
 
 _MODULES = [
+    health,
+    system_query,
+    safety_dry_run,
     app,
     display,
     shell,

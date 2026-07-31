@@ -23,5 +23,5 @@ def register(mcp, *, get_desktop, get_analytics):
         try:
             response, status_code = PowerShellExecutor.execute_command(command, timeout)
             return f"Response: {response}\nStatus Code: {status_code}"
-        except Exception as e:
+        except Exception:
             raise
