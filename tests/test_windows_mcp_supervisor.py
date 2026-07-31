@@ -1,0 +1,468 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+
+
+@pytest.fixture()
+def supervisor() -> ModuleType:
+    path = Path(__file__).resolve().parents[1] / "scripts" / "windows_mcp_supervisor.py"
+    spec = importlib.util.spec_from_file_location("windows_mcp_supervisor_test", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def healthy_status(command: str, pid: int = 1234) -> dict[str, object]:
+    return {
+        "uptime_seconds": 300,
+        "channels": [
+            {
+                "name": "main",
+                "enabled": True,
+                "transport_kind": "stdio",
+                "probe_status": "ok",
+                "details": [
+                    {"key": "pid", "value": str(pid)},
+                    {"key": "command", "value": command},
+                ],
+            }
+        ],
+    }
+
+
+def poll_metrics(timestamp: float) -> str:
+    return (
+        "commands_poll_last_successful_timestamp_seconds"
+        '{otel_scope_name="controlplane"} '
+        f"{timestamp}\n"
+    )
+
+
+def test_command_normalization_and_root_detection(supervisor: ModuleType) -> None:
+    command = (
+        r"D:\Projetos\WINDOWS-MCP-TEST\.venv\Scripts\python.exe "
+        "-m windows_mcp serve --transport stdio"
+    )
+    assert supervisor.normalize_command(command) == supervisor.normalize_command(
+        supervisor.EXPECTED_MCP_COMMAND
+    )
+    assert supervisor.command_references_root(command)
+    assert supervisor.command_references_root(supervisor.EXPECTED_MCP_COMMAND)
+
+
+def test_profile_guard_replaces_uv_run(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = tmp_path / "profile.yaml"
+    backup_dir = tmp_path / "backups"
+    profile.write_text(
+        json.dumps(
+            {
+                "control_plane": {"api_key": "env:TEST_KEY"},
+                "mcp": {
+                    "commands": [
+                        {
+                            "channel": "main",
+                            "command": "C:/tools/uv.exe run windows-mcp serve --transport stdio",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(supervisor, "PROFILE_FILE", profile)
+    monkeypatch.setattr(supervisor, "PROFILE_BACKUP_DIR", backup_dir)
+    monkeypatch.setattr(supervisor, "log", lambda *args, **kwargs: None)
+
+    result = supervisor.ensure_profile_command()
+
+    assert result["ok"] is True
+    assert result["repaired"] is True
+    repaired = json.loads(profile.read_text(encoding="utf-8"))
+    assert repaired["mcp"]["commands"] == [
+        {"channel": "main", "command": supervisor.EXPECTED_MCP_COMMAND}
+    ]
+    assert list(backup_dir.iterdir())
+
+
+def test_transport_aware_health_accepts_valid_runtime(
+    supervisor: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 2_000_000_000.0
+    monkeypatch.setattr(supervisor, "pid_alive", lambda pid: pid == 1234)
+
+    result = supervisor.evaluate_runtime_health(
+        healthy_status(supervisor.EXPECTED_MCP_COMMAND),
+        {"main_channel_probe_status": "ok"},
+        poll_metrics(now - 10),
+        [],
+        {1234},
+        now_epoch=now,
+    )
+
+    assert result["ok"] is True
+    assert result["command_ok"] is True
+    assert result["process_ok"] is True
+    assert result["poll_ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("status", "system", "metrics", "events", "owned", "expected_error"),
+    [
+        (
+            healthy_status("C:/tools/uv.exe run windows-mcp serve --transport stdio"),
+            {"main_channel_probe_status": "ok"},
+            poll_metrics(1_999_999_990.0),
+            [],
+            {1234},
+            "unexpected MCP command",
+        ),
+        (
+            healthy_status(
+                "D:/Projetos/WINDOWS-MCP-TEST/.venv/Scripts/python.exe -m windows_mcp serve --transport stdio"
+            ),
+            {"main_channel_probe_status": "ok"},
+            poll_metrics(1_999_999_700.0),
+            [],
+            {1234},
+            "control-plane poll stale",
+        ),
+        (
+            healthy_status(
+                "D:/Projetos/WINDOWS-MCP-TEST/.venv/Scripts/python.exe -m windows_mcp serve --transport stdio"
+            ),
+            {"main_channel_probe_status": "ok"},
+            poll_metrics(1_999_999_990.0),
+            [{"seq": 9, "message": "stdio MCP command failed; requesting tunnel-client shutdown"}],
+            {1234},
+            "fatal MCP transport event detected",
+        ),
+        (
+            healthy_status(
+                "D:/Projetos/WINDOWS-MCP-TEST/.venv/Scripts/python.exe -m windows_mcp serve --transport stdio"
+            ),
+            {"main_channel_probe_status": "ok"},
+            poll_metrics(1_999_999_990.0),
+            [],
+            set(),
+            "MCP process is not a live tunnel descendant",
+        ),
+    ],
+)
+def test_transport_aware_health_rejects_failure_modes(
+    supervisor: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    status: dict[str, object],
+    system: dict[str, object],
+    metrics: str,
+    events: list[dict[str, object]],
+    owned: set[int],
+    expected_error: str,
+) -> None:
+    monkeypatch.setattr(supervisor, "pid_alive", lambda pid: pid == 1234)
+
+    result = supervisor.evaluate_runtime_health(
+        status,
+        system,
+        metrics,
+        events,
+        owned,
+        now_epoch=2_000_000_000.0,
+    )
+
+    assert result["ok"] is False
+    assert expected_error in result["error"]
+
+
+def test_zero_poll_metric_is_allowed_during_startup(
+    supervisor: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(supervisor, "pid_alive", lambda pid: pid == 1234)
+    status = healthy_status(supervisor.EXPECTED_MCP_COMMAND)
+    status["uptime_seconds"] = 15
+
+    result = supervisor.evaluate_runtime_health(
+        status,
+        {"main_channel_probe_status": "ok"},
+        poll_metrics(0.0),
+        [],
+        {1234},
+        now_epoch=2_000_000_000.0,
+    )
+
+    assert result["ok"] is True
+    assert result["poll_established"] is False
+    assert result["poll_age_seconds"] is None
+
+
+def test_zero_poll_metric_is_rejected_after_startup_grace(
+    supervisor: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(supervisor, "pid_alive", lambda pid: pid == 1234)
+    status = healthy_status(supervisor.EXPECTED_MCP_COMMAND)
+    status["uptime_seconds"] = 120
+
+    result = supervisor.evaluate_runtime_health(
+        status,
+        {"main_channel_probe_status": "ok"},
+        poll_metrics(0.0),
+        [],
+        {1234},
+        now_epoch=2_000_000_000.0,
+    )
+
+    assert result["ok"] is False
+    assert result["poll_established"] is False
+    assert "control-plane poll stale" in result["error"]
+
+
+def configure_inbox(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, Path]:
+    inbox = tmp_path / "inbox"
+    rejected = tmp_path / "rejected"
+    queue_file = tmp_path / "queue.json"
+    monkeypatch.setattr(supervisor, "INBOX_DIR", inbox)
+    monkeypatch.setattr(supervisor, "REJECTED_INBOX_DIR", rejected)
+    monkeypatch.setattr(supervisor, "QUEUE_FILE", queue_file)
+    monkeypatch.setattr(supervisor, "log", lambda *args, **kwargs: None)
+    return inbox, rejected, queue_file
+
+
+def test_atomic_inbox_accepts_external_task(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox, _, queue_file = configure_inbox(supervisor, tmp_path, monkeypatch)
+    inbox.mkdir(parents=True)
+    task_id = "6c90e059-a52b-4503-b5d8-1da7ca028f65"
+    source = inbox / f"{task_id}.json"
+    source.write_text(
+        json.dumps(
+            {
+                "id": task_id,
+                "kind": "validate_project",
+                "timeout_seconds": 1800,
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue: list[dict[str, object]] = []
+
+    accepted = supervisor.drain_inbox(queue)
+
+    assert accepted == 1
+    assert queue[0]["id"] == task_id
+    assert queue[0]["state"] == "pending"
+    assert source.exists() is False
+    persisted = json.loads(queue_file.read_text(encoding="utf-8"))
+    assert persisted[0]["id"] == task_id
+
+
+def test_atomic_inbox_rejects_unsupported_task(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox, rejected, _ = configure_inbox(supervisor, tmp_path, monkeypatch)
+    inbox.mkdir(parents=True)
+    task_id = "1ab0c6c4-d573-45e4-afeb-5df65e9113b8"
+    source = inbox / f"{task_id}.json"
+    source.write_text(
+        json.dumps({"id": task_id, "kind": "destructive_unknown_task"}),
+        encoding="utf-8",
+    )
+    queue: list[dict[str, object]] = []
+
+    accepted = supervisor.drain_inbox(queue)
+
+    assert accepted == 0
+    assert queue == []
+    assert source.exists() is False
+    assert (rejected / source.name).exists()
+
+
+def test_atomic_inbox_discards_duplicate_without_reexecuting(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox, _, queue_file = configure_inbox(supervisor, tmp_path, monkeypatch)
+    inbox.mkdir(parents=True)
+    task_id = "7c63b45a-360c-41fd-8144-d93640d55bbc"
+    source = inbox / f"{task_id}.json"
+    source.write_text(
+        json.dumps({"id": task_id, "kind": "validate_project"}),
+        encoding="utf-8",
+    )
+    queue: list[dict[str, object]] = [
+        {"id": task_id, "kind": "validate_project", "state": "completed"}
+    ]
+
+    accepted = supervisor.drain_inbox(queue)
+
+    assert accepted == 0
+    assert len(queue) == 1
+    assert source.exists() is False
+    assert queue_file.exists() is False
+
+
+def test_atomic_json_retries_transient_permission_error(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "state.json"
+    real_replace = supervisor.os.replace
+    attempts: list[tuple[Path, Path]] = []
+
+    def flaky_replace(source: Path, target: Path) -> None:
+        attempts.append((Path(source), Path(target)))
+        if len(attempts) < 3:
+            raise PermissionError("transient sharing violation")
+        real_replace(source, target)
+
+    monkeypatch.setattr(supervisor.os, "replace", flaky_replace)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda seconds: None)
+
+    supervisor.atomic_json(destination, {"status": "ok"})
+
+    assert len(attempts) == 3
+    assert json.loads(destination.read_text(encoding="utf-8")) == {"status": "ok"}
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_atomic_json_uses_unique_temporary_names(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "queue.json"
+    names: list[str] = []
+    real_replace = supervisor.os.replace
+
+    def capture_replace(source: Path, target: Path) -> None:
+        names.append(Path(source).name)
+        real_replace(source, target)
+
+    monkeypatch.setattr(supervisor.os, "replace", capture_replace)
+
+    supervisor.atomic_json(destination, {"value": 1})
+    supervisor.atomic_json(destination, {"value": 2})
+
+    assert len(names) == 2
+    assert names[0] != names[1]
+    assert all(name.startswith(".queue.json.") for name in names)
+    assert json.loads(destination.read_text(encoding="utf-8")) == {"value": 2}
+
+
+def test_load_json_retries_transient_permission_error(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "queue.json"
+    source.write_text(json.dumps([{"id": "ok"}]), encoding="utf-8")
+    original_read_text = supervisor.Path.read_text
+    attempts = 0
+
+    def flaky_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        nonlocal attempts
+        if path == source and attempts < 2:
+            attempts += 1
+            raise PermissionError("transient read sharing violation")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(supervisor.Path, "read_text", flaky_read_text)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda seconds: None)
+
+    value = supervisor.load_json(source, [], strict=True)
+
+    assert value == [{"id": "ok"}]
+    assert attempts == 2
+
+
+def test_load_json_strict_never_replaces_corrupt_queue_with_default(
+    supervisor: ModuleType,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "queue.json"
+    source.write_text("{invalid", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="failed to read persisted JSON"):
+        supervisor.load_json(source, [], strict=True, timeout_seconds=0)
+
+
+def test_controlled_recovery_task_requires_explicit_execute(
+    supervisor: ModuleType,
+) -> None:
+    command, _, timeout = supervisor.task_command(
+        {
+            "kind": "controlled_recovery",
+            "timeout_seconds": 500,
+            "recovery_timeout_seconds": 120,
+            "stability_seconds": 45,
+        }
+    )
+
+    assert command[0] == str(supervisor.PYTHON)
+    assert "test_supervisor_recovery.py" in " ".join(command)
+    assert "--execute" in command
+    assert command[command.index("--timeout-seconds") + 1] == "120"
+    assert command[command.index("--stability-seconds") + 1] == "45"
+    assert timeout == 500
+    script = supervisor.ROOT / "scripts" / "test_supervisor_recovery.py"
+    content = script.read_text(encoding="utf-8-sig")
+    assert 'value.add_argument("--execute", action="store_true")' in content
+    assert "SKIPPED_NO_EXECUTE" in content
+
+
+def test_atomic_json_reports_persistent_lock_as_transient(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "queue.json"
+    moments = iter((0.0, 10.0))
+
+    def locked_replace(source: Path, target: Path) -> None:
+        raise PermissionError("persistent sharing violation")
+
+    monkeypatch.setattr(supervisor.os, "replace", locked_replace)
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(supervisor.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(supervisor.TransientPersistenceError) as captured:
+        supervisor.atomic_json(destination, [{"id": "still-in-memory"}])
+
+    assert captured.value.path == destination
+    assert "persistent sharing violation" in str(captured.value)
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_main_loop_handles_transient_persistence_error_source_contract(
+    supervisor: ModuleType,
+) -> None:
+    source = (supervisor.ROOT / "scripts" / "windows_mcp_supervisor.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'except TransientPersistenceError as exc:' in source
+    assert 'log("persistence_retry"' in source
