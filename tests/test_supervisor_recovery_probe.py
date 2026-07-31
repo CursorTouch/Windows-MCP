@@ -70,3 +70,16 @@ def test_destructive_probe_is_skipped_without_execute(tmp_path: Path) -> None:
     guard = tmp_path / ".orquestrador" / "evidencias" / "guards" / "destructive-task-guard.log"
     assert guard.is_file()
     assert "SKIPPED_NO_EXECUTE" in guard.read_text(encoding="utf-8")
+
+
+
+def test_recovery_probe_supports_mcp_failure_target() -> None:
+    probe = load_probe()
+
+    args = probe.parser().parse_args(["--failure-target", "mcp"])
+
+    assert args.failure_target == "mcp"
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert 'result["old_mcp_pid"]' in source
+    assert 'result["orphan_pids"]' in source
+    assert "orphan processes remained after recovery" in source

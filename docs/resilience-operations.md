@@ -84,10 +84,15 @@ Get-Content "D:\Projetos\WINDOWS-MCP-TEST\.orquestrador\supervisor\queue.json" -
 - chamadas mistas de Health, SystemQuery date_time e SystemQuery git_status;
 - rejeição de ação perigosa sem perda da sessão;
 - Screenshot em quarentena seguido de Health no mesmo processo MCP;
-- recuperação controlada em 12,723 segundos;
+- recuperação controlada do túnel em 12,723 segundos;
+- recuperação controlada após encerramento exclusivo do processo MCP filho em 11,94 segundos;
+- processo MCP antigo encerrado sem órfãos, novo MCP saudável e exatamente um túnel após a recuperação;
 - 60 segundos de estabilidade, 55 amostras e nenhum túnel duplicado;
 - bloqueio real de queue.json absorvido com retentativa, sem queda do supervisor e sem perda de tarefa.
 
 ## Critério de conclusão prolongada
 
 A observação de 15 horas deve ser iniciada somente após validação integral aprovada. O resultado só pode ser considerado aprovado quando a tarefa de observação terminar sem amostras falhas no período pós-correção. Interrupções anteriores não contam como prova final.
+## Pacote local legado
+
+O diretório local WINDOWS-MCP-GPT não é versionado. Quando utilizado, sua configuração deve iniciar diretamente .venv/Scripts/python.exe -m windows_mcp serve --transport stdio; uv run é proibido no runtime persistente.

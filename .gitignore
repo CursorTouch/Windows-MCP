@@ -172,3 +172,8 @@ node_modules
 experiment
 .orquestrador/
 .tunnel-client/
+
+# Local plugin package and operational runtime data
+/WINDOWS-MCP-GPT/
+/.orquestrador/
+/.tunnel-client/

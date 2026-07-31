@@ -738,6 +738,8 @@ def task_command(task: dict[str, Any]) -> tuple[list[str], dict[str, str], int]:
                 str(max(60, min(int(task.get("recovery_timeout_seconds", 180)), 600))),
                 "--stability-seconds",
                 str(max(15, min(int(task.get("stability_seconds", 30)), 300))),
+                "--failure-target",
+                "mcp" if str(task.get("failure_target", "tunnel")).casefold() == "mcp" else "tunnel",
             ],
             env,
             min(timeout, 900),

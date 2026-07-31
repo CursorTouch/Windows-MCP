@@ -182,6 +182,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--profile-name", default="windows-mcp-gpt-managed")
     value.add_argument("--timeout-seconds", type=int, default=180)
     value.add_argument("--stability-seconds", type=int, default=30)
+    value.add_argument("--failure-target", choices=("tunnel", "mcp"), default="tunnel")
     return value
 
 
@@ -212,7 +213,12 @@ def main() -> int:
     expected_command = f"{root.as_posix()}/.venv/Scripts/python.exe -m windows_mcp serve --transport stdio"
     result: dict[str, Any] = {
         "started_at": started_wall.isoformat(),
+        "failure_target": args.failure_target,
         "old_tunnel_pid": None,
+        "old_mcp_pid": None,
+        "killed_pid": None,
+        "old_process_pids": [],
+        "orphan_pids": [],
         "new_tunnel_pid": None,
         "recovery_seconds": None,
         "recovered": False,
@@ -232,10 +238,22 @@ def main() -> int:
             raise RuntimeError(f"expected one tunnel before test, found {len(before)}")
         old_pid = before[0].pid
         result["old_tunnel_pid"] = old_pid
+        old_tree = process_tree(old_pid)
+        result["old_process_pids"] = [int(row["pid"]) for row in old_tree]
+        runtime_before = runtime_state(health_file, expected_command)
+        old_mcp_pid = int(runtime_before.get("mcp_pid") or 0)
+        result["old_mcp_pid"] = old_mcp_pid or None
+        if args.failure_target == "mcp":
+            if not runtime_before.get("ok") or old_mcp_pid <= 0:
+                raise RuntimeError("healthy MCP process not available before child-failure test")
+            killed_pid = old_mcp_pid
+        else:
+            killed_pid = old_pid
+        result["killed_pid"] = killed_pid
         time.sleep(3)
-        psutil.Process(old_pid).kill()
+        psutil.Process(killed_pid).kill()
         try:
-            psutil.Process(old_pid).wait(timeout=5)
+            psutil.Process(killed_pid).wait(timeout=5)
         except psutil.TimeoutExpired:
             pass
 
@@ -276,10 +294,17 @@ def main() -> int:
         if heartbeat_file.is_file():
             result["heartbeat"] = json.loads(heartbeat_file.read_text(encoding="utf-8-sig"))
         result["process_tree"] = process_tree(int(result["new_tunnel_pid"]))
+        result["orphan_pids"] = [
+            pid
+            for pid in result["old_process_pids"]
+            if pid != result["new_tunnel_pid"] and psutil.pid_exists(pid)
+        ]
         if not stable:
             raise RuntimeError("recovered tunnel did not remain stable during observation")
         if result["duplicate_samples"]:
             raise RuntimeError("duplicate tunnel process detected during recovery")
+        if result["orphan_pids"]:
+            raise RuntimeError(f"orphan processes remained after recovery: {result['orphan_pids']}")
         exit_code = 0
     except (
         OSError,

@@ -82,6 +82,8 @@ def build_task(args: argparse.Namespace) -> dict[str, Any]:
         task["recovery_timeout_seconds"] = args.recovery_timeout_seconds
     if args.stability_seconds is not None:
         task["stability_seconds"] = args.stability_seconds
+    if args.failure_target is not None:
+        task["failure_target"] = args.failure_target
     return task
 
 
@@ -97,6 +99,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--target-wall-seconds", type=int)
     value.add_argument("--recovery-timeout-seconds", type=int)
     value.add_argument("--stability-seconds", type=int)
+    value.add_argument("--failure-target", choices=("tunnel", "mcp"))
     return value
 
 

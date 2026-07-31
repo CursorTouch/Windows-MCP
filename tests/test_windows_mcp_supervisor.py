@@ -427,6 +427,7 @@ def test_controlled_recovery_task_requires_explicit_execute(
     assert "--execute" in command
     assert command[command.index("--timeout-seconds") + 1] == "120"
     assert command[command.index("--stability-seconds") + 1] == "45"
+    assert command[command.index("--failure-target") + 1] == "tunnel"
     assert timeout == 500
     script = supervisor.ROOT / "scripts" / "test_supervisor_recovery.py"
     content = script.read_text(encoding="utf-8-sig")
@@ -466,3 +467,21 @@ def test_main_loop_handles_transient_persistence_error_source_contract(
 
     assert 'except TransientPersistenceError as exc:' in source
     assert 'log("persistence_retry"' in source
+
+
+
+def test_controlled_recovery_can_target_mcp_child(
+    supervisor: ModuleType,
+) -> None:
+    command, _, timeout = supervisor.task_command(
+        {
+            "kind": "controlled_recovery",
+            "timeout_seconds": 300,
+            "recovery_timeout_seconds": 180,
+            "stability_seconds": 60,
+            "failure_target": "mcp",
+        }
+    )
+
+    assert command[command.index("--failure-target") + 1] == "mcp"
+    assert timeout == 300
