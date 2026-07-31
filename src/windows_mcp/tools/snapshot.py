@@ -5,6 +5,7 @@ import logging
 from mcp.types import ToolAnnotations
 from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
 
 from windows_mcp.tools._snapshot_helpers import (
     _as_bool,
@@ -104,7 +105,9 @@ def register(mcp, *, get_desktop, get_analytics):
                 display,
                 exc_info=True,
             )
-            return [f'Error capturing screenshot: {str(e)}. Please try again.']
+            raise ToolError(
+                f"SCREENSHOT_QUARANTINE: capture failed only for this call: {e}"
+            ) from e
 
         return build_snapshot_response(
             capture_result,

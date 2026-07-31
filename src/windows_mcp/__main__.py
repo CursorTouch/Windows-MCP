@@ -178,6 +178,24 @@ def _watchdog_enabled() -> bool:
     return value.strip().lower() not in {"off", "0", "false", "no", "disabled"}
 
 
+def _configure_transport_runtime(transport: str) -> None:
+    """Apply stable defaults before constructing the MCP server."""
+    if transport != Transport.STDIO.value:
+        return
+
+    os.environ.setdefault("NO_COLOR", "1")
+    # Native UI and graphics components must not be able to terminate the
+    # protocol process. Keep the watchdog and visual flash opt-in for stdio,
+    # prefer the stable MSS backend, and isolate every capture in a child.
+    os.environ.setdefault("WINDOWS_MCP_WATCHDOG", "off")
+    os.environ.setdefault("WINDOWS_MCP_DISABLE_FLASH", "1")
+    os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_BACKEND", "mss")
+    os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_ISOLATION", "1")
+    os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_QUARANTINED", "1")
+    os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_TIMEOUT_SECONDS", "15")
+    os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_FAILURE_THRESHOLD", "2")
+    os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_COOLDOWN_SECONDS", "120")
+
 def _build_mcp() -> FastMCP:
     """Create the MCP server instance."""
     global _mcp
@@ -553,6 +571,7 @@ def serve(
         raise click.ClickException(str(exc))
 
     transport = _choose_value(ctx, "transport", transport, cfg.server.transport, "stdio")
+    _configure_transport_runtime(transport)
     host = _choose_value(ctx, "host", host, cfg.server.host, "localhost")
     port = int(_choose_value(ctx, "port", port, cfg.server.port, 8000))
     auth_key = _choose_value(ctx, "auth_key", auth_key, cfg.server.auth_key, None)

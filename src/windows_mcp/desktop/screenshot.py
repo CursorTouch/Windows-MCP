@@ -1,7 +1,14 @@
 from dataclasses import dataclass
+import json
 import logging
 import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 from _ctypes import COMError
+from pathlib import Path
 
 from PIL import Image, ImageGrab
 
@@ -18,6 +25,151 @@ except ImportError:
 import windows_mcp.uia as uia
 
 logger = logging.getLogger(__name__)
+
+_ISOLATION_LOCK = threading.Lock()
+_isolation_failures = 0
+_circuit_open_until = 0.0
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _isolation_enabled() -> bool:
+    return _env_flag("WINDOWS_MCP_SCREENSHOT_ISOLATION", False)
+
+
+def _is_worker_process() -> bool:
+    return _env_flag("WINDOWS_MCP_SCREENSHOT_WORKER", False)
+
+
+def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _format_return_code(return_code: int) -> str:
+    unsigned = return_code & 0xFFFFFFFF
+    return f"{return_code} (0x{unsigned:08X})"
+
+
+def _circuit_remaining_seconds() -> float:
+    return max(0.0, _circuit_open_until - time.monotonic())
+
+
+def _record_isolation_success() -> None:
+    global _isolation_failures, _circuit_open_until
+    _isolation_failures = 0
+    _circuit_open_until = 0.0
+
+
+def _record_isolation_failure() -> None:
+    global _isolation_failures, _circuit_open_until
+    _isolation_failures += 1
+    threshold = _bounded_int("WINDOWS_MCP_SCREENSHOT_FAILURE_THRESHOLD", 2, 1, 10)
+    if _isolation_failures >= threshold:
+        cooldown = _bounded_float("WINDOWS_MCP_SCREENSHOT_COOLDOWN_SECONDS", 120.0, 5.0, 3600.0)
+        _circuit_open_until = time.monotonic() + cooldown
+
+
+def _capture_isolated(
+    capture_rect: uia.Rect | None,
+    selected_backend: str,
+) -> tuple[Image.Image, str]:
+    """Capture in a disposable child process so native faults cannot kill MCP."""
+    with _ISOLATION_LOCK:
+        remaining = _circuit_remaining_seconds()
+        if remaining > 0:
+            raise RuntimeError(
+                f"Screenshot circuit breaker is open for {remaining:.1f}s after repeated failures"
+            )
+
+        timeout = _bounded_float("WINDOWS_MCP_SCREENSHOT_TIMEOUT_SECONDS", 15.0, 1.0, 120.0)
+        with tempfile.TemporaryDirectory(prefix="windows-mcp-screenshot-") as temp_dir:
+            output_path = Path(temp_dir) / "capture.png"
+            command = [
+                sys.executable,
+                "-m",
+                "windows_mcp.desktop.screenshot_worker",
+                "--backend",
+                selected_backend,
+                "--output",
+                str(output_path),
+            ]
+            if capture_rect is not None:
+                command.extend(
+                    [
+                        "--rect",
+                        f"{capture_rect.left},{capture_rect.top},{capture_rect.right},{capture_rect.bottom}",
+                    ]
+                )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "WINDOWS_MCP_SCREENSHOT_WORKER": "1",
+                    "WINDOWS_MCP_SCREENSHOT_ISOLATION": "0",
+                    "WINDOWS_MCP_DISABLE_FLASH": "1",
+                    "ANONYMIZED_TELEMETRY": "false",
+                    "NO_COLOR": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                }
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                    check=False,
+                    env=env,
+                    creationflags=_CREATE_NO_WINDOW,
+                )
+            except subprocess.TimeoutExpired as exc:
+                _record_isolation_failure()
+                raise RuntimeError(f"Screenshot child timed out after {timeout:.1f}s") from exc
+
+            if completed.returncode != 0:
+                _record_isolation_failure()
+                stderr = (completed.stderr or "").strip()[-2000:]
+                raise RuntimeError(
+                    "Screenshot child exited with code "
+                    f"{_format_return_code(completed.returncode)}; stderr={stderr or '<empty>'}"
+                )
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                _record_isolation_failure()
+                raise RuntimeError("Screenshot child completed without a valid image")
+
+            try:
+                payload_line = next(
+                    line for line in reversed((completed.stdout or "").splitlines()) if line.strip()
+                )
+                payload = json.loads(payload_line)
+                used_backend = str(payload.get("backend") or selected_backend)
+            except (StopIteration, json.JSONDecodeError, TypeError, ValueError):
+                used_backend = selected_backend
+
+            with Image.open(output_path) as source:
+                source.load()
+                image = source.copy()
+            _record_isolation_success()
+            return image, used_backend
 
 
 # ---------------------------------------------------------------------------
@@ -293,11 +445,11 @@ def _get_backend(name: str) -> _ScreenshotBackend:
 # ---------------------------------------------------------------------------
 
 
-def capture(
+def _capture_in_process(
     capture_rect: uia.Rect | None,
     backend: str | None = None,
 ) -> tuple[Image.Image, str]:
-    """Capture a screenshot and return ``(image, backend_name_used)``."""
+    """Capture in the current process. Used only by tests and the isolated worker."""
     selected = backend or get_screenshot_backend()
 
     # Build the candidate chain: all registered backends sorted by priority, or a single one.
@@ -325,3 +477,18 @@ def capture(
 
     # All candidates exhausted — pillow is always present as the last resort.
     return _get_backend("pillow").capture(capture_rect), "pillow"
+
+def capture(
+    capture_rect: uia.Rect | None,
+    backend: str | None = None,
+) -> tuple[Image.Image, str]:
+    """Capture a screenshot, isolated by default when enabled for stdio."""
+    selected = backend or get_screenshot_backend()
+    if _env_flag("WINDOWS_MCP_SCREENSHOT_QUARANTINED", False) and not _is_worker_process():
+        raise RuntimeError(
+            "Screenshot is quarantined: isolated graphics workers are denied desktop capture "
+            "on this Windows session. Other MCP tools remain available."
+        )
+    if _isolation_enabled() and not _is_worker_process():
+        return _capture_isolated(capture_rect, selected)
+    return _capture_in_process(capture_rect, selected)

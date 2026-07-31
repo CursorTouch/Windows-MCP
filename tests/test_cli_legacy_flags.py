@@ -39,6 +39,11 @@ def test_install_options_are_not_blocked_by_legacy_filter(monkeypatch, tmp_path)
     monkeypatch.setattr(wm, "_START_SCRIPT_PATH", tmp_path / "start-server.cmd")
     monkeypatch.setattr(wm, "_resolve_program", lambda: ["windows-mcp"])
     monkeypatch.setattr(wm, "_schtasks", fake_schtasks)
+    monkeypatch.setattr(
+        wm,
+        "_register_task_powershell",
+        lambda *args: subprocess.CompletedProcess(["powershell"], 0, "", ""),
+    )
 
     result = CliRunner().invoke(wm.main, ["install", "--transport", "sse"])
 

@@ -19,3 +19,27 @@ class TestWatchdogEnabled:
         for value in ["on", "1", "true", "yes", "enabled", ""]:
             monkeypatch.setenv("WINDOWS_MCP_WATCHDOG", value)
             assert wm._watchdog_enabled() is True, value
+
+class TestStdioRuntimeDefaults:
+    def test_stdio_disables_watchdog_when_unset(self, monkeypatch):
+        monkeypatch.delenv("WINDOWS_MCP_WATCHDOG", raising=False)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+
+        wm._configure_transport_runtime(wm.Transport.STDIO.value)
+
+        assert wm._watchdog_enabled() is False
+        assert wm.os.environ["NO_COLOR"] == "1"
+
+    def test_stdio_preserves_explicit_watchdog_setting(self, monkeypatch):
+        monkeypatch.setenv("WINDOWS_MCP_WATCHDOG", "on")
+
+        wm._configure_transport_runtime(wm.Transport.STDIO.value)
+
+        assert wm._watchdog_enabled() is True
+
+    def test_http_does_not_change_watchdog_setting(self, monkeypatch):
+        monkeypatch.delenv("WINDOWS_MCP_WATCHDOG", raising=False)
+
+        wm._configure_transport_runtime(wm.Transport.STREAMABLE_HTTP.value)
+
+        assert "WINDOWS_MCP_WATCHDOG" not in wm.os.environ

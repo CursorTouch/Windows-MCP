@@ -6,7 +6,9 @@ import pytest
 # spawns a Tk window on a daemon thread which races with pytest teardown and
 # can crash the interpreter. Tests for the flash itself set/clear this env var
 # explicitly via monkeypatch.
-os.environ.setdefault("WINDOWS_MCP_DISABLE_FLASH", "1")
+os.environ["WINDOWS_MCP_DISABLE_FLASH"] = "1"
+os.environ["WINDOWS_MCP_SCREENSHOT_ISOLATION"] = "0"
+os.environ["WINDOWS_MCP_SCREENSHOT_QUARANTINED"] = "0"
 
 from windows_mcp.tree.views import BoundingBox, Center, TreeElementNode, ScrollElementNode
 from windows_mcp.desktop.views import Window, Status, DesktopState
