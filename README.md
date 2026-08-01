@@ -7,6 +7,9 @@
   <img src="https://img.shields.io/badge/python-3.13%2B-blue" alt="Python">
   <img src="https://img.shields.io/badge/platform-Windows%207–11-blue" alt="Platform: Windows 7 to 11">
   <img src="https://img.shields.io/github/last-commit/CursorTouch/Windows-MCP" alt="Last Commit">
+  <a href="https://pepy.tech/projects/windows-mcp">
+    <img src="https://static.pepy.tech/personalized-badge/windows-mcp?period=total&amp;units=INTERNATIONAL_SYSTEM&amp;left_color=BLACK&amp;right_color=GREEN&amp;left_text=downloads" alt="PyPI Downloads">
+  </a>
   <br>
   <a href="https://x.com/CursorTouch">
     <img src="https://img.shields.io/badge/follow-%40CursorTouch-1DA1F2?logo=twitter&style=flat" alt="Follow on Twitter">
