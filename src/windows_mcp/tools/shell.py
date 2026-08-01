@@ -6,6 +6,9 @@ from windows_mcp.powershell import PowerShellExecutor
 from fastmcp import Context
 
 
+_TRANSPORT_CLEANUP_RESERVE_SECONDS = 2.0
+
+
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="PowerShell",
@@ -21,7 +24,12 @@ def register(mcp, *, get_desktop, get_analytics):
     @with_analytics(get_analytics(), "Powershell-Tool")
     def powershell_tool(command: str, timeout: int = 30, ctx: Context = None) -> str:
         try:
-            response, status_code = PowerShellExecutor.execute_command(command, timeout)
+            execution_timeout = max(
+                0.5, float(timeout) - _TRANSPORT_CLEANUP_RESERVE_SECONDS
+            )
+            response, status_code = PowerShellExecutor.execute_command(
+                command, execution_timeout
+            )
             return f"Response: {response}\nStatus Code: {status_code}"
         except Exception:
             raise

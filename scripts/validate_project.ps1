@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $python = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 $uv = 'C:\Users\andre\AppData\Local\Microsoft\WinGet\Packages\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\uv.exe'
 $evidenceDir = Join-Path $ProjectRoot '.orquestrador\evidencias'
-$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$timestamp = "{0}-{1}-{2}" -f (Get-Date -Format 'yyyyMMdd-HHmmssfff'), $PID, ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $logPath = Join-Path $evidenceDir "validacao-$timestamp.log"
 $summaryPath = Join-Path $evidenceDir 'ultima-validacao.json'
 
@@ -30,7 +30,7 @@ function Write-AtomicJson {
 }
 
 function Add-ValidationText {
-    param([Parameter(Mandatory)] [string]$Text)
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Text)
 
     $payload = $Text + [Environment]::NewLine
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($payload)

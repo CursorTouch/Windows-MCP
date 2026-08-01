@@ -14,6 +14,13 @@ O perfil do túnel deve executar diretamente:
 
 Não usar `uv run` no perfil operacional. A sincronização automática do `uv` pode tentar substituir executáveis em uso e impedir a inicialização do MCP.
 
+
+## Exclusividade do supervisor
+
+Somente a tarefa `Windows-MCP-GPT-Supervisor` pode administrar o runtime STDIO. As tarefas legadas `Windows MCP GPT Watchdog`, `Windows MCP GPT HTTP Server` e `Windows MCP GPT HTTP Migration Once` são incompatíveis com esta arquitetura porque tentam migrar ou reconectar o mesmo túnel para HTTP.
+
+O script de migração exporta o XML dessas tarefas e as desativa antes de alterar o perfil ou reiniciar o runtime. Se a desativação falhar, a migração é abortada sem tocar no túnel. O watchdog local legado também foi neutralizado para nunca administrar o runtime quando o supervisor persistente estiver ativo.
+
 ## Saúde e recuperação
 
 O supervisor considera o runtime saudável somente quando todas as condições são verdadeiras:
@@ -38,7 +45,7 @@ A fila usa caixa de entrada atômica, arquivos de especificação, resultados e 
 - `failed`
 - `interrupted`
 
-Trabalhos longos são executados por processo-filho independente. O heartbeat e a recuperação do túnel continuam ativos durante testes e builds. Após reinício do supervisor, resultados persistidos são reconciliados sem repetir tarefas concluídas.
+Trabalhos longos são executados por processo-filho independente. O heartbeat e a recuperação do túnel continuam ativos durante testes e builds. Após reinício do supervisor, resultados persistidos são reconciliados sem repetir tarefas concluídas. Observações resumíveis continuam na mesma tarefa, preservando identidade, início, amostras e PIDs-base; não são clonadas nem reiniciadas do zero.
 
 Gravações JSON usam arquivos temporários únicos, `fsync`, substituição atômica e retentativa. Bloqueios transitórios do Windows geram `persistence_retry`; não encerram o supervisor nem descartam a fila em memória.
 
@@ -90,9 +97,37 @@ Get-Content "D:\Projetos\WINDOWS-MCP-TEST\.orquestrador\supervisor\queue.json" -
 - 60 segundos de estabilidade, 55 amostras e nenhum túnel duplicado;
 - bloqueio real de queue.json absorvido com retentativa, sem queda do supervisor e sem perda de tarefa.
 
-## Critério de conclusão prolongada
 
-A observação de 15 horas deve ser iniciada somente após validação integral aprovada. O resultado só pode ser considerado aprovado quando a tarefa de observação terminar sem amostras falhas no período pós-correção. Interrupções anteriores não contam como prova final.
+
+## TTL da conexão MCP
+
+O `tunnel-client` usa 10 minutos como limite padrão de vida da conexão MCP. Esse padrão encerrou fluxos técnicos longos e produziu `MCP connection TTL reached`, fechamento do STDIO, respostas 502 e reinício do túnel.
+
+O perfil gerenciado fixa `mcp.connection_max_ttl` em `336h` (14 dias). O Supervisor audita e restaura esse valor junto com o comando oficial. A margem permite sessões prolongadas sem recriar o túnel existente e não impõe uma janela fixa de conclusão.
+
+## Limpeza de runtime órfão
+
+Quando o túnel encerra após uma quebra do STDIO, o lançador Python e o servidor MCP podem permanecer vivos sem pertencer ao novo túnel. Esses processos órfãos mantêm uma instância inválida do runtime e podem provocar respostas 502, conexões duplicadas e falsas leituras de saúde.
+
+O Supervisor identifica somente processos cuja linha de comando corresponde exatamente ao runtime MCP oficial e que não são descendentes do túnel ativo. Apenas essas árvores são encerradas; testes, builds e outros processos do projeto são preservados. A limpeza é registrada como `orphan_runtime_removed` no log, no estado, no heartbeat e no checkpoint. O teste de recuperação aplica o mesmo critério: processos auxiliares do túnel, como a ponte `codex app-server`, não são classificados como runtimes MCP órfãos.
+
+## Observação prolongada controlada pelo operador
+
+Não existe janela fixa obrigatória para concluir o projeto. Observações prolongadas são tarefas explícitas, configuradas pelo operador por `target_wall_seconds`. Elas registram PIDs iniciais do túnel e do MCP, amostras saudáveis, indisponibilidades transitórias e falhas. Uma troca real de PID ou três amostras consecutivas não saudáveis reprovam a janela. A observação de 280 horas iniciada em 31/07/2026 foi interrompida por ordem explícita do operador em 01/08/2026, após 2.037 amostras, 2.027 saudáveis, nenhuma falha definitiva e nenhuma troca de PID. Ela não deve ser retomada sem nova ordem explícita.
+
+## Isolamento de timeout do PowerShell
+
+O executor PowerShell não envia mais `CTRL_BREAK_EVENT`. Esse sinal produzia encerramentos `0xC000013A` no processo MCP durante cancelamentos ou timeouts, derrubando o STDIO e gerando respostas 502.
+
+Cada comando agora é iniciado em grupo de processo próprio e sem janela de console. Em timeout ou cancelamento, somente a árvore filha é encerrada por PID. A ferramenta também reserva dois segundos do prazo solicitado para concluir a limpeza antes do limite externo do túnel.
+
+Critério de aceitação executado: `Start-Sleep -Seconds 10` com prazo de 5 segundos retornou `Command execution timed out`; uma chamada `Health` imediatamente posterior confirmou o mesmo PID MCP `2480` ativo.
 ## Pacote local legado
 
 O diretório local WINDOWS-MCP-GPT não é versionado. Quando utilizado, sua configuração deve iniciar diretamente .venv/Scripts/python.exe -m windows_mcp serve --transport stdio; uv run é proibido no runtime persistente.
+
+## Semântica da observação prolongada
+
+A observação de estabilidade distingue falha real de continuidade de indisponibilidade transitória da sonda de saúde. Uma troca explícita do PID do túnel ou do processo MCP reprova a janela imediatamente. Timeout isolado da API local, arquivo de saúde temporariamente indisponível ou ausência transitória de metadados não são classificados como troca de PID quando a árvore de processos confirma os mesmos processos.
+
+Amostras transitórias são registradas separadamente. O contador é zerado após uma amostra saudável. Três amostras não saudáveis consecutivas reprovam a janela, alinhadas ao limite de recuperação do Supervisor. Essa regra impede falso positivo de quebra de continuidade durante uma chamada longa sem ocultar indisponibilidade persistente.

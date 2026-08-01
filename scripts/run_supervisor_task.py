@@ -159,17 +159,26 @@ def run(spec: dict[str, Any]) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one persisted supervisor task")
     parser.add_argument("--spec", required=True)
+    parser.add_argument("--result")
     args = parser.parse_args()
     spec_path = Path(args.spec).resolve()
-    spec = read_json_retry(spec_path)
-    result_path = Path(str(spec["result_path"]))
+    result_path = Path(args.result).resolve() if args.result else None
+    spec: dict[str, Any] = {}
+    started_at = now_iso()
     try:
+        spec = read_json_retry(spec_path)
+        declared_result = Path(str(spec["result_path"])).resolve()
+        if result_path is not None and declared_result != result_path:
+            raise ValueError(
+                f"result path mismatch: argument={result_path} spec={declared_result}"
+            )
+        result_path = declared_result
         result = run(spec)
     except BaseException as exc:
         result = {
             "task_id": str(spec.get("task_id") or ""),
             "runner_pid": os.getpid(),
-            "started_at": now_iso(),
+            "started_at": started_at,
             "completed_at": now_iso(),
             "duration_seconds": 0.0,
             "state": "failed",
@@ -178,6 +187,10 @@ def main() -> int:
             "timed_out": False,
             "terminated_pids": [],
         }
+    if result_path is None:
+        raise RuntimeError(
+            "result path unavailable; pass --result so startup failures can be persisted"
+        )
     atomic_json(result_path, result)
     return 0 if result.get("state") == "completed" else 1
 

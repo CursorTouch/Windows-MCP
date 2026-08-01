@@ -288,3 +288,74 @@ def test_runner_read_json_retries_transient_permission_error(
 
     assert value == {"task_id": "ok"}
     assert attempts == 2
+
+
+def test_recover_queue_resumes_observation_in_place(
+    supervisor: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue_file = configure_queue(supervisor, tmp_path, monkeypatch)
+    original_id = "observation-stable-id"
+    queue_file.write_text(
+        json.dumps(
+            [
+                {
+                    "id": original_id,
+                    "kind": "runtime_observation",
+                    "state": "running",
+                    "resumable": True,
+                    "samples": 41,
+                    "healthy_samples": 41,
+                    "failed_samples": 0,
+                    "started_epoch": 123.0,
+                    "initial_tunnel_pid": 11,
+                    "initial_mcp_pid": 22,
+                    "history": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = supervisor.recover_queue()
+
+    assert len(queue) == 1
+    assert queue[0]["id"] == original_id
+    assert queue[0]["state"] == "running"
+    assert queue[0]["samples"] == 41
+    assert queue[0]["initial_tunnel_pid"] == 11
+    assert queue[0]["initial_mcp_pid"] == 22
+    assert queue[0]["history"][-1]["reason"] == "resumed in place after supervisor restart"
+
+
+
+def test_runner_persists_startup_failure_when_spec_is_invalid(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "invalid-spec.json"
+    result_path = tmp_path / "startup-failure.json"
+    spec_path.write_text("{invalid", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(runner.__file__)),
+            "--spec",
+            str(spec_path),
+            "--result",
+            str(result_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 1
+    assert result_path.is_file()
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["state"] == "failed"
+    assert result["exit_code"] is None
+    assert "failed to read JSON after retries" in result["error"]

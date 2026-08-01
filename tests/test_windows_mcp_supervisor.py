@@ -92,7 +92,53 @@ def test_profile_guard_replaces_uv_run(
     assert repaired["mcp"]["commands"] == [
         {"channel": "main", "command": supervisor.EXPECTED_MCP_COMMAND}
     ]
+    assert repaired["mcp"]["connection_max_ttl"] == supervisor.MCP_CONNECTION_MAX_TTL
+    assert result["connection_max_ttl"] == supervisor.MCP_CONNECTION_MAX_TTL
     assert list(backup_dir.iterdir())
+
+
+
+def test_profile_guard_repairs_short_connection_ttl(
+    supervisor: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = tmp_path / "profile.yaml"
+    backup_dir = tmp_path / "backups"
+    profile.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "commands": [
+                        {
+                            "channel": "main",
+                            "command": supervisor.EXPECTED_MCP_COMMAND,
+                        }
+                    ],
+                    "connection_max_ttl": "10m",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(supervisor, "PROFILE_FILE", profile)
+    monkeypatch.setattr(supervisor, "PROFILE_BACKUP_DIR", backup_dir)
+    monkeypatch.setattr(supervisor, "log", lambda *args, **kwargs: None)
+
+    result = supervisor.ensure_profile_command()
+
+    repaired = json.loads(profile.read_text(encoding="utf-8"))
+    assert result["repaired"] is True
+    assert repaired["mcp"]["connection_max_ttl"] == "336h"
+
+
+def test_extended_observation_is_operator_controlled(supervisor: ModuleType) -> None:
+    assert supervisor.OBSERVATION_REQUIRED_HOURS == 0
+    assert supervisor.DEFAULT_OBSERVATION_TARGET_SECONDS == 60
+    assert supervisor.MCP_CONNECTION_MAX_TTL == "336h"
+    assert supervisor.CHECKPOINT.name == "runtime-supervision.json"
+    assert [path.name for path in supervisor.LEGACY_CHECKPOINTS] == [
+        "loop-280h.json",
+        "loop-15h.json",
+    ]
 
 
 def test_transport_aware_health_accepts_valid_runtime(
@@ -485,3 +531,149 @@ def test_controlled_recovery_can_target_mcp_child(
 
     assert command[command.index("--failure-target") + 1] == "mcp"
     assert timeout == 300
+
+def test_runtime_observation_tracks_pid_continuity(supervisor: ModuleType) -> None:
+    task: dict[str, object] = {"kind": "runtime_observation", "state": "pending"}
+    health = {"ok": True, "mcp_pid": 22}
+    owned = [{"pid": 22}]
+    tunnels = [{"pid": 11}]
+
+    supervisor.sample_observation(task, health, owned, tunnels)
+
+    assert task["initial_tunnel_pid"] == 11
+    assert task["initial_mcp_pid"] == 22
+    assert task["last_sample_ok"] is True
+    assert task["failed_samples"] == 0
+    assert task["tunnel_pid_changes"] == 0
+    assert task["mcp_pid_changes"] == 0
+
+
+def test_runtime_observation_rejects_recovered_pid_change(supervisor: ModuleType) -> None:
+    task: dict[str, object] = {"kind": "runtime_observation", "state": "pending"}
+    supervisor.sample_observation(
+        task,
+        {"ok": True, "mcp_pid": 22},
+        [{"pid": 22}],
+        [{"pid": 11}],
+    )
+
+    supervisor.sample_observation(
+        task,
+        {"ok": True, "mcp_pid": 44},
+        [{"pid": 44}],
+        [{"pid": 33}],
+    )
+
+    assert task["last_sample_ok"] is False
+    assert task["failed_samples"] == 1
+    assert task["tunnel_pid_changes"] == 1
+    assert task["mcp_pid_changes"] == 1
+    assert task["tunnel_stable"] is False
+    assert task["mcp_stable"] is False
+    assert task["state"] == "failed"
+    assert task["completed_at"]
+    assert task["failure_reason"] == "runtime PID continuity changed during observation"
+
+def test_orphan_runtime_processes_match_abandoned_runtime_tree(
+    supervisor: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = supervisor.EXPECTED_MCP_COMMAND
+    cli = str(supervisor.ROOT / ".venv" / "Scripts" / "windows-mcp.exe") + " serve"
+    rows = [
+        {"pid": 11, "parent_pid": 999, "command": cli},
+        {"pid": 12, "parent_pid": 11, "command": f"python.exe {cli}"},
+        {"pid": 22, "parent_pid": 2, "command": "python tests\\worker.py"},
+        {"pid": 33, "parent_pid": 888, "command": expected.replace("/", "\\")},
+    ]
+    monkeypatch.setattr(supervisor, "pid_alive", lambda pid: False)
+
+    orphaned = supervisor.orphan_runtime_processes(rows)
+
+    assert [row["pid"] for row in orphaned] == [11, 12, 33]
+
+
+def test_orphan_runtime_processes_preserve_runtime_with_live_parent(
+    supervisor: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = supervisor.EXPECTED_MCP_COMMAND
+    rows = [{"pid": 11, "parent_pid": 777, "command": expected}]
+    monkeypatch.setattr(supervisor, "pid_alive", lambda pid: pid == 777)
+
+    assert supervisor.orphan_runtime_processes(rows) == []
+
+
+def test_supervisor_main_loop_removes_orphan_runtime_before_health_check(
+    supervisor: ModuleType,
+) -> None:
+    source = (supervisor.ROOT / "scripts" / "windows_mcp_supervisor.py").read_text(
+        encoding="utf-8"
+    )
+
+    classify_index = source.index("owned, external = classify_project_processes(tunnels)")
+    orphan_index = source.index("orphan_runtime = orphan_runtime_processes(external)")
+    health_index = source.index("health = read_health(tunnels, owned)", orphan_index)
+    assert classify_index < orphan_index < health_index
+    assert '"orphan_runtime_removed"' in source
+
+
+
+def test_runtime_observation_tolerates_single_transient_probe_timeout(
+    supervisor: ModuleType,
+) -> None:
+    task: dict[str, object] = {"kind": "runtime_observation", "state": "pending"}
+    tunnels = [{"pid": 11}]
+    owned = [{"pid": 22, "parent_pid": 11, "command": supervisor.EXPECTED_MCP_COMMAND}]
+
+    supervisor.sample_observation(task, {"ok": True, "mcp_pid": 22}, owned, tunnels)
+    supervisor.sample_observation(
+        task,
+        {"ok": False, "error": "TimeoutError: timed out"},
+        owned,
+        tunnels,
+    )
+
+    assert task["state"] == "running"
+    assert task["failed_samples"] == 0
+    assert task["transient_unhealthy_samples"] == 1
+    assert task["consecutive_unhealthy_samples"] == 1
+    assert task["last_mcp_pid"] == 22
+    assert task["mcp_stable"] is True
+    assert task["last_sample_classification"] == "transient_unhealthy"
+
+
+def test_runtime_observation_resets_transient_counter_after_recovery(
+    supervisor: ModuleType,
+) -> None:
+    task: dict[str, object] = {"kind": "runtime_observation", "state": "pending"}
+    tunnels = [{"pid": 11}]
+    owned = [{"pid": 22, "parent_pid": 11, "command": supervisor.EXPECTED_MCP_COMMAND}]
+
+    supervisor.sample_observation(task, {"ok": True, "mcp_pid": 22}, owned, tunnels)
+    supervisor.sample_observation(task, {"ok": False}, owned, tunnels)
+    supervisor.sample_observation(task, {"ok": True, "mcp_pid": 22}, owned, tunnels)
+
+    assert task["state"] == "running"
+    assert task["failed_samples"] == 0
+    assert task["transient_unhealthy_samples"] == 1
+    assert task["consecutive_unhealthy_samples"] == 0
+    assert task["last_sample_ok"] is True
+
+
+def test_runtime_observation_fails_after_health_threshold(
+    supervisor: ModuleType,
+) -> None:
+    task: dict[str, object] = {"kind": "runtime_observation", "state": "pending"}
+    tunnels = [{"pid": 11}]
+    owned = [{"pid": 22, "parent_pid": 11, "command": supervisor.EXPECTED_MCP_COMMAND}]
+
+    supervisor.sample_observation(task, {"ok": True, "mcp_pid": 22}, owned, tunnels)
+    for _ in range(supervisor.UNHEALTHY_CYCLES_BEFORE_RESTART):
+        supervisor.sample_observation(task, {"ok": False}, owned, tunnels)
+
+    assert task["state"] == "failed"
+    assert task["failed_samples"] == 1
+    assert task["failure_reason"] == (
+        "runtime health remained unavailable for "
+        f"{supervisor.UNHEALTHY_CYCLES_BEFORE_RESTART} consecutive samples"
+    )
+    assert task["last_sample_classification"] == "failed_health_threshold"

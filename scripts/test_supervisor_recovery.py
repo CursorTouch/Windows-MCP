@@ -175,6 +175,21 @@ def process_tree(root_pid: int, limit: int = 256) -> list[dict[str, Any]]:
     return rows
 
 
+
+def normalize_command(command: str) -> str:
+    return " ".join(command.replace("\\", "/").replace('"', "").split()).casefold()
+
+
+def runtime_process_pids(
+    rows: list[dict[str, Any]], expected_command: str
+) -> list[int]:
+    expected = normalize_command(expected_command)
+    return [
+        int(row["pid"])
+        for row in rows
+        if normalize_command(str(row.get("command_line") or "")) == expected
+    ]
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="Bounded automatic tunnel recovery proof")
     value.add_argument("--execute", action="store_true")
@@ -218,6 +233,7 @@ def main() -> int:
         "old_mcp_pid": None,
         "killed_pid": None,
         "old_process_pids": [],
+        "old_runtime_pids": [],
         "orphan_pids": [],
         "new_tunnel_pid": None,
         "recovery_seconds": None,
@@ -240,6 +256,7 @@ def main() -> int:
         result["old_tunnel_pid"] = old_pid
         old_tree = process_tree(old_pid)
         result["old_process_pids"] = [int(row["pid"]) for row in old_tree]
+        result["old_runtime_pids"] = runtime_process_pids(old_tree, expected_command)
         runtime_before = runtime_state(health_file, expected_command)
         old_mcp_pid = int(runtime_before.get("mcp_pid") or 0)
         result["old_mcp_pid"] = old_mcp_pid or None
@@ -296,7 +313,7 @@ def main() -> int:
         result["process_tree"] = process_tree(int(result["new_tunnel_pid"]))
         result["orphan_pids"] = [
             pid
-            for pid in result["old_process_pids"]
+            for pid in result["old_runtime_pids"]
             if pid != result["new_tunnel_pid"] and psutil.pid_exists(pid)
         ]
         if not stable:
@@ -304,7 +321,10 @@ def main() -> int:
         if result["duplicate_samples"]:
             raise RuntimeError("duplicate tunnel process detected during recovery")
         if result["orphan_pids"]:
-            raise RuntimeError(f"orphan processes remained after recovery: {result['orphan_pids']}")
+            raise RuntimeError(
+                "orphan MCP runtime processes remained after recovery: "
+                f"{result['orphan_pids']}"
+            )
         exit_code = 0
     except (
         OSError,

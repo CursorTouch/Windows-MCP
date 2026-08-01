@@ -16,7 +16,11 @@ import psutil
 
 ROOT = Path(r"D:\Projetos\WINDOWS-MCP-TEST")
 STATE_ROOT = ROOT / ".orquestrador" / "supervisor"
-CHECKPOINT = ROOT / ".orquestrador" / "checkpoints" / "loop-15h.json"
+CHECKPOINT = ROOT / ".orquestrador" / "checkpoints" / "runtime-supervision.json"
+LEGACY_CHECKPOINTS = (
+    ROOT / ".orquestrador" / "checkpoints" / "loop-280h.json",
+    ROOT / ".orquestrador" / "checkpoints" / "loop-15h.json",
+)
 LOCK_FILE = STATE_ROOT / "lock.json"
 STATE_FILE = STATE_ROOT / "state.json"
 QUEUE_FILE = STATE_ROOT / "queue.json"
@@ -34,6 +38,9 @@ PROFILE_DIR = ROOT / ".tunnel-client" / "profiles"
 PROFILE_NAME = "windows-mcp-gpt-managed"
 PROFILE_FILE = PROFILE_DIR / f"{PROFILE_NAME}.yaml"
 EXPECTED_MCP_COMMAND = "D:/Projetos/WINDOWS-MCP-TEST/.venv/Scripts/python.exe -m windows_mcp serve --transport stdio"
+MCP_CONNECTION_MAX_TTL = "336h"
+OBSERVATION_REQUIRED_HOURS = 0
+DEFAULT_OBSERVATION_TARGET_SECONDS = 60
 HEALTH_URL_FILE = Path.home() / ".local" / "state" / "tunnel-client" / "health" / "windows-mcp-gpt.url"
 TUNNEL_PID_FILE = STATE_ROOT / "tunnel-client.pid"
 RUNTIME_LOG_DIR = STATE_ROOT / "runtime"
@@ -159,18 +166,26 @@ def ensure_profile_command() -> dict[str, Any]:
         expected = [{"channel": "main", "command": EXPECTED_MCP_COMMAND}]
         current = commands if isinstance(commands, list) else []
         current_ok = current == expected
+        ttl_ok = str(mcp.get("connection_max_ttl") or "") == MCP_CONNECTION_MAX_TTL
         forbidden_uv = any(
             "uv.exe" in normalize_command(item.get("command", ""))
             for item in current
             if isinstance(item, dict)
         )
-        if current_ok and not forbidden_uv:
-            return {"ok": True, "repaired": False, "command": EXPECTED_MCP_COMMAND, "error": ""}
+        if current_ok and ttl_ok and not forbidden_uv:
+            return {
+                "ok": True,
+                "repaired": False,
+                "command": EXPECTED_MCP_COMMAND,
+                "connection_max_ttl": MCP_CONNECTION_MAX_TTL,
+                "error": "",
+            }
         PROFILE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
         backup = PROFILE_BACKUP_DIR / f"{PROFILE_NAME}.{stamp}.json"
         backup.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         mcp["commands"] = expected
+        mcp["connection_max_ttl"] = MCP_CONNECTION_MAX_TTL
         atomic_json(PROFILE_FILE, data)
         log(
             "profile_command_repaired",
@@ -182,6 +197,7 @@ def ensure_profile_command() -> dict[str, Any]:
             "ok": True,
             "repaired": True,
             "command": EXPECTED_MCP_COMMAND,
+            "connection_max_ttl": MCP_CONNECTION_MAX_TTL,
             "backup": str(backup),
             "error": "",
         }
@@ -286,6 +302,88 @@ def classify_project_processes(tunnels: list[dict[str, Any]]) -> tuple[list[dict
         sorted(owned, key=lambda row: row.get("created_at") or ""),
         sorted(external, key=lambda row: row.get("created_at") or ""),
     )
+
+
+def is_mcp_runtime_command(command: str) -> bool:
+    """Recognize the supported MCP runtime launch forms inside this project."""
+    normalized = normalize_command(command)
+    expected = normalize_command(EXPECTED_MCP_COMMAND)
+    cli = normalize_command(
+        f"{(ROOT / '.venv' / 'Scripts' / 'windows-mcp.exe').as_posix()} serve"
+    )
+    return normalized == expected or cli in normalized
+
+
+def orphan_runtime_processes(external: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return abandoned MCP runtime trees not owned by the active tunnel."""
+    candidates = [
+        row
+        for row in external
+        if is_mcp_runtime_command(str(row.get("command") or ""))
+    ]
+    rows_by_pid = {int(row["pid"]): row for row in candidates if row.get("pid")}
+    orphan_roots: set[int] = set()
+    for pid, row in rows_by_pid.items():
+        parent_pid = int(row.get("parent_pid") or 0)
+        if parent_pid not in rows_by_pid and not pid_alive(parent_pid):
+            orphan_roots.add(pid)
+    orphaned: list[dict[str, Any]] = []
+    for pid, row in rows_by_pid.items():
+        current = pid
+        visited: set[int] = set()
+        while current in rows_by_pid and current not in visited:
+            visited.add(current)
+            if current in orphan_roots:
+                orphaned.append(row)
+                break
+            current = int(rows_by_pid[current].get("parent_pid") or 0)
+    return orphaned
+
+
+def stop_orphan_runtime_processes(
+    rows: list[dict[str, Any]], reason: str
+) -> list[int]:
+    """Terminate only stale MCP runtime trees, preserving unrelated project jobs."""
+    candidate_pids = {int(row["pid"]) for row in rows if row.get("pid")}
+    if not candidate_pids:
+        return []
+    root_pids = {
+        int(row["pid"])
+        for row in rows
+        if row.get("pid") and int(row.get("parent_pid") or 0) not in candidate_pids
+    }
+    if not root_pids:
+        root_pids = set(candidate_pids)
+    targets: dict[int, psutil.Process] = {}
+    for root_pid in root_pids:
+        try:
+            root = psutil.Process(root_pid)
+            for child in root.children(recursive=True):
+                if child.pid in candidate_pids:
+                    targets[child.pid] = child
+            targets[root.pid] = root
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    for process in sorted(targets.values(), key=lambda item: item.pid, reverse=True):
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    _, alive = psutil.wait_procs(list(targets.values()), timeout=5)
+    for process in alive:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    removed = sorted(pid for pid in candidate_pids if not pid_alive(pid))
+    log(
+        "orphan_runtime_removed",
+        reason=reason,
+        candidate_pids=sorted(candidate_pids),
+        root_pids=sorted(root_pids),
+        removed_pids=removed,
+    )
+    return removed
 
 
 def http_body(url: str, timeout: float = 3.0, max_bytes: int = 2_000_000) -> str:
@@ -601,6 +699,18 @@ def recover_queue() -> list[dict[str, Any]]:
         if task.get("state") != "running":
             continue
         is_observation = task.get("kind") == "runtime_observation"
+        if is_observation and task.get("resumable", False):
+            resumed_at = now_iso()
+            task["resumed_at"] = resumed_at
+            task.setdefault("history", []).append(
+                {
+                    "state": "running",
+                    "at": resumed_at,
+                    "reason": "resumed in place after supervisor restart",
+                }
+            )
+            changed = True
+            continue
         result_file = Path(str(task.get("result_file") or ""))
         runner_pid = task.get("runner_pid")
         runner_is_active = pid_alive(runner_pid)
@@ -825,7 +935,14 @@ def launch_command_task(
     atomic_json(QUEUE_FILE, queue)
     try:
         runner = subprocess.Popen(
-            [str(PYTHON), str(TASK_RUNNER), "--spec", str(spec_path)],
+            [
+                str(PYTHON),
+                str(TASK_RUNNER),
+                "--spec",
+                str(spec_path),
+                "--result",
+                str(result_path),
+            ],
             cwd=str(ROOT),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -903,26 +1020,160 @@ def sample_observation(task: dict[str, Any], health: dict[str, Any], owned: list
         task["samples"] = 0
         task["healthy_samples"] = 0
         task["failed_samples"] = 0
+        task["transient_unhealthy_samples"] = 0
+        task["consecutive_unhealthy_samples"] = 0
         task["active_check_seconds"] = 0.0
         task.setdefault("history", []).append({"state": "running", "at": task["started_at"]})
+
+    current_tunnel_pid = int(tunnels[0]["pid"]) if len(tunnels) == 1 else None
+    reported_mcp_pid = int(health.get("mcp_pid") or 0) or None
+    derived_mcp_pid = next(
+        (
+            int(row["pid"])
+            for row in owned
+            if current_tunnel_pid is not None
+            and int(row.get("parent_pid") or 0) == current_tunnel_pid
+            and normalize_command(str(row.get("command") or ""))
+            == normalize_command(EXPECTED_MCP_COMMAND)
+        ),
+        None,
+    )
+    current_mcp_pid = reported_mcp_pid or derived_mcp_pid
+
+    if "initial_tunnel_pid" not in task:
+        task["initial_tunnel_pid"] = current_tunnel_pid
+        task["initial_mcp_pid"] = current_mcp_pid
+        task["baseline_at"] = now_iso()
+        task["tunnel_pid_changes"] = 0
+        task["mcp_pid_changes"] = 0
+
+    initial_tunnel_pid = task.get("initial_tunnel_pid")
+    initial_mcp_pid = task.get("initial_mcp_pid")
+    previous_tunnel_pid = task.get("last_tunnel_pid", initial_tunnel_pid)
+    previous_mcp_pid = task.get("last_mcp_pid", initial_mcp_pid)
+    explicit_tunnel_change = (
+        current_tunnel_pid is not None
+        and initial_tunnel_pid is not None
+        and current_tunnel_pid != initial_tunnel_pid
+    )
+    explicit_mcp_change = (
+        current_mcp_pid is not None
+        and initial_mcp_pid is not None
+        and current_mcp_pid != initial_mcp_pid
+    )
+    if (
+        current_tunnel_pid is not None
+        and previous_tunnel_pid is not None
+        and current_tunnel_pid != previous_tunnel_pid
+    ):
+        task["tunnel_pid_changes"] = int(task.get("tunnel_pid_changes", 0)) + 1
+    if (
+        current_mcp_pid is not None
+        and previous_mcp_pid is not None
+        and current_mcp_pid != previous_mcp_pid
+    ):
+        task["mcp_pid_changes"] = int(task.get("mcp_pid_changes", 0)) + 1
+
+    tunnel_stable = current_tunnel_pid == initial_tunnel_pid and current_tunnel_pid is not None
+    mcp_stable = current_mcp_pid == initial_mcp_pid and current_mcp_pid is not None
+    continuity_ok = len(tunnels) == 1 and tunnel_stable and mcp_stable
     sample_started = time.perf_counter()
     task["samples"] = int(task.get("samples", 0)) + 1
-    sample_ok = bool(health.get("ok")) and len(tunnels) == 1 and bool(owned)
+    sample_ok = bool(health.get("ok")) and continuity_ok
+
     if sample_ok:
         task["healthy_samples"] = int(task.get("healthy_samples", 0)) + 1
+        task["consecutive_unhealthy_samples"] = 0
+        classification = "healthy"
     else:
-        task["failed_samples"] = int(task.get("failed_samples", 0)) + 1
+        task["transient_unhealthy_samples"] = int(
+            task.get("transient_unhealthy_samples", 0)
+        ) + 1
+        task["consecutive_unhealthy_samples"] = int(
+            task.get("consecutive_unhealthy_samples", 0)
+        ) + 1
+        classification = "transient_unhealthy"
+
     task["last_sample_at"] = now_iso()
     task["last_sample_ok"] = sample_ok
-    task["active_check_seconds"] = float(task.get("active_check_seconds", 0.0)) + (time.perf_counter() - sample_started)
-    task["observed_wall_seconds"] = max(0.0, time.time() - float(task.get("started_epoch", time.time())))
-    target = max(60, int(task.get("target_wall_seconds", 54000)))
+    task["last_sample_classification"] = classification
+    if current_tunnel_pid is not None:
+        task["last_tunnel_pid"] = current_tunnel_pid
+    if current_mcp_pid is not None:
+        task["last_mcp_pid"] = current_mcp_pid
+    task["tunnel_stable"] = tunnel_stable
+    task["mcp_stable"] = mcp_stable
+    task["active_check_seconds"] = float(task.get("active_check_seconds", 0.0)) + (
+        time.perf_counter() - sample_started
+    )
+    task["observed_wall_seconds"] = max(
+        0.0, time.time() - float(task.get("started_epoch", time.time()))
+    )
+
+    if explicit_tunnel_change or explicit_mcp_change:
+        task["failed_samples"] = int(task.get("failed_samples", 0)) + 1
+        task["state"] = "failed"
+        task["completed_at"] = now_iso()
+        task["failure_reason"] = "runtime PID continuity changed during observation"
+        task["last_sample_classification"] = "failed_continuity"
+        task.setdefault("history", []).append(
+            {
+                "state": "failed",
+                "at": task["completed_at"],
+                "reason": task["failure_reason"],
+            }
+        )
+        log(
+            "observation_failed_continuity",
+            task_id=task.get("id"),
+            initial_tunnel_pid=initial_tunnel_pid,
+            current_tunnel_pid=current_tunnel_pid,
+            initial_mcp_pid=initial_mcp_pid,
+            current_mcp_pid=current_mcp_pid,
+        )
+        return
+
+    if int(task.get("consecutive_unhealthy_samples", 0)) >= UNHEALTHY_CYCLES_BEFORE_RESTART:
+        task["failed_samples"] = int(task.get("failed_samples", 0)) + 1
+        task["state"] = "failed"
+        task["completed_at"] = now_iso()
+        task["failure_reason"] = (
+            "runtime health remained unavailable for "
+            f"{UNHEALTHY_CYCLES_BEFORE_RESTART} consecutive samples"
+        )
+        task["last_sample_classification"] = "failed_health_threshold"
+        task.setdefault("history", []).append(
+            {
+                "state": "failed",
+                "at": task["completed_at"],
+                "reason": task["failure_reason"],
+            }
+        )
+        log(
+            "observation_failed_health_threshold",
+            task_id=task.get("id"),
+            consecutive_unhealthy_samples=task.get("consecutive_unhealthy_samples"),
+            health=health,
+            current_tunnel_pid=current_tunnel_pid,
+            current_mcp_pid=current_mcp_pid,
+        )
+        return
+
+    target = max(60, int(task.get("target_wall_seconds", DEFAULT_OBSERVATION_TARGET_SECONDS)))
     if task["observed_wall_seconds"] >= target:
         task["state"] = "completed" if int(task.get("failed_samples", 0)) == 0 else "failed"
         task["completed_at"] = now_iso()
         task.setdefault("history", []).append({"state": task["state"], "at": task["completed_at"]})
-        log("observation_finished", task_id=task.get("id"), state=task["state"], samples=task["samples"], failures=task["failed_samples"])
-
+        log(
+            "observation_finished",
+            task_id=task.get("id"),
+            state=task["state"],
+            samples=task["samples"],
+            failures=task["failed_samples"],
+            transient_unhealthy_samples=task.get("transient_unhealthy_samples", 0),
+            tunnel_pid_changes=task.get("tunnel_pid_changes", 0),
+            mcp_pid_changes=task.get("mcp_pid_changes", 0),
+        )
 
 def process_queue(
     queue: list[dict[str, Any]],
@@ -969,17 +1220,55 @@ def process_queue(
 
 
 def update_checkpoint(state: dict[str, Any], health: dict[str, Any], tunnels: list[dict[str, Any]], owned: list[dict[str, Any]], external: list[dict[str, Any]], queue: list[dict[str, Any]]) -> None:
-    checkpoint = load_json(CHECKPOINT, {})
+    checkpoint_source = CHECKPOINT
+    if not CHECKPOINT.exists():
+        checkpoint_source = next(
+            (path for path in LEGACY_CHECKPOINTS if path.exists()),
+            CHECKPOINT,
+        )
+    checkpoint = load_json(checkpoint_source, {})
     if not isinstance(checkpoint, dict):
         checkpoint = {}
     checkpoint["updated_at"] = now_iso()
-    checkpoint["effective_work_seconds"] = round(float(state.get("effective_work_seconds", 0.0)), 3)
+    checkpoint["mission"] = "Supervisão contínua do Windows MCP GPT"
+    checkpoint["observation_required_hours"] = OBSERVATION_REQUIRED_HOURS
+    checkpoint.pop("observation_target_hours", None)
+    checkpoint["effective_work_seconds"] = round(
+        float(state.get("effective_work_seconds", 0.0)), 3
+    )
     checkpoint["stage"] = state.get("stage", "runtime_supervision")
+    active_observation = next(
+        (
+            task
+            for task in queue
+            if task.get("kind") == "runtime_observation"
+            and task.get("state") in {"pending", "running"}
+        ),
+        None,
+    )
+    checkpoint["active_observation"] = (
+        {
+            "id": active_observation.get("id"),
+            "state": active_observation.get("state"),
+            "started_at": active_observation.get("started_at"),
+            "target_wall_seconds": active_observation.get(
+                "target_wall_seconds", DEFAULT_OBSERVATION_TARGET_SECONDS
+            ),
+            "observed_wall_seconds": active_observation.get(
+                "observed_wall_seconds", 0.0
+            ),
+            "healthy_samples": active_observation.get("healthy_samples", 0),
+            "failed_samples": active_observation.get("failed_samples", 0),
+        }
+        if active_observation
+        else None
+    )
     checkpoint["processes"] = {
         "supervisor_pid": os.getpid(),
         "tunnel_pids": [row["pid"] for row in tunnels],
         "tunnel_owned_processes": owned,
         "external_project_processes": external,
+        "orphan_runtime_processes": orphan_runtime_processes(external),
     }
     checkpoint["runtime_health"] = health
     checkpoint["queue_summary"] = {
@@ -1021,8 +1310,10 @@ def main() -> int:
     state["schema_version"] = 3
     state["stage"] = "runtime_supervision_transport_aware"
     state["next_action"] = (
-        "Verify transport-aware recovery, regression, stress, and long observation"
+        "Maintain healthy runtime, execute queued verification, and preserve evidence"
     )
+    state["observation_required_hours"] = OBSERVATION_REQUIRED_HOURS
+    state.pop("observation_requirement_hours", None)
     profile = ensure_profile_command()
     log(
         "supervisor_started",
@@ -1038,6 +1329,17 @@ def main() -> int:
                 drain_inbox(queue)
                 tunnels = tunnel_processes()
                 owned, external = classify_project_processes(tunnels)
+                orphan_runtime = orphan_runtime_processes(external)
+                if orphan_runtime:
+                    removed = stop_orphan_runtime_processes(
+                        orphan_runtime,
+                        "MCP runtime process is not owned by the active tunnel",
+                    )
+                    state["last_orphan_runtime_cleanup_at"] = now_iso()
+                    state["last_orphan_runtime_pids"] = removed
+                    time.sleep(1)
+                    tunnels = tunnel_processes()
+                    owned, external = classify_project_processes(tunnels)
                 health = read_health(tunnels, owned)
                 if len(tunnels) > 1:
                     log(
@@ -1091,6 +1393,9 @@ def main() -> int:
                 state["tunnel_count"] = len(tunnels)
                 state["owned_process_count"] = len(owned)
                 state["external_project_process_count"] = len(external)
+                state["orphan_runtime_process_count"] = len(
+                    orphan_runtime_processes(external)
+                )
                 state["health_ok"] = bool(health.get("ok"))
                 atomic_json(STATE_FILE, state)
                 atomic_json(HEARTBEAT_FILE, {
@@ -1100,6 +1405,9 @@ def main() -> int:
                     "tunnel_pids": [row["pid"] for row in tunnels],
                     "tunnel_owned_pids": [row["pid"] for row in owned],
                     "external_project_pids": [row["pid"] for row in external],
+                    "orphan_runtime_pids": [
+                        row["pid"] for row in orphan_runtime_processes(external)
+                    ],
                     "effective_work_seconds": round(state["effective_work_seconds"], 3),
                     "queue_summary": {status: sum(1 for task in queue if task.get("state") == status) for status in ("pending", "running", "completed", "failed", "interrupted")},
                 })

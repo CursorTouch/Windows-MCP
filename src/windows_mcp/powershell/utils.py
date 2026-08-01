@@ -1,5 +1,4 @@
 import logging
-import signal
 import subprocess
 from xml.sax.saxutils import escape as xml_escape
 
@@ -12,6 +11,28 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _kill_process_tree(process: subprocess.Popen, wait_timeout: float) -> None:
+    """Terminate only the spawned subprocess tree, never the MCP host process group."""
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=max(1.0, wait_timeout),
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
 
 
 def ps_quote(value: str) -> str:
@@ -55,7 +76,7 @@ def run_with_graceful_timeout(
         capture_output: If True, capture stdout and stderr into the returned CompletedProcess.
         timeout: Seconds to wait for process to complete before triggering shutdown.
         check: If True, raise CalledProcessError if the process exits with a non-zero code.
-        grace_period: Seconds to wait after CTRL_BREAK before force-killing. Defaults to 2.0.
+        grace_period: Seconds reserved for subprocess-tree cleanup after timeout. Defaults to 2.0.
 
     Notes:
         In some Windows scenarios, especially when launching a console host
@@ -73,11 +94,10 @@ def run_with_graceful_timeout(
         To make this case more robust, this function changes the timeout path
         into a two-stage shutdown strategy:
 
-        1. First, try a graceful stop by sending ``CTRL_BREAK_EVENT`` to the
-           child process group, so console applications have a chance to exit
-           cleanly.
-        2. If that still does not finish within ``grace_period``, forcefully
-           terminate the whole process tree via ``taskkill /T /F``.
+        On timeout or cancellation, terminate only the spawned subprocess tree
+        via ``taskkill /T /F``. Console control signals are intentionally not
+        used because they can propagate beyond the child tree and terminate the
+        long-running MCP host on Windows.
 
         Related issues: #124, #146
     """
@@ -93,11 +113,10 @@ def run_with_graceful_timeout(
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
 
-    # Windows graceful-stop prerequisite: CREATE_NEW_PROCESS_GROUP is required
-    # so that send_signal(CTRL_BREAK_EVENT) targets the child process group
-    # rather than the current process (which would cause it to exit).
+    # Isolate the child from the MCP host console and process group. This keeps
+    # timeout/cancellation cleanup from propagating CTRL_C/CTRL_BREAK to the server.
     creationflags = kwargs.get("creationflags", 0)
-    creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    creationflags |= _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
     kwargs["creationflags"] = creationflags
 
     with subprocess.Popen(*popenargs, **kwargs) as process:
@@ -105,55 +124,24 @@ def run_with_graceful_timeout(
         try:
             stdout, stderr = process.communicate(input=input, timeout=timeout)
 
-        except subprocess.TimeoutExpired as exc1:
-            # Try graceful shutdown first
-            logger.debug('Process did not exit within timeout, attempting graceful shutdown.')
-            try:
-                process.send_signal(signal.CTRL_BREAK_EVENT)
-            except Exception:
-                logger.debug('Failed to send CTRL_BREAK_EVENT, attempting to terminate process.')
-
-            try:
-                exc1.stdout, exc1.stderr = process.communicate(timeout=grace_period)
-                logger.debug("Process exited after CTRL_BREAK, re-raising original TimeoutExpired.")
-                exc1.add_note("Process exited after graceful CTRL_BREAK shutdown.")
-                raise exc1  # (1)
-            except subprocess.TimeoutExpired as exc2:
-                if exc2 is exc1:  # Raised from the previous attempt (1)
-                    # No need to try further shutdown
-                    raise exc2
-
-                # Kill the whole tree as a last resort
-                logger.debug(
-                    f"Process {process.pid} (exist: {check_pid_exists(process.pid)}) did not exit gracefully after {grace_period} seconds, killing it and all child processes..."
-                )
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-
-                try:
-                    exc2.stdout, exc2.stderr = process.communicate(timeout=grace_period)
-                except subprocess.TimeoutExpired:
-                    # Do not replace the original timeout exception
-                    pass
-
-                exc2.add_note(
-                    f"Process killed after failing to exit gracefully within {grace_period} seconds."
-                )
-                raise exc2
-
-        except BaseException:
-            # Keep cleanup strategy consistent with timeout path
-            logger.debug('Other exception occurred, attempting to kill process...')
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
+        except subprocess.TimeoutExpired as exc:
+            logger.debug(
+                "Process exceeded timeout; terminating isolated subprocess tree."
             )
+            _kill_process_tree(process, grace_period)
+            try:
+                exc.stdout, exc.stderr = process.communicate(timeout=grace_period)
+            except subprocess.TimeoutExpired:
+                pass
+            exc.add_note(
+                "Isolated subprocess tree terminated after command timeout."
+            )
+            raise
+        except BaseException:
+            logger.debug(
+                "Command execution was cancelled; terminating isolated subprocess tree."
+            )
+            _kill_process_tree(process, grace_period)
             raise
 
         retcode = process.poll()

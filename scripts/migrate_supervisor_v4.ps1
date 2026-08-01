@@ -25,6 +25,7 @@ $lockFile = Join-Path $ProjectRoot '.orquestrador\supervisor\lock.json'
 $heartbeatFile = Join-Path $ProjectRoot '.orquestrador\supervisor\heartbeat.json'
 $profileFile = Join-Path $ProjectRoot '.tunnel-client\profiles\windows-mcp-gpt-managed.yaml'
 $expectedCommand = 'D:/Projetos/WINDOWS-MCP-TEST/.venv/Scripts/python.exe -m windows_mcp serve --transport stdio'
+$expectedTtl = '336h'
 $result = [ordered]@{
     started_at = $started.ToString('o')
     stage = 'started'
@@ -36,6 +37,7 @@ $result = [ordered]@{
     duplicate_samples = 0
     profile_command = ''
     supervisor_pid = $null
+    legacy_tasks = @()
     heartbeat = $null
     runtime = $null
     error = ''
@@ -50,6 +52,32 @@ function Save-Json([string]$Path, $Value) {
 function Set-Stage([string]$Stage) {
     $result.stage = $Stage
     Save-Json $progress $result
+}
+function Disable-LegacyRuntimeTasks {
+    $legacyNames = @(
+        'Windows MCP GPT Watchdog',
+        'Windows MCP GPT HTTP Server',
+        'Windows MCP GPT HTTP Migration Once'
+    )
+    $taskEvidenceDir = Join-Path $evidenceDir "legacy-tasks-$stamp"
+    New-Item -ItemType Directory -Path $taskEvidenceDir -Force | Out-Null
+    foreach($name in $legacyNames){
+        $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        if(-not $task){continue}
+        $safeName = ($name -replace '[^A-Za-z0-9.-]', '_') + '.xml'
+        Export-ScheduledTask -TaskName $name | Set-Content (Join-Path $taskEvidenceDir $safeName) -Encoding UTF8
+        if($task.Settings.Enabled){
+            Disable-ScheduledTask -TaskName $name -ErrorAction Stop | Out-Null
+        }
+        $current = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+        if($current.Settings.Enabled){throw "legacy conflicting task remained enabled: $name"}
+        $result.legacy_tasks += [pscustomobject]@{
+            name = $name
+            enabled = [bool]$current.Settings.Enabled
+            state = [string]$current.State
+            xml = (Join-Path $taskEvidenceDir $safeName)
+        }
+    }
 }
 function Get-Tunnels {
     @(Get-CimInstance Win32_Process | Where-Object {
@@ -79,6 +107,9 @@ function Get-Runtime {
     [pscustomobject]$runtime
 }
 try {
+    Set-Stage 'legacy_tasks'
+    Disable-LegacyRuntimeTasks
+    Set-Stage 'legacy_tasks_disabled'
     Set-Stage 'preflight'
     $before = @(Get-Tunnels)
     if($before.Count -ne 1){throw "expected one tunnel before migration, found $($before.Count)"}
@@ -89,9 +120,11 @@ try {
     $backup = "$profileFile.backup.$stamp"
     Copy-Item $profileFile $backup -Force
     $profile.mcp.commands = @([pscustomobject]@{channel='main';command=$expectedCommand})
+    $profile.mcp | Add-Member -NotePropertyName connection_max_ttl -NotePropertyValue $expectedTtl -Force
     $profile | ConvertTo-Json -Depth 20 | Set-Content "$profileFile.tmp" -Encoding UTF8
     Move-Item "$profileFile.tmp" $profileFile -Force
     $result.profile_command = $expectedCommand
+    $result.mcp_connection_max_ttl = $expectedTtl
     Set-Stage 'profile_migrated'
     Stop-ScheduledTask -TaskName $SupervisorTask -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 4

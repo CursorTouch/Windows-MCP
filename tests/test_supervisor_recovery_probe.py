@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(r"D:\Projetos\WINDOWS-MCP-TEST")
 SCRIPT = ROOT / "scripts" / "test_supervisor_recovery.py"
+MIGRATION_SCRIPT = ROOT / "scripts" / "migrate_supervisor_v4.ps1"
 
 
 def load_probe() -> ModuleType:
@@ -82,4 +83,31 @@ def test_recovery_probe_supports_mcp_failure_target() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert 'result["old_mcp_pid"]' in source
     assert 'result["orphan_pids"]' in source
-    assert "orphan processes remained after recovery" in source
+    assert "orphan MCP runtime processes remained after recovery" in source
+
+def test_migration_disables_conflicting_legacy_runtime_tasks() -> None:
+    source = MIGRATION_SCRIPT.read_text(encoding="utf-8-sig")
+
+    assert "function Disable-LegacyRuntimeTasks" in source
+    assert "Windows MCP GPT Watchdog" in source
+    assert "Windows MCP GPT HTTP Server" in source
+    assert "Windows MCP GPT HTTP Migration Once" in source
+    assert "Export-ScheduledTask" in source
+    assert "Disable-ScheduledTask" in source
+    assert "legacy conflicting task remained enabled" in source
+    assert source.index("Disable-LegacyRuntimeTasks") < source.index("Set-Stage 'preflight'")
+
+def test_runtime_orphan_filter_ignores_auxiliary_tunnel_children() -> None:
+    probe = load_probe()
+    expected = (
+        "D:/Projetos/WINDOWS-MCP-TEST/.venv/Scripts/python.exe "
+        "-m windows_mcp serve --transport stdio"
+    )
+    rows = [
+        {"pid": 10, "command_line": expected},
+        {"pid": 11, "command_line": expected.replace("/", "\\")},
+        {"pid": 12, "command_line": "cmd.exe /c codex app-server"},
+        {"pid": 13, "command_line": "node codex.js app-server"},
+    ]
+
+    assert probe.runtime_process_pids(rows, expected) == [10, 11]
