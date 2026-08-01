@@ -568,7 +568,6 @@ class Tree:
                                         for word,boxes in words:
                                             for box in boxes:
                                                 word_elements.append((word,box))
-                                                print(word,box)
                                 except Exception:
                                     pass
 
