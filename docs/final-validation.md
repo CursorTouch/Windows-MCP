@@ -16,9 +16,9 @@ Data de consolidação: 01/08/2026, horário de Brasília.
 ## Evidências de validação
 
 - Análise estática: aprovada.
-- Suíte integral: `462 passed`.
-- Build: `dist/windows_mcp-0.8.2.tar.gz` e `dist/windows_mcp-0.8.2-py3-none-any.whl` gerados com sucesso antes da sincronização final com o upstream.
-- Log integral: `.orquestrador/evidencias/validacao-20260801-082441258-24512-898ad82d.log`.
+- Suíte integral após integração com o upstream `v0.8.5`: `571 passed`.
+- Build final: `dist/windows_mcp-0.8.5.tar.gz` e `dist/windows_mcp-0.8.5-py3-none-any.whl` gerados com sucesso.
+- Log integral final: `.orquestrador/evidencias/validacao-20260801-085050941-2124-5cdc4f5a.log`.
 - Resumo: `.orquestrador/evidencias/ultima-validacao.json`.
 - Recuperação controlada do túnel aprovada nas tarefas `2541d09a-7fb8-4fde-9d61-b78b2dc1c40d` e `5b95fa82-30ff-45a7-885e-0313f444d89b`.
 - Última recuperação aprovada: código de saída `0`, estabilidade de 60 segundos, sem duplicação de túnel e sem runtime MCP órfão.
@@ -32,3 +32,7 @@ Observações prolongadas permanecem disponíveis como tarefas configuráveis. N
 ## Limitação controlada
 
 A captura de tela permanece em quarentena segura quando a sessão gráfica do Windows não permite captura isolada. A rejeição é localizada e não encerra o servidor MCP, o túnel ou as demais ferramentas. Esse comportamento é intencional e coberto por testes.
+
+## Integração upstream
+
+A branch foi sincronizada com `origin/main` no estado `41616c9713471c5098cde1c377ff11ae8073f767` (`v0.8.5`). Os conflitos em `src/windows_mcp/__main__.py` e `src/windows_mcp/uia/controls.py` foram resolvidos preservando as proteções locais e os novos guardas do upstream. A comunicação do worker de screenshot foi migrada de stdout para arquivo lateral JSON, eliminando risco de corrupção do protocolo STDIO.

@@ -22,7 +22,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from textwrap import dedent
 from enum import Enum
-from typing import Any
+from typing import Any, NoReturn
 import logging
 import asyncio
 import shlex
@@ -196,6 +196,18 @@ def _configure_transport_runtime(transport: str) -> None:
     os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_FAILURE_THRESHOLD", "2")
     os.environ.setdefault("WINDOWS_MCP_SCREENSHOT_COOLDOWN_SECONDS", "120")
 
+
+def _exit_missing_dependency(exc: ModuleNotFoundError) -> NoReturn:
+    """Report a missing runtime dependency on stderr and exit non-zero."""
+    logger.debug("Startup import failed", exc_info=exc)
+    click.echo(
+        f"windows-mcp: cannot start -- {exc}. The environment looks partially "
+        f"installed; run `uv sync` in the extension directory, then restart the client.",
+        err=True,
+    )
+    sys.exit(1)
+
+
 def _build_mcp() -> FastMCP:
     """Create the MCP server instance."""
     global _mcp
@@ -203,9 +215,12 @@ def _build_mcp() -> FastMCP:
     if _mcp is not None:
         return _mcp
 
-    from windows_mcp.infrastructure import PostHogAnalytics
-    from windows_mcp.desktop.service import Desktop
-    from windows_mcp.tools import register_all
+    try:
+        from windows_mcp.infrastructure import PostHogAnalytics
+        from windows_mcp.desktop.service import Desktop
+        from windows_mcp.tools import register_all
+    except ModuleNotFoundError as exc:
+        _exit_missing_dependency(exc)
 
     @asynccontextmanager
     async def lifespan(app: FastMCP):

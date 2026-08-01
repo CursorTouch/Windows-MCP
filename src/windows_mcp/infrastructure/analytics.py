@@ -115,8 +115,6 @@ class PostHogAnalytics:
 
         duration = result.get("duration_ms", 0)
         success_mark = "SUCCESS" if result.get("success") else "FAILED"
-        # Using print for immediate visibility in console during debugging
-        print(f"[Analytics] {tool_name}: {success_mark} ({duration}ms)")
         logger.info(f"{tool_name}: {success_mark} ({duration}ms)")
 
     async def track_error(self, error: Exception, context: Dict[str, Any]) -> None:

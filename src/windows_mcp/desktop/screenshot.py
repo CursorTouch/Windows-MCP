@@ -102,6 +102,7 @@ def _capture_isolated(
         timeout = _bounded_float("WINDOWS_MCP_SCREENSHOT_TIMEOUT_SECONDS", 15.0, 1.0, 120.0)
         with tempfile.TemporaryDirectory(prefix="windows-mcp-screenshot-") as temp_dir:
             output_path = Path(temp_dir) / "capture.png"
+            result_path = Path(temp_dir) / "result.json"
             command = [
                 sys.executable,
                 "-m",
@@ -110,6 +111,8 @@ def _capture_isolated(
                 selected_backend,
                 "--output",
                 str(output_path),
+                "--result",
+                str(result_path),
             ]
             if capture_rect is not None:
                 command.extend(
@@ -157,12 +160,9 @@ def _capture_isolated(
                 raise RuntimeError("Screenshot child completed without a valid image")
 
             try:
-                payload_line = next(
-                    line for line in reversed((completed.stdout or "").splitlines()) if line.strip()
-                )
-                payload = json.loads(payload_line)
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
                 used_backend = str(payload.get("backend") or selected_backend)
-            except (StopIteration, json.JSONDecodeError, TypeError, ValueError):
+            except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError):
                 used_backend = selected_backend
 
             with Image.open(output_path) as source:

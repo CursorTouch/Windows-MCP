@@ -15,23 +15,35 @@ jobs:
     permissions:
       id-token: write
       contents: write
-      
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Fails the release if pyproject.toml, uv.lock, manifest.json and
+      # server.json's package entry don't all agree with the tag. At v0.8.5
+      # the latter two were still on 0.8.1, two releases behind, because the
+      # 0.8.2 bump touched only pyproject.toml and nothing checked.
+      - name: Check version consistency
+        run: python scripts/check_versions.py "${{ github.ref_name }}"
+
       - name: Build package
         run: uv build
-      
+
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
-      
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

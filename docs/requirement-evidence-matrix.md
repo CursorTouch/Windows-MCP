@@ -14,8 +14,9 @@
 | Limpeza de órfãos | Aprovado | Classificação por descendência e teste de recuperação real |
 | Timeout do PowerShell | Aprovado | `tests/test_powershell_timeout_isolation.py` |
 | Análise estática | Aprovado | `ruff` em `.orquestrador/evidencias/ultima-validacao.json` |
-| Regressão integral | Aprovado | `462 passed` em `validacao-20260801-082441258-24512-898ad82d.log` |
-| Build reproduzível | Aprovado | Wheel e sdist gerados pelo `uv build` |
+| Regressão integral | Aprovado | `571 passed` em `validacao-20260801-085050941-2124-5cdc4f5a.log` |
+| Build reproduzível | Aprovado | Wheel e sdist `0.8.5` gerados pelo `uv build` |
 | Observação de 280 horas | Interrompida pelo operador | `.orquestrador/evidencias/observation/interrupted-280h-confirmed-20260801-081613.json` |
 | Captura de tela | Quarentena segura | Testes de quarentena; falha localizada sem derrubar a sessão |
 | Documentação operacional | Aprovado | `docs/resilience-operations.md` e `docs/final-validation.md` |
+| Integração upstream | Aprovado | `origin/main` em `41616c9713471c5098cde1c377ff11ae8073f767`; conflitos resolvidos e regressão integral aprovada |

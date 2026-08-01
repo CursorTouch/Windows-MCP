@@ -21,10 +21,10 @@ import threading
 import ctypes
 import ctypes.wintypes
 import comtypes
-from typing import Any, Callable, Dict, Generator, List, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 from .enums import *
 from .core import *
-from .core import _AutomationClient
+from .core import _AutomationClient, _get_system_dpi
 from .patterns import *
 
 
@@ -970,28 +970,178 @@ class Control:
         value = wordRange.GetAttributeValue(TextAttributeId.FontSizeAttribute)
         return float(value) if isinstance(value, (int, float)) else None
 
-    def GetAllWordBoundingBoxes(self) -> List[Rect] | None:
+    def _iter_word_ranges(self, textPattern) -> Generator[Tuple[str, "TextRange"], None, None]:
         """
-        Return the bounding box of every word in the control's visible text (via `TextPattern`).
-        Return List[Rect] or None if the control has no `TextPattern`.
-            Walks each visible range word-by-word using `TextRange.Move(TextUnit.Word, 1)`.
+        Foundation for every word-level `TextPattern` feature (bounding boxes, attributes,
+        selection): yields (word_text, word_range) for each word in the control's visible text.
+        Walks each visible range word-by-word via `TextRange.Move(TextUnit.Word, 1)`.
+
+        waitTime=0 on `ExpandToEnclosingUnit`/`Move`: these are read-only navigation calls, not
+        UI-mutating actions — the default 0.5s settling delay only makes sense for things like
+        Click/Toggle, and was previously the dominant cost of walking a control's words.
+
+        The yielded `word_range` is a single mutable COM range reused across iterations (moved
+        forward each time) -- callers must fully consume it (read text/rects/attributes) before
+        requesting the next word, never retain it past that iteration.
+        """
+        for visibleRange in textPattern.GetVisibleRanges():
+            wordRange = visibleRange.Clone()
+            wordRange.ExpandToEnclosingUnit(TextUnit.Word, waitTime=0)
+            while wordRange.CompareEndpoints(
+                TextPatternRangeEndpoint.Start, visibleRange, TextPatternRangeEndpoint.End
+            ) < 0:
+                text = wordRange.GetText(-1).strip()
+                if text:
+                    yield text, wordRange
+                moved = wordRange.Move(TextUnit.Word, 1, waitTime=0)
+                if moved == 0:
+                    break
+
+    def GetAllWordBoundingBoxes(self) -> List[Tuple[str, List[Rect]]] | None:
+        """
+        Return (word, bounding boxes) for every word in the control's visible text (via `TextPattern`).
+        Return List[Tuple[str, List[Rect]]] or None if the control has no `TextPattern`.
+            Bounding boxes is usually a single `Rect`; more than one if the word wraps across lines.
+            Boxes are vertically shrunk to the glyph's font-size (in place of the raw
+            line-height rect `GetBoundingRectangles` returns) when the font size attribute
+            is available; otherwise the untouched line-height rect is kept.
         """
         textPattern = self.GetPattern(PatternId.TextPattern)
         if textPattern is None:
             return None
-        rects: List[Rect] = []
-        for visibleRange in textPattern.GetVisibleRanges():
-            wordRange = visibleRange.Clone()
-            wordRange.ExpandToEnclosingUnit(TextUnit.Word)
-            while wordRange.CompareEndpoints(
-                TextPatternRangeEndpoint.Start, visibleRange, TextPatternRangeEndpoint.End
-            ) < 0:
-                if wordRange.GetText(-1).strip():
-                    rects.extend(wordRange.GetBoundingRectangles())
-                moved = wordRange.Move(TextUnit.Word, 1)
-                if moved == 0:
-                    break
-        return rects
+        dpi = _get_system_dpi() or 96
+        # Font size is virtually always uniform across a control — look it up once on the
+        # whole document instead of once per word (each TextRange COM call is expensive).
+        doc_font_size = textPattern.DocumentRange.GetAttributeValue(TextAttributeId.FontSizeAttribute)
+        uniform_font_size = doc_font_size if isinstance(doc_font_size, (int, float)) else None
+        words: List[Tuple[str, List[Rect]]] = []
+        for text, wordRange in self._iter_word_ranges(textPattern):
+            rects = wordRange.GetBoundingRectangles()
+            font_size = uniform_font_size
+            if font_size is None:
+                attr = wordRange.GetAttributeValue(TextAttributeId.FontSizeAttribute)
+                font_size = attr if isinstance(attr, (int, float)) else None
+            if font_size is not None:
+                rects = [self._shrink_rect_to_font_size(rect, font_size, dpi) for rect in rects]
+            words.append((text, rects))
+        return words
+
+    def GetWordAttributes(
+        self, attribute_ids: List[int], uniform_attribute_ids: Optional[set[int]] = None
+    ) -> List[Tuple[str, List[Rect], Dict[int, Any]]] | None:
+        """
+        Return (word, bounding boxes, {attribute_id: value}) for every word in the control's
+        visible text, for each id in `attribute_ids` (values from `TextAttributeId`).
+        Return None if the control has no `TextPattern`.
+
+        uniform_attribute_ids: subset of `attribute_ids` you expect to be constant across the
+            whole control (e.g. `FontSizeAttribute`, `FontNameAttribute`) — each of those is
+            looked up once on `DocumentRange` instead of once per word. Attributes that
+            legitimately vary per word (colors, bold/italic, hyperlinks) must NOT be listed
+            here or every word will silently get the document's single value.
+            If a "uniform" attribute turns out mixed (`GetAttributeValue` returns the
+            UiaGetReservedMixedAttributeValue sentinel, i.e. not a plain int/float/str), it
+            falls back to a per-word lookup for that attribute automatically.
+
+        Keep `attribute_ids` short for non-uniform attributes: each one adds a COM call per word.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return None
+        uniform_attribute_ids = uniform_attribute_ids or set()
+
+        uniform_values: Dict[int, Any] = {}
+        for attribute_id in attribute_ids:
+            if attribute_id not in uniform_attribute_ids:
+                continue
+            value = textPattern.DocumentRange.GetAttributeValue(attribute_id)
+            if isinstance(value, (int, float, str)):
+                uniform_values[attribute_id] = value
+
+        # Whatever isn't resolved as document-uniform (either never marked as such, or marked
+        # but the value turned out mixed) is looked up per-word -- but batched into a single
+        # `GetAttributeValues` COM call per word instead of one `GetAttributeValue` call per
+        # attribute per word.
+        per_word_ids = [attribute_id for attribute_id in attribute_ids if attribute_id not in uniform_values]
+
+        results: List[Tuple[str, List[Rect], Dict[int, Any]]] = []
+        for text, wordRange in self._iter_word_ranges(textPattern):
+            rects = wordRange.GetBoundingRectangles()
+            attrs: Dict[int, Any] = dict(uniform_values)
+            if per_word_ids:
+                batched = wordRange.GetAttributeValues(per_word_ids)
+                if batched is not None:
+                    attrs.update(zip(per_word_ids, batched))
+                else:
+                    # Provider doesn't implement IUIAutomationTextRange3 -- fall back to one
+                    # GetAttributeValue call per attribute.
+                    for attribute_id in per_word_ids:
+                        attrs[attribute_id] = wordRange.GetAttributeValue(attribute_id)
+            results.append((text, rects, attrs))
+        return results
+
+    def GetWordHyperlinks(self) -> List[Tuple[str, Rect, str]]:
+        """
+        Return (link text, bounding box, url) for every hyperlink under this control.
+
+        NOTE: `TextAttributeId.LinkAttribute` looks like the natural source for this but is
+        NOT viable in practice -- verified against real Edge/Chromium hyperlinks, it always
+        returns the shared `UiaGetReservedNotSupportedValue` sentinel (same pointer for every
+        word, link or not), never an actual URL. Chromium simply doesn't implement that text
+        attribute. Instead, browsers expose each hyperlink as its own `HyperlinkControl`
+        element in the tree, with the URL readable via `LegacyIAccessibleValueProperty` -- this
+        walks descendants for that control type instead of touching `TextPattern` at all.
+        Return [] if there are no hyperlink descendants (never None -- this doesn't depend on
+        `TextPattern` support).
+        """
+        condition = CreatePropertyCondition(PropertyId.ControlTypeProperty, ControlType.HyperlinkControl)
+        hyperlinks: List[Tuple[str, Rect, str]] = []
+        for link_control in self.FindAll(TreeScope.TreeScope_Descendants, condition):
+            try:
+                url = link_control.GetPropertyValue(PropertyId.LegacyIAccessibleValueProperty)
+                box = link_control.BoundingRectangle
+                name = link_control.Name
+            except Exception:
+                continue
+            if isinstance(url, str) and url and box.width() > 0 and box.height() > 0:
+                hyperlinks.append((name, box, url))
+        return hyperlinks
+
+    def SelectWord(self, word: str, backward: bool = False, ignoreCase: bool = True) -> bool:
+        """
+        Find `word` in the control's text (via `TextPattern`) and select it, replacing any
+        existing selection (`IUIAutomationTextRange::Select`).
+        word: str, the word/substring to search for.
+        backward: bool, search from the end of the document backward.
+        ignoreCase: bool, case-insensitive search.
+        Return bool, True if the word was found and selected, False if the control has no
+            `TextPattern` or the word wasn't found.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return False
+        wordRange = textPattern.DocumentRange.FindText(word, backward, ignoreCase)
+        if wordRange is None:
+            return False
+        return wordRange.Select(waitTime=0)
+
+    @staticmethod
+    def _shrink_rect_to_font_size(rect: Rect, font_size_pt: float, dpi: int) -> Rect:
+        """
+        Shrink `rect`'s height to the pixel height implied by `font_size_pt` (points), anchored
+        to the rect's bottom edge. `GetBoundingRectangles` reports the control's full line-height
+        box, which is noticeably taller than the glyphs themselves; the bottom edge tracks the
+        line's baseline/descent closely, while the extra leading is padded above it.
+        """
+        font_px = font_size_pt * dpi / 72.0
+        if font_px <= 0 or font_px >= rect.height():
+            return rect
+        return Rect(
+            left=rect.left,
+            top=int(round(rect.bottom - font_px)),
+            right=rect.right,
+            bottom=rect.bottom,
+        )
 
     def GetPropertyValueEx(self, propertyId: int, ignoreDefaultValue: int) -> Any:
         """

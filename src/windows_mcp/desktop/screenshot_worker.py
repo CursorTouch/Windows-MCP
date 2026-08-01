@@ -24,6 +24,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", default="mss")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--result", required=True)
     parser.add_argument("--rect")
     args = parser.parse_args()
 
@@ -33,14 +34,16 @@ def main() -> int:
     os.environ["ANONYMIZED_TELEMETRY"] = "false"
 
     output = Path(args.output).resolve()
+    result_path = Path(args.result).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         image, used_backend = screenshot._capture_in_process(
             parse_rect(args.rect),
             backend=args.backend,
         )
         image.save(output, format="PNG")
-        print(
+        result_path.write_text(
             json.dumps(
                 {
                     "status": "ok",
@@ -49,22 +52,26 @@ def main() -> int:
                     "bytes": output.stat().st_size,
                 },
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
         )
         return 0
     except BaseException as exc:
         traceback.print_exc(file=sys.stderr)
-        print(
-            json.dumps(
-                {
-                    "status": "error",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-                ensure_ascii=False,
-            ),
-            file=sys.stderr,
-        )
+        try:
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
         return 1
 
 

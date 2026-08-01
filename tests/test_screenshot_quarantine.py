@@ -46,13 +46,10 @@ def test_isolated_capture_returns_child_image(monkeypatch):
 
     def fake_run(command, **kwargs):
         output = Path(command[command.index("--output") + 1])
+        result = Path(command[command.index("--result") + 1])
         Image.new("RGB", (3, 2), "white").save(output, format="PNG")
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout='{"status":"ok","backend":"mss"}\n',
-            stderr="",
-        )
+        result.write_text('{"status":"ok","backend":"mss"}', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(screenshot.subprocess, "run", fake_run)
 

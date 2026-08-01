@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.4",
   "name": "Windows-MCP",
-  "version": "0.8.1",
+  "version": "0.8.5",
   "description": "MCP Server that enables Claude to interact with Windows OS",
   "long_description": "Windows-MCP is an open-source project that enables seamless integration between AI agents and the Windows operating system. Acting as an MCP server, it bridges the gap between large language models (LLMs) and the Windows OS, allowing agents to perform tasks such as **file navigation, application control, UI interaction, QA testing, and more**.\n\n**KEY FEATURES**\n- **Seamless Windows Integration**: Interacts natively with Windows UI elements, opens applications, controls windows, simulates user input, and more.\n- **Use Any LLM (Vision Optional)**: Does not rely on traditional computer vision techniques or fine-tuned models. Works with any LLM, reducing complexity and setup time.\n- **Rich Toolset for UI Automation**: Includes tools for keyboard and mouse control, window management, and capturing window or UI state.\n- **Lightweight & Open-Source**: Minimal dependencies with full source code available under the MIT license.\n- **Customizable & Extendable**: Easily adapt or extend tools to suit custom automation workflows or AI integrations.\n- **Real-Time Interaction**: Typical latency between actions ranges from `0.2` to `0.9` seconds, depending on system load, active applications, and LLM inference speed.\n\n**MINIMUM REQUIREMENTS**\n- **Python 3.13+**\n",
   "author": {
