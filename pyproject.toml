@@ -8,13 +8,13 @@ authors = [
 readme = "README.md"
 license = { file = "LICENSE.md" }
 keywords = ["windows", "mcp", "ai", "desktop", "ai agent"]
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows :: Windows 10",
     "Operating System :: Microsoft :: Windows :: Windows 11",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Desktop Environment",
     "Topic :: System :: Shells",
 ]
@@ -62,7 +62,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

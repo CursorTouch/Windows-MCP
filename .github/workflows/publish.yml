@@ -27,7 +27,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       
       # Fails the release if pyproject.toml, uv.lock, manifest.json and
       # server.json's package entry don't all agree with the tag. At v0.8.5

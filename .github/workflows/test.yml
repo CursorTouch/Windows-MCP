@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   test:
-    name: Unit tests (Python 3.13)
+    name: Unit tests (Python 3.14)
     runs-on: windows-latest
 
     steps:
@@ -24,7 +24,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Install dependencies
         run: uv sync --frozen --extra dev
