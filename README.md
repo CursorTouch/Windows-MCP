@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.CursorTouch%2FWindows-MCP.svg)](https://mcptoplist.com/server/io.github.CursorTouch%2FWindows-MCP)
+
 <div align="center">
   <h1>🪟 Windows-MCP</h1>
 
