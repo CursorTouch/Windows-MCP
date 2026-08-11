@@ -1,4 +1,4 @@
-"""Static PowerShell command executor utility."""
+""" PowerShell command executor service """
 
 import base64
 import ctypes
@@ -9,7 +9,10 @@ import winreg
 import shutil
 import subprocess
 
-from windows_mcp.desktop.utils import run_with_graceful_timeout, is_elevated
+from windows_mcp.desktop.utils import is_elevated
+from windows_mcp.powershell.utils import run_with_graceful_timeout
+
+__all__ = ["PowerShellExecutor"]
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,12 @@ def _prepare_env() -> dict[str, str]:
     """
     env = os.environ.copy()
 
+    # PYTHONHOME is set by uv to pin its own managed interpreter for this
+    # server process. Leaking it into a spawned shell makes any Python found
+    # on PATH there resolve its standard library against the server's
+    # interpreter instead of its own, breaking unrelated installs (#350).
+    env.pop("PYTHONHOME", None)
+
     try:
         machine_vars, machine_path, machine_pathext = _read_reg_env(
             winreg.HKEY_LOCAL_MACHINE,
@@ -166,7 +175,7 @@ class PowerShellExecutor:
 
     @staticmethod
     def execute_command(
-        command: str, timeout: int = 10, shell: str | None = None
+            command: str, timeout: int = 10, shell: str | None = None
     ) -> tuple[str, int]:
         try:
             # $OutputEncoding: controls how PS5.1 encodes output written to its stdout pipe.

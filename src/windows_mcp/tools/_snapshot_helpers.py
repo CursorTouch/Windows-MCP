@@ -154,20 +154,38 @@ def build_snapshot_response(
     scrollable_elements = remove_private_use_chars(scrollable_elements)
     semantic_tree = remove_private_use_chars(semantic_tree)
 
+    def display_to_string(display):
+        primary = " primary" if display.primary else ""
+        return (
+            f"{display.index}:{display.device_name} "
+            f"{display.bounding_box.xyxy_to_string()}{primary}"
+        )
+
     metadata_text = f"Cursor Position: {desktop_state.cursor_position}\n"
     if desktop_state.screenshot_original_size:
-        metadata_text += (
-            f"Screenshot Original Size: {desktop_state.screenshot_original_size.to_string()}"
-            " (the screenshot may be downscaled; multiply image coordinates by"
-            f" the ratio of original size to displayed size to get actual screen coordinates"
-            " for click, move and other mouse actions)\n"
+        orig = desktop_state.screenshot_original_size
+        scale = desktop_state.screenshot_scale or 1.0
+        if scale < 1.0:
+            coord_scale = round(1.0 / scale, 6)
+            metadata_text += (
+                f"Screenshot Original Size: {orig.to_string()}\n"
+                f"Screenshot Coordinate Scale: {coord_scale} "
+                f"— image pixels are downscaled; multiply every image pixel coordinate by "
+                f"{coord_scale} before passing to Click, Move, Scroll, or any loc= argument "
+                f"(e.g. image pixel (200, 150) → screen coordinate ({round(200 * coord_scale)}, {round(150 * coord_scale)}))\n"
+            )
+        else:
+            metadata_text += f"Screenshot Size: {orig.to_string()}\n"
+    if desktop_state.available_displays:
+        metadata_text += "Visible Displays: "
+        metadata_text += "; ".join(
+            display_to_string(display) for display in desktop_state.available_displays
         )
-    if desktop_state.screenshot_region:
-        metadata_text += (
-            f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
-        )
+        metadata_text += "\n"
     if desktop_state.screenshot_displays:
-        metadata_text += f"Displays: {','.join(str(index) for index in desktop_state.screenshot_displays)}\n"
+        metadata_text += f"Selected Displays: {','.join(str(index) for index in desktop_state.screenshot_displays)}\n"
+    if desktop_state.screenshot_region:
+        metadata_text += f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
         metadata_text += "Coordinate Space: Virtual desktop coordinates\n"
     if desktop_state.screenshot_backend:
         metadata_text += f"Screenshot Backend: {desktop_state.screenshot_backend}\n"
@@ -196,5 +214,5 @@ def build_snapshot_response(
 
     response = [response_text]
     if screenshot_bytes:
-        response.append(Image(data=screenshot_bytes, format='png'))
+        response.append(Image(data=screenshot_bytes, format="png"))
     return response

@@ -1,3 +1,49 @@
+import comtypes
+
+from .core import _AutomationClient
+
+
+class TextEditTextChangedEventHandler(comtypes.COMObject):
+    """
+    Generic `IUIAutomationTextEditTextChangedEventHandler` wrapper: invokes `callback` with
+    (sender: Control | None, change_type: int, event_strings: List[str]) whenever a watched
+    control's text changes via IME composition or autocorrect/autocomplete.
+
+    Pair with `core.AddTextEditTextChangedEventHandler` / `RemoveTextEditTextChangedEventHandler`:
+
+        handler = TextEditTextChangedEventHandler(my_callback)
+        AddTextEditTextChangedEventHandler(
+            control.Element, TreeScope.TreeScope_Element,
+            TextEditChangeType.TextEditChangeType_AutoCorrect, None, handler,
+        )
+        ...
+        RemoveTextEditTextChangedEventHandler(control.Element, handler)
+
+    Keep a reference to `handler` for as long as it should stay registered -- COM only holds
+    a reference while the subscription is active, and letting the last Python reference drop
+    can tear it down early.
+    """
+
+    _com_interfaces_ = [
+        _AutomationClient.instance().UIAutomationCore.IUIAutomationTextEditTextChangedEventHandler
+    ]
+
+    def __init__(self, callback):
+        self._callback = callback
+        super().__init__()
+
+    def HandleTextEditTextChangedEvent(self, sender, changeType, eventStrings):
+        try:
+            from .controls import Control
+
+            control = Control.CreateControlFromElement(sender) if sender else None
+            strings = list(eventStrings) if eventStrings else []
+            self._callback(control, changeType, strings)
+        except Exception:
+            pass
+        return 0  # S_OK
+
+
 class EventId:
     """
     EventId from IUIAutomation.

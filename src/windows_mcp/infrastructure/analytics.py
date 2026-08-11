@@ -1,5 +1,5 @@
 from typing import Dict, Any, TypeVar, Callable, Protocol, Awaitable
-from tempfile import TemporaryDirectory
+from windows_mcp.infrastructure.config import CONFIG_DIR
 from uuid_extensions import uuid7str
 from fastmcp import Context
 from functools import wraps
@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 import os
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -40,11 +41,22 @@ class Analytics(Protocol):
 
 
 class PostHogAnalytics:
-    TEMP_FOLDER = Path(TemporaryDirectory().name).parent
-    API_KEY = "phc_uxdCItyVTjXNU0sMPr97dq3tcz39scQNt3qjTYw5vLV"
-    HOST = "https://us.i.posthog.com"
+    USER_DATA_DIR = CONFIG_DIR
+    API_KEY = os.environ.get(
+        "POSTHOG_API_KEY",
+        "phc_uxdCItyVTjXNU0sMPr97dq3tcz39scQNt3qjTYw5vLV",
+    )
+    HOST = os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com")
 
     def __init__(self):
+        self.client = None
+        self._user_id = None
+        self.mcp_interaction_id = f"mcp_{int(time.time() * 1000)}_{os.getpid()}"
+
+        if not self.API_KEY:
+            logger.warning("PostHog API key is empty; analytics client will not be initialized")
+            return
+
         self.client = posthog.Posthog(
             self.API_KEY,
             host=self.HOST,
@@ -52,9 +64,6 @@ class PostHogAnalytics:
             enable_exception_autocapture=True,
             debug=False,
         )
-        self._user_id = None
-        self.mcp_interaction_id = f"mcp_{int(time.time() * 1000)}_{os.getpid()}"
-
 
         if self.client:
             logger.debug(
@@ -66,17 +75,30 @@ class PostHogAnalytics:
         if self._user_id:
             return self._user_id
 
-        user_id_file = self.TEMP_FOLDER / ".windows-mcp-user-id"
+        user_id_file = self.USER_DATA_DIR / ".windows-mcp-user-id"
         if user_id_file.exists():
-            self._user_id = user_id_file.read_text(encoding="utf-8").strip()
+            try:
+                self._user_id = user_id_file.read_text(encoding="utf-8").strip()
+            except OSError as e:
+                logger.warning(f"Could not read persisted user ID: {e}")
+                self._user_id = uuid7str()
+                self._persist_user_id(user_id_file)
         else:
             self._user_id = uuid7str()
-            try:
-                user_id_file.write_text(self._user_id, encoding="utf-8")
-            except Exception as e:
-                logger.warning(f"Could not persist user ID: {e}")
+            self._persist_user_id(user_id_file)
 
         return self._user_id
+
+    def _persist_user_id(self, user_id_file: Path) -> None:
+        try:
+            user_id_file.parent.mkdir(parents=True, exist_ok=True)
+            user_id_file.write_text(self._user_id, encoding="utf-8")
+            try:
+                user_id_file.chmod(0o600)
+            except OSError as e:
+                logger.debug(f"Could not restrict user ID file permissions: {e}")
+        except Exception as e:
+            logger.warning(f"Could not persist user ID: {e}")
 
     async def track_tool(self, tool_name: str, result: Dict[str, Any]) -> None:
         if self.client:
@@ -93,8 +115,6 @@ class PostHogAnalytics:
 
         duration = result.get("duration_ms", 0)
         success_mark = "SUCCESS" if result.get("success") else "FAILED"
-        # Using print for immediate visibility in console during debugging
-        print(f"[Analytics] {tool_name}: {success_mark} ({duration}ms)")
         logger.info(f"{tool_name}: {success_mark} ({duration}ms)")
 
     async def track_error(self, error: Exception, context: Dict[str, Any]) -> None:

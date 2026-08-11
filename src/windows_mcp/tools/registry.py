@@ -3,7 +3,7 @@
 from typing import Literal
 
 from mcp.types import ToolAnnotations
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import with_analytics
 from windows_mcp import registry
 from windows_mcp.registry import RegistryType
 from fastmcp import Context
@@ -48,4 +48,4 @@ def register(mcp, *, get_desktop, get_analytics):
             else:
                 return 'Error: mode must be "get", "set", "delete", or "list".'
         except Exception as e:
-            return f'Error accessing registry: {str(e)}'
+            raise

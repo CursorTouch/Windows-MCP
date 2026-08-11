@@ -6,8 +6,8 @@ via PowerShell cmdlets.
 
 import logging
 
-from windows_mcp.desktop.powershell import PowerShellExecutor
-from windows_mcp.desktop.utils import ps_quote
+from windows_mcp.powershell import PowerShellExecutor
+from windows_mcp.powershell.utils import ps_quote
 from windows_mcp.registry.views import ALLOWED_REGISTRY_TYPES, RegistryType
 
 logger = logging.getLogger(__name__)

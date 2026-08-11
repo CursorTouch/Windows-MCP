@@ -1,9 +1,13 @@
 import asyncio
+import shutil
+import os
+from uuid import uuid4
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import PostHogAnalytics, with_analytics
 
 
 class TestWithAnalytics:
@@ -79,3 +83,34 @@ class TestWithAnalytics:
 
         result = await tool_with_complex_result()
         assert result == {"key": "value", "count": 42}
+
+
+class TestPostHogAnalytics:
+    def test_user_id_falls_back_when_persisted_file_cannot_be_read(self, monkeypatch):
+        user_data_dir = (
+            Path(__file__).resolve().parent
+            / f".tmp-analytics-user-data-{os.getpid()}-{uuid4().hex}"
+        )
+        user_data_dir.mkdir()
+        try:
+            user_id_file = user_data_dir / ".windows-mcp-user-id"
+            user_id_file.write_text("persisted-user", encoding="utf-8")
+
+            analytics = PostHogAnalytics.__new__(PostHogAnalytics)
+            analytics._user_id = None
+            analytics.USER_DATA_DIR = user_data_dir
+
+            original_read_text = Path.read_text
+
+            def read_text_with_permission_error(path, *args, **kwargs):
+                if path == user_id_file:
+                    raise PermissionError("permission denied")
+                return original_read_text(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "read_text", read_text_with_permission_error)
+
+            assert analytics.user_id
+            assert analytics.user_id != "persisted-user"
+            assert original_read_text(user_id_file, encoding="utf-8") == analytics.user_id
+        finally:
+            shutil.rmtree(user_data_dir, ignore_errors=True)

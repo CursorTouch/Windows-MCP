@@ -1,14 +1,14 @@
 """Scrape tool — fetch/scrape web page content."""
 
 from mcp.types import ToolAnnotations
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
 
 
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="Scrape",
-        description="Fetch/scrape web page content from a URL. Keywords: scrape, fetch, browse, web, URL, extract, download, read webpage. By default (use_dom=False), performs a lightweight HTTP request to the URL and returns a clean LLM-processed summary of the page to avoid context bloat. Provide query to focus extraction on specific information. Set use_dom=True to extract from the active browser tab's DOM instead (required when site blocks HTTP requests). Set use_sampling=False to get raw content without LLM processing.",
+        description="Fetch/scrape web page content from a URL. Keywords: scrape, fetch, browse, web, URL, extract, download, read webpage. By default (use_dom=False), performs a lightweight HTTP request to the URL and returns a clean LLM-processed summary of the page to avoid context bloat. Provide query to focus extraction on specific information. Set use_dom=True to extract from the active browser tab's DOM instead (required when site blocks HTTP requests; supported in Chrome, Edge, and Firefox). Set use_sampling=False to get raw content without LLM processing.",
         annotations=ToolAnnotations(
             title="Scrape",
             readOnlyHint=True,

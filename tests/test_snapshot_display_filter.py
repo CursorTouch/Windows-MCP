@@ -4,11 +4,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-from windows_mcp.desktop.screenshot import _crop_screenshot  # noqa
+from windows_mcp.desktop.screenshot import DxcamOutput, _DxcamBackend, _crop_screenshot  # noqa
 from windows_mcp.desktop.service import Desktop
-from windows_mcp.desktop.views import DesktopState, Size, Status, Window
-from windows_mcp.tree.views import BoundingBox, Center, ScrollElementNode, TreeElementNode, TreeState
-from windows_mcp.uia import Rect
+from windows_mcp.desktop.views import DesktopState, Size, Status, Window, Display
+from windows_mcp.tree.views import (
+    BoundingBox,
+    Center,
+    ScrollElementNode,
+    SemanticNode,
+    TreeElementNode,
+    TreeState,
+)
+from windows_mcp.uia import Rect, DisplayInfo
 import windows_mcp.__main__ as main_module
 
 
@@ -50,24 +57,39 @@ class TestDisplayFiltering:
             desktop = Desktop()
             return desktop
 
-    def test_get_display_union_rect(self, desktop):
-        with patch("windows_mcp.desktop.service.uia.GetMonitorsRect") as mock_get_monitors:
-            mock_get_monitors.return_value = [
-                Rect(0, 0, 1920, 1080),
-                Rect(1920, 0, 3840, 1080),
-            ]
+    def test_get_display_union_rect_uses_active_display_indices_not_list_position(self, desktop):
+        displays = [
+            DisplayInfo(
+                index=1,
+                device_name="\\\\.\\DISPLAY5",
+                rect=Rect(0, 0, 1920, 1080),
+                primary=False,
+            ),
+            DisplayInfo(
+                index=0,
+                device_name="\\\\.\\DISPLAY1",
+                rect=Rect(1920, 0, 3840, 1080),
+                primary=True,
+            ),
+        ]
 
-            result = desktop.get_display_union_rect([1])
-            assert result == Rect(1920, 0, 3840, 1080)
+        result = desktop.get_display_union_rect([1], displays)
+        assert result == Rect(0, 0, 1920, 1080)
 
-            combined = desktop.get_display_union_rect([0, 1])
-            assert combined == Rect(0, 0, 3840, 1080)
+        combined = desktop.get_display_union_rect([0, 1], displays)
+        assert combined == Rect(0, 0, 3840, 1080)
 
     def test_get_display_union_rect_rejects_missing_display(self, desktop):
-        with patch("windows_mcp.desktop.service.uia.GetMonitorsRect") as mock_get_monitors:
-            mock_get_monitors.return_value = [Rect(0, 0, 1920, 1080)]
-            with pytest.raises(ValueError):
-                desktop.get_display_union_rect([1])
+        displays = [
+            DisplayInfo(
+                index=0,
+                device_name="\\\\.\\DISPLAY1",
+                rect=Rect(0, 0, 1920, 1080),
+                primary=True,
+            ),
+        ]
+        with pytest.raises(ValueError):
+            desktop.get_display_union_rect([1], displays)
 
     def test_filter_state_to_selected_display(self, desktop):
         region = make_box(1920, 0, 3840, 1080)
@@ -89,6 +111,39 @@ class TestDisplayFiltering:
             handle=2,
             process_id=22,
         )
+        semantic_root = SemanticNode(
+            control_type="Desktop",
+            element_type="desktop",
+            name="Desktop",
+            window_name="Desktop",
+        )
+        kept_semantic_window = SemanticNode(
+            control_type="Window",
+            element_type="window",
+            name="Browser",
+            window_name="Browser",
+        )
+        kept_semantic_window.add_child(
+            SemanticNode(
+                control_type="Button",
+                element_type="interactive",
+                name="Visible",
+                window_name="Browser",
+                bounding_box=make_box(2000, 200, 2100, 260),
+                center=Center(x=2050, y=230),
+            )
+        )
+        kept_semantic_window.add_child(
+            SemanticNode(
+                control_type="Button",
+                element_type="interactive",
+                name="LeftSide",
+                window_name="Browser",
+                bounding_box=make_box(200, 200, 260, 260),
+                center=Center(x=230, y=230),
+            )
+        )
+        semantic_root.add_child(kept_semantic_window)
         tree_state = TreeState(
             interactive_nodes=[
                 TreeElementNode(
@@ -118,6 +173,7 @@ class TestDisplayFiltering:
                     metadata={"vertical_scrollable": True},
                 )
             ],
+            semantic_tree_root=semantic_root,
         )
 
         filtered_tree = desktop._filter_tree_state_to_region(tree_state, region)
@@ -131,6 +187,10 @@ class TestDisplayFiltering:
         assert [node.name for node in filtered_tree.interactive_nodes] == ["Visible"]
         assert filtered_tree.scrollable_nodes[0].bounding_box.left == 1920
         assert filtered_tree.root_node.bounding_box == region
+        assert filtered_tree.semantic_tree_root is not None
+        assert [node.name for node in filtered_tree.semantic_tree_root.children[0].children] == [
+            "Visible"
+        ]
 
     def test_crop_screenshot_to_display_region(self, desktop):
         screenshot = Image.new("RGB", (3840, 1080), "white")
@@ -143,9 +203,13 @@ class TestDisplayFiltering:
         capture_rect = Rect(1920, 0, 3840, 1080)
         with patch("windows_mcp.desktop.screenshot.dxcam", None):
             with patch("windows_mcp.desktop.screenshot.ImageGrab.grab") as mock_grab:
-                with patch("windows_mcp.desktop.screenshot.get_screenshot_backend") as mock_screenshot_backend:
+                with patch(
+                    "windows_mcp.desktop.screenshot.get_screenshot_backend"
+                ) as mock_screenshot_backend:
                     mock_grab.return_value = Image.new("RGB", (1920, 1080), "white")
-                    mock_screenshot_backend.return_value = "pillow"  # Ensure we test the Pillow path
+                    mock_screenshot_backend.return_value = (
+                        "pillow"  # Ensure we test the Pillow path
+                    )
                     screenshot = desktop.get_screenshot(capture_rect=capture_rect)
 
         assert screenshot.size == (1920, 1080)
@@ -154,8 +218,7 @@ class TestDisplayFiltering:
             "all_screens": True,
         }
 
-    def test_get_screenshot_uses_dxcam_for_single_display_capture(self, desktop, monkeypatch):
-        capture_rect = Rect(1920, 0, 3840, 1080)
+    def test_display_second_monitor_uses_matching_dxgi_output(self, desktop, monkeypatch):
         fake_camera = MagicMock()
         fake_camera.grab.return_value = [[[255, 255, 255]]]
         fake_dxcam = MagicMock()
@@ -165,9 +228,33 @@ class TestDisplayFiltering:
         monkeypatch.setattr("windows_mcp.desktop.screenshot.dxcam", fake_dxcam)
         monkeypatch.setattr("windows_mcp.desktop.screenshot._backend_instances", {})
         monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect",
-            lambda: [Rect(0, 0, 1920, 1080), Rect(1920, 0, 3840, 1080)],
+            "windows_mcp.desktop.service.uia.GetDisplays",
+            lambda: [
+                DisplayInfo(
+                    index=0,
+                    device_name="\\\\.\\DISPLAY1",
+                    rect=Rect(1920, 0, 3840, 1080),
+                    primary=True,
+                ),
+                DisplayInfo(
+                    index=1,
+                    device_name="\\\\.\\DISPLAY5",
+                    rect=Rect(0, 0, 1920, 1080),
+                    primary=False,
+                ),
+            ],
         )
+        monkeypatch.setattr(
+            _DxcamBackend,
+            "_iter_outputs",
+            staticmethod(
+                lambda: [
+                    DxcamOutput(device_idx=0, output_idx=0, rect=Rect(1920, 0, 3840, 1080)),
+                    DxcamOutput(device_idx=0, output_idx=1, rect=Rect(0, 0, 1920, 1080)),
+                ]
+            ),
+        )
+        capture_rect = desktop.get_display_union_rect([1])
         with patch(
             "windows_mcp.desktop.screenshot.Image.fromarray",
             return_value=Image.new("RGB", (1, 1), "white"),
@@ -175,19 +262,31 @@ class TestDisplayFiltering:
             screenshot = desktop.get_screenshot(capture_rect=capture_rect)
 
         assert screenshot.size == (1, 1)
-        fake_dxcam.create.assert_called_once_with(output_idx=1, processor_backend="numpy")
+        fake_dxcam.create.assert_called_once_with(
+            device_idx=0,
+            output_idx=1,
+            processor_backend="numpy",
+        )
         fake_camera.grab.assert_called_once_with(region=None, copy=True, new_frame_only=False)
         mock_fromarray.assert_called_once()
 
-    def test_get_screenshot_falls_back_to_pillow_when_dxcam_region_is_unsupported(self, desktop, monkeypatch):
+    def test_get_screenshot_falls_back_to_pillow_when_dxcam_region_is_unsupported(
+        self, desktop, monkeypatch
+    ):
         capture_rect = Rect(0, 0, 3840, 1080)
         fake_dxcam = MagicMock()
 
         monkeypatch.setenv("WINDOWS_MCP_SCREENSHOT_BACKEND", "dxcam")
         monkeypatch.setattr("windows_mcp.desktop.screenshot.dxcam", fake_dxcam)
         monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect",
-            lambda: [Rect(0, 0, 1920, 1080), Rect(1920, 0, 3840, 1080)],
+            _DxcamBackend,
+            "_iter_outputs",
+            staticmethod(
+                lambda: [
+                    DxcamOutput(device_idx=0, output_idx=0, rect=Rect(0, 0, 1920, 1080)),
+                    DxcamOutput(device_idx=0, output_idx=1, rect=Rect(1920, 0, 3840, 1080)),
+                ]
+            ),
         )
         with patch("windows_mcp.desktop.screenshot.ImageGrab.grab") as mock_grab:
             mock_grab.return_value = Image.new("RGB", (3840, 1080), "white")
@@ -222,7 +321,9 @@ class TestDisplayFiltering:
 
     def test_grid_lines_use_selected_display_region(self, desktop):
         screenshot = Image.new("RGB", (1920, 1080), "white")
-        with patch.object(desktop, "get_screenshot", return_value=screenshot) as mock_get_screenshot:
+        with patch.object(
+            desktop, "get_screenshot", return_value=screenshot
+        ) as mock_get_screenshot:
             with patch("windows_mcp.desktop.service.uia.GetVirtualScreenRect") as mock_virtual_rect:
                 mock_virtual_rect.return_value = (0, 0, 3840, 1080)
                 annotated = desktop.get_annotated_screenshot(
@@ -235,6 +336,56 @@ class TestDisplayFiltering:
         mock_get_screenshot.assert_called_once_with(capture_rect=Rect(1920, 0, 3840, 1080))
         assert annotated.getpixel((960, 100)) != (255, 255, 255)
         assert annotated.getpixel((100, 540)) != (255, 255, 255)
+
+    def test_annotation_offsets_nodes_by_selected_display_region(self, desktop):
+        screenshot = Image.new("RGB", (1920, 1080), "white")
+        node = TreeElementNode(
+            name="Screen 2 Button",
+            control_type="Button",
+            window_name="App",
+            bounding_box=make_box(2000, 100, 2100, 200),
+            center=Center(x=2050, y=150),
+            metadata={},
+        )
+
+        with patch.object(desktop, "get_screenshot", return_value=screenshot):
+            with patch("windows_mcp.desktop.service.random.randint", return_value=0):
+                annotated = desktop.get_annotated_screenshot(
+                    nodes=[node],
+                    capture_rect=Rect(1920, 0, 3840, 1080),
+                )
+
+        assert annotated.size == (1920, 1080)
+        assert annotated.getpixel((80, 100)) != (255, 255, 255)
+
+    def test_annotation_keeps_full_desktop_screenshot_size(self, desktop):
+        screenshot = Image.new("RGB", (3840, 1080), "white")
+        with patch.object(desktop, "get_screenshot", return_value=screenshot):
+            with patch("windows_mcp.desktop.service.uia.GetVirtualScreenRect") as mock_virtual_rect:
+                mock_virtual_rect.return_value = (0, 0, 3840, 1080)
+                annotated = desktop.get_annotated_screenshot(nodes=[])
+
+        assert annotated.size == (3840, 1080)
+
+    def test_annotation_clamps_edge_label_inside_screenshot(self, desktop):
+        screenshot = Image.new("RGB", (40, 30), "white")
+        node = TreeElementNode(
+            name="Top Edge Button",
+            control_type="Button",
+            window_name="App",
+            bounding_box=make_box(30, 0, 39, 5),
+            center=Center(x=34, y=2),
+            metadata={},
+        )
+
+        with patch.object(desktop, "get_screenshot", return_value=screenshot):
+            with patch("windows_mcp.desktop.service.uia.GetVirtualScreenRect") as mock_virtual_rect:
+                with patch("windows_mcp.desktop.service.random.randint", return_value=0):
+                    mock_virtual_rect.return_value = (0, 0, 40, 30)
+                    annotated = desktop.get_annotated_screenshot(nodes=[node])
+
+        assert annotated.size == (40, 30)
+        assert annotated.getpixel((30, 7)) != (255, 255, 255)
 
     def test_desktop_state_tracks_selected_displays(self):
         state = DesktopState(
@@ -249,6 +400,79 @@ class TestDisplayFiltering:
         assert state.screenshot_original_size.to_string() == "(1920,1080)"
         assert state.screenshot_region.xyxy_to_string() == "(1920,0,3840,1080)"
         assert state.screenshot_displays == [1]
+
+    def test_get_state_includes_visible_non_active_windows_in_selected_display_tree(self, desktop):
+        desktop.tree = MagicMock()
+        desktop.tree.screen_box = make_box(-2560, 0, 2560, 1440)
+        desktop.tree.get_state.return_value = TreeState(
+            interactive_nodes=[
+                TreeElementNode(
+                    name="文本编辑器",
+                    control_type="DocumentControl",
+                    window_name="无标题 - 记事本",
+                    bounding_box=make_box(-2147, 300, -243, 1034),
+                    center=Center(x=-1195, y=667),
+                    metadata={},
+                )
+            ]
+        )
+        desktop.get_displays = MagicMock(
+            return_value=[
+                DisplayInfo(
+                    index=0,
+                    device_name="\\\\.\\DISPLAY1",
+                    rect=Rect(0, 0, 2560, 1440),
+                    primary=True,
+                ),
+                DisplayInfo(
+                    index=1,
+                    device_name="\\\\.\\DISPLAY5",
+                    rect=Rect(-2560, 0, 0, 1440),
+                    primary=False,
+                ),
+            ]
+        )
+        active_window = Window(
+            name="Browser",
+            is_browser=True,
+            depth=0,
+            status=Status.NORMAL,
+            bounding_box=make_box(100, 100, 700, 500),
+            handle=1,
+            process_id=11,
+        )
+        notepad_window = Window(
+            name="无标题 - 记事本",
+            is_browser=False,
+            depth=1,
+            status=Status.NORMAL,
+            bounding_box=make_box(-2156, 175, -235, 1043),
+            handle=2,
+            process_id=22,
+        )
+        desktop.get_controls_handles = MagicMock(return_value={1, 2, 3, 4})
+        desktop.get_windows = MagicMock(return_value=([active_window, notepad_window], {1, 2}))
+        desktop.get_active_window = MagicMock(return_value=active_window)
+        desktop.get_cursor_location = MagicMock(return_value=(-1000, 500))
+
+        with patch(
+            "windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}
+        ):
+            with patch(
+                "windows_mcp.desktop.service.get_all_desktops", return_value=[{"name": "Desktop 1"}]
+            ):
+                state = desktop.get_state(
+                    use_vision=False,
+                    use_annotation=False,
+                    use_ui_tree=True,
+                    display_indices=[1],
+                )
+
+        desktop.tree.get_state.assert_called_once()
+        active_handle, other_handles = desktop.tree.get_state.call_args.args[:2]
+        assert active_handle is None
+        assert set(other_handles) == {2, 3, 4}
+        assert [node.name for node in state.tree_state.interactive_nodes] == ["文本编辑器"]
 
     def test_get_state_skips_tree_capture_when_use_ui_tree_false(self, desktop):
         desktop.tree = MagicMock()
@@ -268,8 +492,12 @@ class TestDisplayFiltering:
         desktop.get_cursor_location = MagicMock(return_value=(250, 180))
         desktop.get_screenshot = MagicMock(return_value=Image.new("RGB", (800, 600), "white"))
 
-        with patch("windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}):
-            with patch("windows_mcp.desktop.service.get_all_desktops", return_value=[{"name": "Desktop 1"}]):
+        with patch(
+            "windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}
+        ):
+            with patch(
+                "windows_mcp.desktop.service.get_all_desktops", return_value=[{"name": "Desktop 1"}]
+            ):
                 state = desktop.get_state(
                     use_vision=True,
                     use_annotation=False,
@@ -307,10 +535,17 @@ class TestDisplayFiltering:
         logged: list[str] = []
 
         monkeypatch.setenv("WINDOWS_MCP_PROFILE_SNAPSHOT", "1")
-        monkeypatch.setattr("windows_mcp.desktop.service.logger.info", lambda message, *args: logged.append(message % args if args else message))
+        monkeypatch.setattr(
+            "windows_mcp.desktop.service.logger.info",
+            lambda message, *args: logged.append(message % args if args else message),
+        )
 
-        with patch("windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}):
-            with patch("windows_mcp.desktop.service.get_all_desktops", return_value=[{"name": "Desktop 1"}]):
+        with patch(
+            "windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}
+        ):
+            with patch(
+                "windows_mcp.desktop.service.get_all_desktops", return_value=[{"name": "Desktop 1"}]
+            ):
                 desktop.get_state(
                     use_vision=False,
                     use_annotation=False,
@@ -332,7 +567,15 @@ class TestSnapshotTools:
             cursor_position=(25, 30),
             screenshot_original_size=Size(width=640, height=480),
             screenshot_region=make_box(0, 0, 640, 480),
-            screenshot_displays=[0],
+            screenshot_displays=[1],
+            available_displays=[
+                Display(
+                    index=1,
+                    device_name="\\\\.\\DISPLAY5",
+                    bounding_box=make_box(0, 0, 640, 480),
+                    primary=False,
+                ),
+            ],
             tree_state=TreeState(),
         )
 
@@ -341,7 +584,7 @@ class TestSnapshotTools:
         fake_desktop.get_state.return_value = desktop_state
         monkeypatch.setattr(main_module, "desktop", fake_desktop)
 
-        result = asyncio.run(main_module.state_tool(use_vision=True, display=[0]))
+        result = asyncio.run(main_module.state_tool(use_vision=True, display=[1]))
 
         assert len(result) == 2
         call = fake_desktop.get_state.call_args.kwargs
@@ -354,7 +597,7 @@ class TestSnapshotTools:
         fake_desktop.get_state.return_value = desktop_state
         monkeypatch.setattr(main_module, "desktop", fake_desktop)
 
-        result = asyncio.run(main_module.screenshot_tool(display=[0]))
+        result = asyncio.run(main_module.screenshot_tool(display=[1]))
 
         assert len(result) == 2
         assert "UI Tree: Skipped for fast screenshot-only capture." in result[0]

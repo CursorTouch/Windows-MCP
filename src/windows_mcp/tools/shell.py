@@ -1,8 +1,8 @@
 """PowerShell tool — shell/command execution."""
 
 from mcp.types import ToolAnnotations
-from windows_mcp.analytics import with_analytics
-from windows_mcp.desktop.powershell import PowerShellExecutor
+from windows_mcp.infrastructure import with_analytics
+from windows_mcp.powershell import PowerShellExecutor
 from fastmcp import Context
 
 
@@ -24,4 +24,4 @@ def register(mcp, *, get_desktop, get_analytics):
             response, status_code = PowerShellExecutor.execute_command(command, timeout)
             return f"Response: {response}\nStatus Code: {status_code}"
         except Exception as e:
-            return f"Error executing command: {str(e)}\nStatus Code: 1"
+            raise

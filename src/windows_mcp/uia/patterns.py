@@ -19,7 +19,7 @@ import time
 import ctypes
 import ctypes.wintypes
 import comtypes
-from typing import Any, List, TYPE_CHECKING
+from typing import Any, List, Tuple, TYPE_CHECKING
 from .enums import *
 from .core import *
 from .core import _AutomationClient
@@ -195,6 +195,18 @@ Refer https://docs.microsoft.com/en-us/previous-versions//dd319586(v=vs.85)
 """
 
 
+def _Control():
+    """
+    Lazily resolve the `Control` class from `.controls`. Needed because `.controls` imports
+    `from .patterns import *` -- a top-level `from .controls import Control` here would be a
+    circular import (patterns.py loads before controls.py finishes). Every pattern method
+    that turns a raw COM element back into a `Control` needs this.
+    """
+    from .controls import Control
+
+    return Control
+
+
 class AnnotationPattern:
     def __init__(self, pattern=None):
         """Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nn-uiautomationclient-iuiautomationannotationpattern"""
@@ -246,7 +258,7 @@ class AnnotationPattern:
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationannotationpattern-get_currenttarget
         """
         ele = self.pattern.CurrentTarget
-        return Control.CreateControlFromElement(ele)
+        return _Control().CreateControlFromElement(ele)
 
 
 class CustomNavigationPattern:
@@ -263,7 +275,7 @@ class CustomNavigationPattern:
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationcustomnavigationpattern-navigate
         """
         ele = self.pattern.Navigate(direction)
-        return Control.CreateControlFromElement(ele)
+        return _Control().CreateControlFromElement(ele)
 
 
 class DockPattern:
@@ -342,7 +354,7 @@ class DragPattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -457,7 +469,7 @@ class GridItemPattern:
         Return `Control` subclass, the element that contains the grid item.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationgriditempattern-get_currentcontaininggrid
         """
-        return Control.CreateControlFromElement(self.pattern.CurrentContainingGrid)
+        return _Control().CreateControlFromElement(self.pattern.CurrentContainingGrid)
 
     @property
     def Row(self) -> int:
@@ -511,7 +523,7 @@ class GridPattern:
         Return `Control` subclass, a control representing an item in the grid.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationgridpattern-getitem
         """
-        return Control.CreateControlFromElement(self.pattern.GetItem(row, column))
+        return _Control().CreateControlFromElement(self.pattern.GetItem(row, column))
 
 
 class InvokePattern:
@@ -547,7 +559,7 @@ class ItemContainerPattern:
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationitemcontainerpattern-finditembyproperty
         """
         ele = self.pattern.FindItemByProperty(control.Element, propertyId, propertyValue)
-        return Control.CreateControlFromElement(ele)
+        return _Control().CreateControlFromElement(ele)
 
 
 class LegacyIAccessiblePattern:
@@ -669,7 +681,7 @@ class LegacyIAccessiblePattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1008,7 +1020,7 @@ class SelectionItemPattern:
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationscrollpattern-get_currentselectioncontainer
         """
         ele = self.pattern.CurrentSelectionContainer
-        return Control.CreateControlFromElement(ele)
+        return _Control().CreateControlFromElement(ele)
 
     def RemoveFromSelection(self, waitTime: float = OPERATION_WAIT_TIME) -> bool:
         """
@@ -1071,7 +1083,7 @@ class SelectionPattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1094,7 +1106,7 @@ class SelectionPattern2(SelectionPattern):
         Return Control subclass, the currently selected element.
         """
         ele = self.pattern.CurrentCurrentSelectedItem
-        return Control.CreateControlFromElement(element=ele) if ele else None
+        return _Control().CreateControlFromElement(element=ele) if ele else None
 
     @property
     def FirstSelectedItem(self):
@@ -1104,7 +1116,7 @@ class SelectionPattern2(SelectionPattern):
         Return Control subclass, the currently selected element.
         """
         ele = self.pattern.CurrentFirstSelectedItem
-        return Control.CreateControlFromElement(element=ele) if ele else None
+        return _Control().CreateControlFromElement(element=ele) if ele else None
 
     @property
     def LastSelectedItem(self):
@@ -1114,7 +1126,7 @@ class SelectionPattern2(SelectionPattern):
         Return Control subclass, the currently selected element.
         """
         ele = self.pattern.CurrentLastSelectedItem
-        return Control.CreateControlFromElement(element=ele) if ele else None
+        return _Control().CreateControlFromElement(element=ele) if ele else None
 
     @property
     def ItemCount(self) -> int:
@@ -1151,7 +1163,7 @@ class SpreadsheetItemPattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1180,7 +1192,7 @@ class SpreadsheetPattern:
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationspreadsheetpattern-getitembyname
         """
         ele = self.pattern.GetItemByName(name)
-        return Control.CreateControlFromElement(element=ele)
+        return _Control().CreateControlFromElement(element=ele)
 
 
 class StylesPattern:
@@ -1289,7 +1301,7 @@ class TableItemPattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1306,7 +1318,7 @@ class TableItemPattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1339,7 +1351,7 @@ class TablePattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1356,7 +1368,7 @@ class TablePattern:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1412,7 +1424,7 @@ class TextRange:
                     or a positive value if the caller's endpoint occurs later in the text than the target endpoint.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtextrange-compareendpoints
         """
-        return self.textRange.CompareEndpoints(srcEndPoint, textRange, targetEndPoint)
+        return self.textRange.CompareEndpoints(srcEndPoint, textRange.textRange, targetEndPoint)
 
     def ExpandToEnclosingUnit(self, unit: int, waitTime: float = OPERATION_WAIT_TIME) -> bool:
         """
@@ -1466,6 +1478,103 @@ class TextRange:
         """
         return self.textRange.GetAttributeValue(textAttributeId)
 
+    def _query_interface(self, interfaceName: str):
+        """
+        QueryInterface this range up to a newer `IUIAutomationTextRange2`/`3` interface.
+        interfaceName: str, e.g. "IUIAutomationTextRange2".
+        Return the raw COM pointer, or None if this range's provider doesn't implement it
+            (either QueryInterface raises, or hands back a null pointer).
+        """
+        try:
+            upgraded = self.textRange.QueryInterface(
+                getattr(_AutomationClient.instance().UIAutomationCore, interfaceName)
+            )
+        except (comtypes.COMError, OSError):
+            return None
+        return upgraded if upgraded else None
+
+    def GetAttributeValues(self, textAttributeIds: List[int]) -> List[Any] | None:
+        """
+        Call IUIAutomationTextRange3::GetAttributeValues.
+        Batched sibling of `GetAttributeValue`: fetches every id in `textAttributeIds` in a
+        single COM call instead of one call per attribute -- matters because each TextRange
+        COM call has real per-call latency (this is the same cost that made per-word
+        `Move`/`ExpandToEnclosingUnit` calls expensive; see `Control._iter_word_ranges`).
+        textAttributeIds: List[int], values from `TextAttributeId`.
+        Return List[Any], one value per id in the same order, or None if this range's provider
+            doesn't implement `IUIAutomationTextRange3` (QueryInterface fails) -- verified
+            present on both Windows 11 Notepad and Edge/Chromium document ranges, but not
+            guaranteed universally supported.
+        Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomationtextrange3-getattributevalues
+        """
+        if not textAttributeIds:
+            return []
+        textRange3 = self._query_interface("IUIAutomationTextRange3")
+        if textRange3 is None:
+            return None
+        idsArray = (ctypes.c_long * len(textAttributeIds))(*textAttributeIds)
+        return list(textRange3.GetAttributeValues(idsArray, len(textAttributeIds)))
+
+    def ShowContextMenu(self, waitTime: float = OPERATION_WAIT_TIME) -> bool:
+        """
+        Call IUIAutomationTextRange2::ShowContextMenu.
+        Show the context menu associated with this text range (as if right-clicked), if the
+        control supports one.
+        waitTime: float.
+        Return bool, True if the call succeeded, False if this range's provider doesn't
+            implement `IUIAutomationTextRange2` or the call otherwise failed.
+        Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomationtextrange2-showcontextmenu
+        """
+        textRange2 = self._query_interface("IUIAutomationTextRange2")
+        if textRange2 is None:
+            return False
+        try:
+            ret = textRange2.ShowContextMenu() == S_OK
+        except comtypes.COMError:
+            return False
+        time.sleep(waitTime)
+        return ret
+
+    def GetEnclosingElementBuildCache(self, cacheRequest: "CacheRequest") -> "Control" | None:
+        """
+        Call IUIAutomationTextRange3::GetEnclosingElementBuildCache.
+        Same as `GetEnclosingControl`, but caches the requested properties/patterns on the
+        returned element in the same round trip, so subsequent `CachedXxx` reads on it don't
+        need extra live COM calls.
+        cacheRequest: CacheRequest, specifies which properties/patterns to cache.
+        Return `Control` subclass, or None if this range's provider doesn't implement
+            `IUIAutomationTextRange3` or there's no enclosing element.
+        Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomationtextrange3-getenclosingelementbuildcache
+        """
+        textRange3 = self._query_interface("IUIAutomationTextRange3")
+        if textRange3 is None:
+            return None
+        element = textRange3.GetEnclosingElementBuildCache(cacheRequest.check_request)
+        return _Control().CreateControlFromElement(element) if element else None
+
+    def GetChildrenBuildCache(self, cacheRequest: "CacheRequest") -> List["Control"]:
+        """
+        Call IUIAutomationTextRange3::GetChildrenBuildCache.
+        Same as `GetChildren`, but caches the requested properties/patterns on each returned
+        embedded-object element in the same round trip.
+        cacheRequest: CacheRequest, specifies which properties/patterns to cache.
+        Return List[Control], empty if there are none or this range's provider doesn't
+            implement `IUIAutomationTextRange3`.
+        Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomationtextrange3-getchildrenbuildcache
+        """
+        textRange3 = self._query_interface("IUIAutomationTextRange3")
+        if textRange3 is None:
+            return []
+        eleArray = textRange3.GetChildrenBuildCache(cacheRequest.check_request)
+        if not eleArray:
+            return []
+        controls = []
+        for i in range(eleArray.Length):
+            control = _Control().CreateControlFromElement(eleArray.GetElement(i))
+            if control:
+                controls.append(control)
+        return controls
+
     def GetBoundingRectangles(self) -> List[Rect]:
         """
         Call IUIAutomationTextRange::GetBoundingRectangles.
@@ -1501,7 +1610,7 @@ class TextRange:
             controls = []
             for i in range(eleArray.Length):
                 ele = eleArray.GetElement(i)
-                con = Control.CreateControlFromElement(element=ele)
+                con = _Control().CreateControlFromElement(element=ele)
                 if con:
                     controls.append(con)
             return controls
@@ -1513,7 +1622,7 @@ class TextRange:
         Return `Control` subclass, the innermost UI Automation element that encloses the text range.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtextrange-getenclosingelement
         """
-        return Control.CreateControlFromElement(self.textRange.GetEnclosingElement())
+        return _Control().CreateControlFromElement(self.textRange.GetEnclosingElement())
 
     def GetText(self, maxLength: int = -1) -> str:
         """
@@ -1640,7 +1749,7 @@ class TextChildPattern:
         Return `Control` subclass, the nearest ancestor element that supports the Text control pattern.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtextchildpattern-get_textcontainer
         """
-        return Control.CreateControlFromElement(self.pattern.TextContainer)
+        return _Control().CreateControlFromElement(self.pattern.TextContainer)
 
     @property
     def TextRange(self) -> TextRange:
@@ -1745,7 +1854,7 @@ class TextPattern:
             hyperlink, Microsoft Excel spreadsheet, or other embedded object.
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationtextpattern-rangefromchild
         """
-        textRange = self.pattern.RangeFromChild(Control.Element)
+        textRange = self.pattern.RangeFromChild(child.Element)
         if textRange:
             return TextRange(textRange=textRange)
         return None
@@ -1767,6 +1876,37 @@ class TextPattern2:
     def __init__(self, pattern=None):
         """Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nn-uiautomationclient-iuiautomationtextpattern2"""
         self.pattern = pattern
+
+    def GetCaretRange(self) -> Tuple[bool, TextRange | None]:
+        """
+        Call IUIAutomationTextPattern2::GetCaretRange.
+        Return Tuple[bool, TextRange | None]: (isActive, caretRange).
+            isActive: True if this control's caret is the one with focus (a control can report
+                a remembered caret position even while it doesn't have focus, in which case
+                this is False).
+            caretRange: a degenerate (zero-length) `TextRange` at the caret position, or None
+                if the provider didn't return one.
+        NOTE: not implemented by every provider -- verified missing on Chromium/Edge
+            (`GetCurrentPattern` returns a null pointer, so `Control.GetPattern` returns None
+            before this method is ever reached); confirmed working against Windows 11 Notepad.
+        Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomationtextpattern2-getcaretrange
+        """
+        isActive, textRange = self.pattern.GetCaretRange()
+        return bool(isActive), (TextRange(textRange=textRange) if textRange else None)
+
+    def RangeFromAnnotation(self, annotation) -> TextRange | None:
+        """
+        Call IUIAutomationTextPattern2::RangeFromAnnotation.
+        annotation: `Control` or its subclass -- an annotation element (e.g. a comment or
+            tracked-change/revision marker) obtained via `AnnotationPattern` or by walking the
+            tree for `ControlType.CustomControl`/annotation-role elements.
+        Return `TextRange` or None, the range of text the annotation is attached to.
+        Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomationtextpattern2-rangefromannotation
+        """
+        textRange = self.pattern.RangeFromAnnotation(annotation.Element)
+        if textRange:
+            return TextRange(textRange=textRange)
+        return None
 
 
 class TogglePattern:

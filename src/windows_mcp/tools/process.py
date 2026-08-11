@@ -3,8 +3,9 @@
 from typing import Literal
 
 from mcp.types import ToolAnnotations
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
+from windows_mcp import process
 
 
 def register(mcp, *, get_desktop, get_analytics):
@@ -29,14 +30,13 @@ def register(mcp, *, get_desktop, get_analytics):
         force: bool | str = False,
         ctx: Context = None,
     ) -> str:
-        desktop = get_desktop()
         try:
             if mode == "list":
-                return desktop.list_processes(name=name, sort_by=sort_by, limit=limit)
+                return process.list_processes(name=name, sort_by=sort_by, limit=limit)
             elif mode == "kill":
                 force = force is True or (isinstance(force, str) and force.lower() == "true")
-                return desktop.kill_process(name=name, pid=pid, force=force)
+                return process.kill_process(name=name, pid=pid, force=force)
             else:
                 return 'Error: mode must be either "list" or "kill".'
         except Exception as e:
-            return f"Error managing processes: {str(e)}"
+            raise

@@ -3,6 +3,7 @@
 Tests the ``capture()`` public API and each backend class directly,
 without going through ``Desktop.get_screenshot``.
 """
+
 from typing import Tuple
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +12,7 @@ from PIL import Image
 
 import windows_mcp.desktop.screenshot as screenshot
 from windows_mcp.desktop.screenshot import (
+    DxcamOutput,
     _DxcamBackend,
     _MssBackend,
     _PillowBackend,
@@ -28,6 +30,10 @@ from windows_mcp.uia import Rect
 MONITOR_0 = Rect(0, 0, 1920, 1080)
 MONITOR_1 = Rect(1920, 0, 3840, 1080)
 TWO_MONITORS = [MONITOR_0, MONITOR_1]
+DXGI_OUTPUTS = [
+    DxcamOutput(device_idx=0, output_idx=0, rect=MONITOR_0),
+    DxcamOutput(device_idx=0, output_idx=1, rect=MONITOR_1),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -125,49 +131,51 @@ class TestDxcamBackend:
 
     def test_is_available_false_when_capture_rect_is_none(self, monkeypatch):
         monkeypatch.setattr(screenshot, "dxcam", MagicMock())
-        monkeypatch.setattr(screenshot, "uia", MagicMock(GetMonitorsRect=lambda: TWO_MONITORS))
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
         backend = _DxcamBackend()
         assert backend.is_available(None) is False
 
-    def test_is_available_false_for_cross_monitor_rect(self, monkeypatch):
+    def test_is_available_false_for_cross_output_rect(self, monkeypatch):
         monkeypatch.setattr(screenshot, "dxcam", MagicMock())
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
         backend = _DxcamBackend()
         assert backend.is_available(Rect(0, 0, 3840, 1080)) is False
 
-    def test_is_available_true_for_single_monitor_rect(self, monkeypatch):
+    def test_is_available_true_for_single_output_rect(self, monkeypatch):
         monkeypatch.setattr(screenshot, "dxcam", MagicMock())
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
         backend = _DxcamBackend()
         assert backend.is_available(MONITOR_1) is True
 
-    def test_resolve_region_exact_monitor_match(self, monkeypatch):
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+    def test_resolve_region_exact_output_match(self, monkeypatch):
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
         result = _DxcamBackend._resolve_region(MONITOR_1)
-        assert result == (1, None)
+        assert result == (0, 1, None)
+
+    def test_resolve_region_uses_dxgi_geometry_when_output_order_differs(self, monkeypatch):
+        dxgi_outputs = [
+            DxcamOutput(device_idx=0, output_idx=0, rect=MONITOR_1),
+            DxcamOutput(device_idx=0, output_idx=1, rect=MONITOR_0),
+        ]
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: dxgi_outputs))
+
+        result = _DxcamBackend._resolve_region(MONITOR_1)
+
+        assert result == (0, 0, None)
 
     def test_resolve_region_sub_region_coordinates(self, monkeypatch):
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
         sub_rect = Rect(2000, 100, 2500, 500)
         result = _DxcamBackend._resolve_region(sub_rect)
         assert result is not None
-        output_idx, region = result
+        device_idx, output_idx, region = result
+        assert device_idx == 0
         assert output_idx == 1
         # Coordinates should be relative to monitor_1's origin (1920, 0).
         assert region == (2000 - 1920, 100 - 0, 2500 - 1920, 500 - 0)
 
-    def test_resolve_region_returns_none_for_cross_monitor(self, monkeypatch):
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+    def test_resolve_region_returns_none_for_cross_output_rect(self, monkeypatch):
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
         assert _DxcamBackend._resolve_region(Rect(0, 0, 3840, 1080)) is None
 
     def test_get_camera_caches_instance(self, monkeypatch):
@@ -177,10 +185,14 @@ class TestDxcamBackend:
         monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
 
         backend = _DxcamBackend()
-        cam1 = backend._get_camera(0)
-        cam2 = backend._get_camera(0)
+        cam1 = backend._get_camera(0, 1)
+        cam2 = backend._get_camera(0, 1)
         assert cam1 is cam2
-        fake_dxcam.create.assert_called_once()
+        fake_dxcam.create.assert_called_once_with(
+            device_idx=0,
+            output_idx=1,
+            processor_backend="numpy",
+        )
 
     def test_capture_returns_image(self, monkeypatch):
         fake_camera = MagicMock()
@@ -188,9 +200,7 @@ class TestDxcamBackend:
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
         monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
 
         fake_image = Image.new("RGB", (100, 100), "red")
         with patch.object(Image, "fromarray", return_value=fake_image):
@@ -200,6 +210,31 @@ class TestDxcamBackend:
         assert isinstance(result, Image.Image)
         assert result.size == (100, 100)
         assert result.getbbox() is not None
+        fake_dxcam.create.assert_called_once_with(
+            device_idx=0,
+            output_idx=1,
+            processor_backend="numpy",
+        )
+
+    def test_capture_uses_output_relative_region_for_sub_region(self, monkeypatch):
+        fake_camera = MagicMock()
+        fake_camera.grab.return_value = [[[255, 0, 0]]]
+        fake_dxcam = MagicMock()
+        fake_dxcam.create.return_value = fake_camera
+        monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
+
+        fake_image = Image.new("RGB", (100, 100), "red")
+        with patch.object(Image, "fromarray", return_value=fake_image):
+            backend = _DxcamBackend()
+            result = backend.capture(Rect(2000, 100, 2500, 500))
+
+        assert result.size == (100, 100)
+        fake_camera.grab.assert_called_once_with(
+            region=(80, 100, 580, 500),
+            copy=True,
+            new_frame_only=False,
+        )
 
     def test_capture_raises_on_none_frame(self, monkeypatch):
         fake_camera = MagicMock()
@@ -207,9 +242,7 @@ class TestDxcamBackend:
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
         monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
 
         backend = _DxcamBackend()
         with pytest.raises(RuntimeError, match="no frame"):
@@ -462,12 +495,10 @@ class TestCapture:
         assert isinstance(image, Image.Image)
         assert image.size == (1920, 1080)
 
-    def test_explicit_dxcam_cross_monitor_rect_falls_back_to_pillow(self, monkeypatch):
+    def test_explicit_dxcam_cross_output_rect_falls_back_to_pillow(self, monkeypatch):
         monkeypatch.setenv("WINDOWS_MCP_SCREENSHOT_BACKEND", "dxcam")
         monkeypatch.setattr(screenshot, "dxcam", MagicMock())
-        monkeypatch.setattr(
-            "windows_mcp.desktop.screenshot.uia.GetMonitorsRect", lambda: TWO_MONITORS
-        )
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
 
         fake_img = Image.new("RGB", (3840, 1080), "blue")
         monkeypatch.setattr(
@@ -479,6 +510,23 @@ class TestCapture:
         assert backend_name == "pillow"
         assert isinstance(image, Image.Image)
         assert image.size == (3840, 1080)
+
+    def test_auto_falls_back_when_dxcam_create_loses_output(self, monkeypatch):
+        fake_dxcam = MagicMock()
+        fake_dxcam.create.side_effect = IndexError("list index out of range")
+        monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
+        monkeypatch.setattr(screenshot, "mss", None)
+        monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
+
+        fake_img = Image.new("RGB", (1920, 1080), "blue")
+        monkeypatch.setattr(
+            screenshot, "ImageGrab", MagicMock(grab=MagicMock(return_value=fake_img))
+        )
+
+        image, backend_name = capture(MONITOR_1, backend="auto")
+
+        assert backend_name == "pillow"
+        assert image.size == (1920, 1080)
 
     def test_capture_returns_non_empty_image(self, monkeypatch):
         """Verify the returned image has actual pixel content (not all-zero)."""

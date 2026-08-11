@@ -15,6 +15,13 @@ INTERACTIVE_CONTROL_TYPE_NAMES = set(
         "HeaderItemControl",
         "TextBoxControl",
         "SpinnerControl",
+        # Sliders were missing here even though INTERACTIVE_ROLES already lists "Slider"
+        # and tree_traversal has a SliderControl branch that reads RangeValue into
+        # metadata. The control-type gate runs before the role check, so every slider was
+        # dropped and that branch was unreachable -- Settings' "Text size" slider
+        # (value=100, max=225, focusable, 7216px) never reached the tree at all.
+        # Chromium's zero-area "resize handle" sliders stay excluded by the area > 0 check.
+        "SliderControl",
         "ScrollBarControl",
     ]
 )

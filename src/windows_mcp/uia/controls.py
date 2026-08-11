@@ -4,7 +4,7 @@ Author: yinkaisheng
 Source: https://github.com/yinkaisheng/Python-UIAutomation-for-Windows
 
 This module is for UIAutomation on Windows(Windows XP with SP3, Windows Vista and Windows 7/8/8.1/10).
-It supports UIAutomation for the applications which implmented IUIAutomation, such as MFC, Windows Form, WPF, Modern UI(Metro UI), Qt, Firefox and Chrome.
+It supports UIAutomation for the applications which implemented IUIAutomation, such as MFC, Windows Form, WPF, Modern UI(Metro UI), Qt, Firefox and Chrome.
 Run 'automation.py -h' for help.
 
 uiautomation is shared under the Apache Licene 2.0.
@@ -23,10 +23,10 @@ import ctypes
 import ctypes.wintypes
 import comtypes
 from _ctypes import COMError
-from typing import Any, Callable, Dict, Generator, List, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 from .enums import *
 from .core import *
-from .core import _AutomationClient
+from .core import _AutomationClient, _get_system_dpi
 from .patterns import *
 from .exceptions import from_com_error, UIAException
 
@@ -47,6 +47,114 @@ CurrentProcessIs64Bit = sys.maxsize > 0xFFFFFFFF
 ProcessTime = time.perf_counter  # this returns nearly 0 when first call it if python version <= 3.6
 ProcessTime()  # need to call it once if python version <= 3.6
 TreeNode = Any
+
+
+class _PropertyNotSupported:
+    """Sentinel type for a UI Automation property the provider does not implement.
+
+    Distinct from `None`: `None` is a legitimate value for several properties (an
+    unset `LabeledBy`, for instance), whereas this means the provider never
+    implemented the property at all.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "PROPERTY_NOT_SUPPORTED"
+
+
+PROPERTY_NOT_SUPPORTED = _PropertyNotSupported()
+
+# Properties whose value is an IUIAutomationElementArray behind a POINTER(IUnknown).
+ELEMENT_ARRAY_PROPERTY_IDS = frozenset(
+    [
+        PropertyId.AnnotationObjectsProperty,
+        PropertyId.ControllerForProperty,
+        PropertyId.DescribedByProperty,
+        PropertyId.DragGrabbedItemsProperty,
+        PropertyId.FlowsFromProperty,
+        PropertyId.FlowsToProperty,
+        PropertyId.LegacyIAccessibleSelectionProperty,
+        PropertyId.SelectionSelectionProperty,
+        PropertyId.SpreadsheetItemAnnotationObjectsProperty,
+        PropertyId.TableColumnHeadersProperty,
+        PropertyId.TableItemColumnHeaderItemsProperty,
+        PropertyId.TableItemRowHeaderItemsProperty,
+        PropertyId.TableRowHeadersProperty,
+    ]
+)
+
+# Properties whose value is a single IUIAutomationElement behind a POINTER(IUnknown).
+ELEMENT_PROPERTY_IDS = frozenset(
+    [
+        PropertyId.LabeledByProperty,
+        PropertyId.SelectionItemSelectionContainerProperty,
+    ]
+)
+
+_reservedNotSupportedAddress: Optional[int] = None
+
+
+def _get_reserved_not_supported_address() -> int:
+    """
+    Return int, the address of UI Automation's shared "not supported" sentinel.
+
+    `GetCurrentPropertyValueEx(pid, 1)` returns this exact singleton pointer for every
+    unimplemented property, so identity by address is the reliable test -- the object
+    itself is an opaque IUnknown with no comparable value. Cached on first use.
+    """
+    global _reservedNotSupportedAddress
+    if _reservedNotSupportedAddress is None:
+        try:
+            reserved = _AutomationClient.instance().IUIAutomation.ReservedNotSupportedValue
+            _reservedNotSupportedAddress = (
+                ctypes.cast(reserved, ctypes.c_void_p).value or 0
+            )
+        except (COMError, AttributeError, ValueError):
+            _reservedNotSupportedAddress = 0
+    return _reservedNotSupportedAddress
+
+
+def _is_reserved_value(value: Any, reservedAddress: int) -> bool:
+    """Return bool, True if `value` is the shared "not supported" sentinel pointer."""
+    if not reservedAddress or not isinstance(value, ctypes.POINTER(comtypes.IUnknown)):
+        return False
+    try:
+        return ctypes.cast(value, ctypes.c_void_p).value == reservedAddress
+    except (ctypes.ArgumentError, ValueError):
+        return False
+
+
+def _normalize_property_value(propertyId: int, value: Any, resolveElements: bool) -> Any:
+    """
+    Convert a raw UI Automation property value into a friendly Python value.
+
+    Handles the three raw shapes that are not already plain Python: the 4-double
+    bounding rectangle tuple, element arrays, and single element references.
+    """
+    if propertyId == PropertyId.BoundingRectangleProperty and isinstance(value, tuple):
+        if len(value) == 4:
+            left, top, width, height = value
+            return Rect(
+                left=int(left),
+                top=int(top),
+                right=int(left) + int(width),
+                bottom=int(top) + int(height),
+            )
+        return value
+    if resolveElements and propertyId in ELEMENT_ARRAY_PROPERTY_IDS:
+        return Control.CreateControlsFromRawElementArray(value)
+    if resolveElements and propertyId in ELEMENT_PROPERTY_IDS:
+        return Control.CreateControlFromRawElement(value)
+    return value
 
 
 class Control:
@@ -191,6 +299,61 @@ class Control:
             else:
                 pass
         return None
+
+    @staticmethod
+    def CreateControlsFromRawElementArray(rawValue: Any) -> List["Control"]:
+        """
+        Convert a raw element-array property value into a list of `Control`.
+
+        Element-array properties (`SelectionSelectionProperty`, `ControllerForProperty`,
+        `FlowsToProperty`, `TableRowHeadersProperty`, ...) come back from
+        `GetPropertyValue`/`GetCachedPropertyValue` as a bare `POINTER(IUnknown)` that
+        still needs a QueryInterface to `IUIAutomationElementArray`. Note the pointer is
+        non-NULL even when the array is empty, so truthiness of the raw value says
+        nothing about whether the property actually has entries.
+
+        rawValue: the raw property value, or None.
+        Return List[Control], empty if rawValue is None, not an element array, or empty.
+        """
+        if not rawValue:
+            return []
+        try:
+            elementArray = rawValue.QueryInterface(
+                _AutomationClient.instance().UIAutomationCore.IUIAutomationElementArray
+            )
+        except (COMError, ValueError, AttributeError):
+            return []
+        controls: List["Control"] = []
+        for i in range(elementArray.Length):
+            try:
+                control = Control.CreateControlFromElement(elementArray.GetElement(i))
+            except COMError:
+                continue
+            if control:
+                controls.append(control)
+        return controls
+
+    @staticmethod
+    def CreateControlFromRawElement(rawValue: Any) -> "Control" | None:
+        """
+        Convert a raw single-element property value (e.g. `LabeledByProperty`) into a
+        `Control`, QueryInterface-ing the `POINTER(IUnknown)` to `IUIAutomationElement`.
+
+        rawValue: the raw property value, or None.
+        Return `Control` or None if rawValue is None or is not an element.
+        """
+        if not rawValue:
+            return None
+        try:
+            element = rawValue.QueryInterface(
+                _AutomationClient.instance().UIAutomationCore.IUIAutomationElement
+            )
+        except (COMError, ValueError, AttributeError):
+            return None
+        try:
+            return Control.CreateControlFromElement(element)
+        except COMError:
+            return None
 
     @staticmethod
     def CreateControlFromControl(control: "Control") -> "Control" | None:
@@ -338,6 +501,54 @@ class Control:
     def CachedHasKeyboardFocus(self) -> bool:
         """Get the cached has keyboard focus."""
         return self.Element.CachedHasKeyboardFocus
+
+    @property
+    def CachedHeadingLevel(self) -> HeadingLevel:
+        """
+        Get the cached heading level, as a `HeadingLevel`.
+
+        Unlike the neighbouring accessors this cannot read `Element.CachedHeadingLevel`:
+        that member only exists on `IUIAutomationElement6` and later, while `Element` is a
+        plain `IUIAutomationElement`. Going through `GetCachedPropertyValue` keeps it
+        working regardless of the interface version comtypes generated.
+
+        Requires `PropertyId.HeadingLevelProperty` in the `CacheRequest`.
+        Return `HeadingLevel`, `HeadingLevel.None_` when the element is not a heading.
+        """
+        value = self.GetCachedPropertyValue(PropertyId.HeadingLevelProperty)
+        try:
+            return HeadingLevel(value)
+        except ValueError:
+            return HeadingLevel.None_
+
+    @property
+    def CachedIsDialog(self) -> bool:
+        """
+        Get whether the element is a dialog, from the cache.
+
+        Read via `GetCachedPropertyValue` because `Element.CachedIsDialog` only exists on
+        `IUIAutomationElement9` and later.
+
+        Requires `PropertyId.IsDialogProperty` in the `CacheRequest`.
+        """
+        return bool(self.GetCachedPropertyValue(PropertyId.IsDialogProperty))
+
+    @property
+    def CachedLandmarkType(self) -> LandmarkType:
+        """
+        Get the cached landmark type, as a `LandmarkType`.
+
+        Read via `GetCachedPropertyValue` because `Element.CachedLandmarkType` only exists
+        on `IUIAutomationElement6` and later.
+
+        Requires `PropertyId.LandmarkTypeProperty` in the `CacheRequest`.
+        Return `LandmarkType`, `LandmarkType.None_` when the element is not a landmark.
+        """
+        value = self.GetCachedPropertyValue(PropertyId.LandmarkTypeProperty)
+        try:
+            return LandmarkType(value)
+        except ValueError:
+            return LandmarkType.None_
 
     @property
     def CachedHelpText(self) -> str:
@@ -924,6 +1135,228 @@ class Control:
         """
         return self.Element.GetCurrentPropertyValue(propertyId)
 
+    def GetWordBoundingBox(
+        self, word: str, backward: bool = False, ignoreCase: bool = True
+    ) -> List[Rect] | None:
+        """
+        Find `word` in the control's text (via `TextPattern`) and return its bounding box(es).
+        word: str, the word/substring to search for.
+        backward: bool, search from the end of the document backward.
+        ignoreCase: bool, case-insensitive search.
+        Return List[Rect] or None if the control has no `TextPattern` or the word wasn't found.
+            Usually a single `Rect`; more than one if the match wraps across lines.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return None
+        wordRange = textPattern.DocumentRange.FindText(word, backward, ignoreCase)
+        if wordRange is None:
+            return None
+        return wordRange.GetBoundingRectangles()
+
+    def GetWordBoundingBoxAtPoint(self, x: int, y: int) -> List[Rect] | None:
+        """
+        Return the bounding box of the word at screen point (x, y), via `TextPattern`.
+        Return List[Rect] or None if the control has no `TextPattern` or there is no text at the point.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return None
+        pointRange = textPattern.RangeFromPoint(x, y)
+        if pointRange is None:
+            return None
+        pointRange.ExpandToEnclosingUnit(TextUnit.Word)
+        return pointRange.GetBoundingRectangles()
+
+    def GetWordFontSize(self, word: str, backward: bool = False, ignoreCase: bool = True) -> float | None:
+        """
+        Find `word` in the control's text (via `TextPattern`) and return its font size in points.
+        Return float or None if the control has no `TextPattern`, the word wasn't found,
+            or the attribute is mixed/unsupported (IUIAutomationTextRange::GetAttributeValue
+            returns UiaGetReservedMixedAttributeValue in that case).
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return None
+        wordRange = textPattern.DocumentRange.FindText(word, backward, ignoreCase)
+        if wordRange is None:
+            return None
+        value = wordRange.GetAttributeValue(TextAttributeId.FontSizeAttribute)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def _iter_word_ranges(self, textPattern) -> Generator[Tuple[str, "TextRange"], None, None]:
+        """
+        Foundation for every word-level `TextPattern` feature (bounding boxes, attributes,
+        selection): yields (word_text, word_range) for each word in the control's visible text.
+        Walks each visible range word-by-word via `TextRange.Move(TextUnit.Word, 1)`.
+
+        waitTime=0 on `ExpandToEnclosingUnit`/`Move`: these are read-only navigation calls, not
+        UI-mutating actions — the default 0.5s settling delay only makes sense for things like
+        Click/Toggle, and was previously the dominant cost of walking a control's words.
+
+        The yielded `word_range` is a single mutable COM range reused across iterations (moved
+        forward each time) -- callers must fully consume it (read text/rects/attributes) before
+        requesting the next word, never retain it past that iteration.
+        """
+        for visibleRange in textPattern.GetVisibleRanges():
+            wordRange = visibleRange.Clone()
+            wordRange.ExpandToEnclosingUnit(TextUnit.Word, waitTime=0)
+            while wordRange.CompareEndpoints(
+                TextPatternRangeEndpoint.Start, visibleRange, TextPatternRangeEndpoint.End
+            ) < 0:
+                text = wordRange.GetText(-1).strip()
+                if text:
+                    yield text, wordRange
+                moved = wordRange.Move(TextUnit.Word, 1, waitTime=0)
+                if moved == 0:
+                    break
+
+    def GetAllWordBoundingBoxes(self) -> List[Tuple[str, List[Rect]]] | None:
+        """
+        Return (word, bounding boxes) for every word in the control's visible text (via `TextPattern`).
+        Return List[Tuple[str, List[Rect]]] or None if the control has no `TextPattern`.
+            Bounding boxes is usually a single `Rect`; more than one if the word wraps across lines.
+            Boxes are vertically shrunk to the glyph's font-size (in place of the raw
+            line-height rect `GetBoundingRectangles` returns) when the font size attribute
+            is available; otherwise the untouched line-height rect is kept.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return None
+        dpi = _get_system_dpi() or 96
+        # Font size is virtually always uniform across a control — look it up once on the
+        # whole document instead of once per word (each TextRange COM call is expensive).
+        doc_font_size = textPattern.DocumentRange.GetAttributeValue(TextAttributeId.FontSizeAttribute)
+        uniform_font_size = doc_font_size if isinstance(doc_font_size, (int, float)) else None
+        words: List[Tuple[str, List[Rect]]] = []
+        for text, wordRange in self._iter_word_ranges(textPattern):
+            rects = wordRange.GetBoundingRectangles()
+            font_size = uniform_font_size
+            if font_size is None:
+                attr = wordRange.GetAttributeValue(TextAttributeId.FontSizeAttribute)
+                font_size = attr if isinstance(attr, (int, float)) else None
+            if font_size is not None:
+                rects = [self._shrink_rect_to_font_size(rect, font_size, dpi) for rect in rects]
+            words.append((text, rects))
+        return words
+
+    def GetWordAttributes(
+        self, attribute_ids: List[int], uniform_attribute_ids: Optional[set[int]] = None
+    ) -> List[Tuple[str, List[Rect], Dict[int, Any]]] | None:
+        """
+        Return (word, bounding boxes, {attribute_id: value}) for every word in the control's
+        visible text, for each id in `attribute_ids` (values from `TextAttributeId`).
+        Return None if the control has no `TextPattern`.
+
+        uniform_attribute_ids: subset of `attribute_ids` you expect to be constant across the
+            whole control (e.g. `FontSizeAttribute`, `FontNameAttribute`) — each of those is
+            looked up once on `DocumentRange` instead of once per word. Attributes that
+            legitimately vary per word (colors, bold/italic, hyperlinks) must NOT be listed
+            here or every word will silently get the document's single value.
+            If a "uniform" attribute turns out mixed (`GetAttributeValue` returns the
+            UiaGetReservedMixedAttributeValue sentinel, i.e. not a plain int/float/str), it
+            falls back to a per-word lookup for that attribute automatically.
+
+        Keep `attribute_ids` short for non-uniform attributes: each one adds a COM call per word.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return None
+        uniform_attribute_ids = uniform_attribute_ids or set()
+
+        uniform_values: Dict[int, Any] = {}
+        for attribute_id in attribute_ids:
+            if attribute_id not in uniform_attribute_ids:
+                continue
+            value = textPattern.DocumentRange.GetAttributeValue(attribute_id)
+            if isinstance(value, (int, float, str)):
+                uniform_values[attribute_id] = value
+
+        # Whatever isn't resolved as document-uniform (either never marked as such, or marked
+        # but the value turned out mixed) is looked up per-word -- but batched into a single
+        # `GetAttributeValues` COM call per word instead of one `GetAttributeValue` call per
+        # attribute per word.
+        per_word_ids = [attribute_id for attribute_id in attribute_ids if attribute_id not in uniform_values]
+
+        results: List[Tuple[str, List[Rect], Dict[int, Any]]] = []
+        for text, wordRange in self._iter_word_ranges(textPattern):
+            rects = wordRange.GetBoundingRectangles()
+            attrs: Dict[int, Any] = dict(uniform_values)
+            if per_word_ids:
+                batched = wordRange.GetAttributeValues(per_word_ids)
+                if batched is not None:
+                    attrs.update(zip(per_word_ids, batched))
+                else:
+                    # Provider doesn't implement IUIAutomationTextRange3 -- fall back to one
+                    # GetAttributeValue call per attribute.
+                    for attribute_id in per_word_ids:
+                        attrs[attribute_id] = wordRange.GetAttributeValue(attribute_id)
+            results.append((text, rects, attrs))
+        return results
+
+    def GetWordHyperlinks(self) -> List[Tuple[str, Rect, str]]:
+        """
+        Return (link text, bounding box, url) for every hyperlink under this control.
+
+        NOTE: `TextAttributeId.LinkAttribute` looks like the natural source for this but is
+        NOT viable in practice -- verified against real Edge/Chromium hyperlinks, it always
+        returns the shared `UiaGetReservedNotSupportedValue` sentinel (same pointer for every
+        word, link or not), never an actual URL. Chromium simply doesn't implement that text
+        attribute. Instead, browsers expose each hyperlink as its own `HyperlinkControl`
+        element in the tree, with the URL readable via `LegacyIAccessibleValueProperty` -- this
+        walks descendants for that control type instead of touching `TextPattern` at all.
+        Return [] if there are no hyperlink descendants (never None -- this doesn't depend on
+        `TextPattern` support).
+        """
+        condition = CreatePropertyCondition(PropertyId.ControlTypeProperty, ControlType.HyperlinkControl)
+        hyperlinks: List[Tuple[str, Rect, str]] = []
+        for link_control in self.FindAll(TreeScope.TreeScope_Descendants, condition):
+            try:
+                url = link_control.GetPropertyValue(PropertyId.LegacyIAccessibleValueProperty)
+                box = link_control.BoundingRectangle
+                name = link_control.Name
+            except Exception:
+                continue
+            if isinstance(url, str) and url and box.width() > 0 and box.height() > 0:
+                hyperlinks.append((name, box, url))
+        return hyperlinks
+
+    def SelectWord(self, word: str, backward: bool = False, ignoreCase: bool = True) -> bool:
+        """
+        Find `word` in the control's text (via `TextPattern`) and select it, replacing any
+        existing selection (`IUIAutomationTextRange::Select`).
+        word: str, the word/substring to search for.
+        backward: bool, search from the end of the document backward.
+        ignoreCase: bool, case-insensitive search.
+        Return bool, True if the word was found and selected, False if the control has no
+            `TextPattern` or the word wasn't found.
+        """
+        textPattern = self.GetPattern(PatternId.TextPattern)
+        if textPattern is None:
+            return False
+        wordRange = textPattern.DocumentRange.FindText(word, backward, ignoreCase)
+        if wordRange is None:
+            return False
+        return wordRange.Select(waitTime=0)
+
+    @staticmethod
+    def _shrink_rect_to_font_size(rect: Rect, font_size_pt: float, dpi: int) -> Rect:
+        """
+        Shrink `rect`'s height to the pixel height implied by `font_size_pt` (points), anchored
+        to the rect's bottom edge. `GetBoundingRectangles` reports the control's full line-height
+        box, which is noticeably taller than the glyphs themselves; the bottom edge tracks the
+        line's baseline/descent closely, while the extra leading is padded above it.
+        """
+        font_px = font_size_pt * dpi / 72.0
+        if font_px <= 0 or font_px >= rect.height():
+            return rect
+        return Rect(
+            left=rect.left,
+            top=int(round(rect.bottom - font_px)),
+            right=rect.right,
+            bottom=rect.bottom,
+        )
+
     def GetPropertyValueEx(self, propertyId: int, ignoreDefaultValue: int) -> Any:
         """
         Call IUIAutomationElement::GetCurrentPropertyValueEx.
@@ -933,6 +1366,75 @@ class Control:
         Refer https://docs.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-getcurrentpropertyvalueex
         """
         return self.Element.GetCurrentPropertyValueEx(propertyId, ignoreDefaultValue)
+
+    def GetAllPropertyValues(
+        self,
+        cached: bool = False,
+        includeUnsupported: bool = False,
+        resolveElements: bool = True,
+        propertyIds: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Read every UI Automation property this element exposes, keyed by property name.
+
+        Unsupported properties are the norm, not the exception -- a typical element
+        supports ~30 of the ~175 defined properties. They are resolved with
+        `GetCurrentPropertyValueEx(propertyId, ignoreDefaultValue=1)` so that a provider
+        that does not implement a property yields the reserved "not supported" sentinel
+        instead of a *type default* that is indistinguishable from a real value. Using
+        plain `GetCurrentPropertyValue` here would be actively misleading: a plain Pane
+        reports `ToggleToggleState=2` and `GridItemRowSpan=1` despite supporting neither
+        pattern.
+
+        cached: bool, read from the element's cache instead of live. Only properties
+            added to the `CacheRequest` used to build this element are available; the
+            rest are reported as not supported. Cached reads cannot use the `Ex` variant,
+            so defaults cannot be filtered out -- prefer live reads when you need to know
+            what is genuinely supported.
+        includeUnsupported: bool, if True, unsupported properties are included with the
+            value `PROPERTY_NOT_SUPPORTED`. If False (default) they are omitted.
+        resolveElements: bool, if True, element-valued and element-array-valued
+            properties are converted to `Control` / List[`Control`]. If False they are
+            left as the raw `POINTER(IUnknown)`.
+        propertyIds: optional list of `PropertyId` values to restrict the query to.
+            Defaults to every property in `PropertyIdNames`.
+
+        Return Dict[str, Any], mapping property name (e.g. 'NameProperty') to value.
+
+        NOTE: each property is a separate cross-process COM call, so a full live read is
+        ~175 round-trips (tens of milliseconds). This is a diagnostic/introspection API
+        -- do not call it per node during a tree traversal; add the handful of properties
+        you need to a `CacheRequest` instead.
+        """
+        ids = propertyIds if propertyIds is not None else list(PropertyIdNames.keys())
+        notSupported = _get_reserved_not_supported_address()
+        values: Dict[str, Any] = {}
+        for propertyId in ids:
+            name = PropertyIdNames.get(propertyId, str(propertyId))
+            try:
+                if cached:
+                    value = self.Element.GetCachedPropertyValue(propertyId)
+                else:
+                    value = self.Element.GetCurrentPropertyValueEx(propertyId, 1)
+            except (COMError, ValueError):
+                if includeUnsupported:
+                    values[name] = PROPERTY_NOT_SUPPORTED
+                continue
+
+            if _is_reserved_value(value, notSupported):
+                if includeUnsupported:
+                    values[name] = PROPERTY_NOT_SUPPORTED
+                continue
+
+            values[name] = _normalize_property_value(propertyId, value, resolveElements)
+        return values
+
+    def GetSupportedPropertyNames(self) -> List[str]:
+        """
+        Return List[str], the names of the UI Automation properties this element actually
+        implements, sorted alphabetically. Thin wrapper over `GetAllPropertyValues`.
+        """
+        return sorted(self.GetAllPropertyValues().keys())
 
     def GetRuntimeId(self) -> List[int]:
         """
@@ -1060,7 +1562,7 @@ class Control:
     ) -> "Control" | None:
         """
         Get a sibling control that matches the condition.
-        forward: bool, if True, only search next siblings, if False, search pervious siblings first, then search next siblings.
+        forward: bool, if True, only search next siblings, if False, search previous siblings first, then search next siblings.
         condition: Callable[[Control], bool], function(control: Control) -> bool.
         Return `Control` subclass or None.
         """
@@ -1257,7 +1759,7 @@ class Control:
         Gets the position of the center of the control.
         ratioX: float.
         ratioY: float.
-        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0)
+        Return Tuple[int, int], two ints tuple (x, y), the cursor position relative to screen(0, 0)
         """
         rect = self.BoundingRectangle
         if rect.width() == 0 or rect.height() == 0:
@@ -1281,7 +1783,7 @@ class Control:
         ratioX: float.
         ratioY: float.
         simulateMove: bool.
-        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0)
+        Return Tuple[int, int], two ints tuple (x, y), the cursor position relative to screen(0, 0)
             after moving or None if control's width or height is 0.
         """
         rect = self.BoundingRectangle
@@ -1304,7 +1806,7 @@ class Control:
     def MoveCursorToMyCenter(self, simulateMove: bool = True) -> Tuple[int, int] | None:
         """
         Move cursor to control's center.
-        Return Tuple[int, int], two ints tuple (x, y), the cursor positon relative to screen(0, 0) after moving.
+        Return Tuple[int, int], two ints tuple (x, y), the cursor position relative to screen(0, 0) after moving.
         """
         return self.MoveCursorToInnerPos(simulateMove=simulateMove)
 

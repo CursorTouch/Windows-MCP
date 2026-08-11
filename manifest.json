@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.4",
   "name": "Windows-MCP",
-  "version": "0.7.4",
+  "version": "0.8.5",
   "description": "MCP Server that enables Claude to interact with Windows OS",
   "long_description": "Windows-MCP is an open-source project that enables seamless integration between AI agents and the Windows operating system. Acting as an MCP server, it bridges the gap between large language models (LLMs) and the Windows OS, allowing agents to perform tasks such as **file navigation, application control, UI interaction, QA testing, and more**.\n\n**KEY FEATURES**\n- **Seamless Windows Integration**: Interacts natively with Windows UI elements, opens applications, controls windows, simulates user input, and more.\n- **Use Any LLM (Vision Optional)**: Does not rely on traditional computer vision techniques or fine-tuned models. Works with any LLM, reducing complexity and setup time.\n- **Rich Toolset for UI Automation**: Includes tools for keyboard and mouse control, window management, and capturing window or UI state.\n- **Lightweight & Open-Source**: Minimal dependencies with full source code available under the MIT license.\n- **Customizable & Extendable**: Easily adapt or extend tools to suit custom automation workflows or AI integrations.\n- **Real-Time Interaction**: Typical latency between actions ranges from `0.2` to `0.9` seconds, depending on system load, active applications, and LLM inference speed.\n\n**MINIMUM REQUIREMENTS**\n- **Python 3.13+**\n",
   "author": {
@@ -25,14 +25,19 @@
         "--directory",
         "${__dirname}",
         "run",
-        "windows-mcp"
+        "python",
+        "-m",
+        "windows_mcp",
+        "serve"
       ],
       "env": {
         "UV_NO_SYNC": "1",
+        "UV_CACHE_DIR": "${__dirname}/.uv-cache",
         "ANONYMIZED_TELEMETRY": "${user_config.anonymized_telemetry}",
         "WINDOWS_MCP_PROFILE_SNAPSHOT": "${user_config.profile_snapshot}",
         "WINDOWS_MCP_SCREENSHOT_BACKEND": "${user_config.screenshot_backend}",
-        "WINDOWS_MCP_DEBUG": "${user_config.debug}"
+        "WINDOWS_MCP_DEBUG": "${user_config.debug}",
+        "WINDOWS_MCP_WATCHDOG": "${user_config.watchdog}"
       }
     }
   },
@@ -64,6 +69,13 @@
       "description": "Enable debug mode to provide verbose logging for troubleshooting.",
       "required": false,
       "default": false
+    },
+    "watchdog": {
+      "type": "boolean",
+      "title": "UIA Focus WatchDog",
+      "description": "Run the UIAutomation focus watchdog that keeps the accessibility tree current. Disable if the watchdog degrades or crashes on unstable UIA environments after long uptime.",
+      "required": false,
+      "default": true
     }
   },
   "tools": [
@@ -81,11 +93,11 @@
     },
     {
       "name": "Screenshot",
-      "description": "Captures a fast screenshot-first desktop snapshot with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports display=[0] or display=[0,1] to limit capture to specific screens. Note: the returned image may be downscaled for efficiency; when it is, multiply image coordinates by the ratio of original size to displayed size to get the actual screen coordinates for mouse actions (Click, Move, etc.)."
+      "description": "Captures a fast screenshot-first desktop snapshot with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports display=[0] or display=[0,1] using zero-based active Windows display indices. Note: the returned image may be downscaled for efficiency; when it is, multiply image coordinates by the ratio of original size to displayed size to get the actual screen coordinates for mouse actions (Click, Move, etc.)."
     },
     {
       "name": "Snapshot",
-      "description": "Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Use this when you need interactive element ids, scrollable regions, or browser DOM extraction with use_dom=True. Set use_vision=True to include screenshot. Set display=[0] or display=[0,1] to limit all returned Snapshot information to specific screens; omit it to keep the default full-desktop behavior."
+      "description": "Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Use this when you need interactive element ids, scrollable regions, or browser DOM extraction with use_dom=True. Set use_vision=True to include screenshot. Set display=[0] or display=[0,1] using zero-based active Windows display indices; omit it to keep the default full-desktop behavior."
     },
     {
       "name": "Click",
@@ -97,7 +109,7 @@
     },
     {
       "name": "Scroll",
-      "description": "Scrolls at coordinates [x, y], a UI element's label/id, or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls amount (1 wheel ≈ 3-5 lines). Use for navigating long content, lists, and web pages."
+      "description": "Scrolls at coordinates [x, y], a UI element's label/id, or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls amount (1 wheel \u2248 3-5 lines). Use for navigating long content, lists, and web pages."
     },
     {
       "name": "Move",

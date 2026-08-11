@@ -4,7 +4,7 @@ import os
 from typing import Literal
 
 from mcp.types import ToolAnnotations
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import with_analytics
 from windows_mcp import filesystem
 from fastmcp import Context
 
@@ -78,4 +78,4 @@ def register(mcp, *, get_desktop, get_analytics):
                 case _:
                     return f'Error: Unknown mode "{mode}". Use: read, write, copy, move, delete, list, search, info.'
         except Exception as e:
-            return f'Error in File tool: {str(e)}'
+            raise

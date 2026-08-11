@@ -11,21 +11,20 @@ uiautomation is shared under the Apache Licene 2.0.
 This means that the code can be freely copied and distributed, and costs nothing to use.
 """
 
+import math
 import os
 import sys
 import time
-import datetime
 import shlex
 import struct
-import atexit
 import threading
 import ctypes
 import ctypes.wintypes
+from dataclasses import dataclass
 import comtypes
 import comtypes.client
 from _ctypes import COMError
-from io import TextIOWrapper
-from typing import Any, Callable, Dict, Generator, List, Tuple, Union
+from typing import Any, Callable, Dict, Generator, List, Tuple
 
 
 METRO_WINDOW_CLASS_NAME = "Windows.UI.Core.CoreWindow"  # for Windows 8 and 8.1
@@ -45,8 +44,9 @@ ProcessTime = time.perf_counter  # this returns nearly 0 when first call it if p
 ProcessTime()  # need to call it once if python version <= 3.6
 TreeNode = Any
 from .enums import *  # noqa: E402
-from .enums import _INPUTUnion
-from .exceptions import from_com_error, UIAException  # noqa: E402
+from .enums import _INPUTUnion  # noqa: E402
+from .exceptions import from_com_error  # noqa: E402
+from .comtypes_cache import safe_get_module  # noqa: E402
 
 
 class _AutomationClient:
@@ -67,7 +67,9 @@ class _AutomationClient:
         tryCount = 3
         for retry in range(tryCount):
             try:
-                self.UIAutomationCore = comtypes.client.GetModule("UIAutomationCore.dll")
+                self.UIAutomationCore = safe_get_module(
+                    "UIAutomationCore.dll", required_attr="IUIAutomation"
+                )
                 self.IUIAutomation = comtypes.client.CreateObject(
                     "{ff48dba4-60ef-4201-aa87-54103eef594e}",
                     interface=self.UIAutomationCore.IUIAutomation,
@@ -480,6 +482,27 @@ def MoveTo(x: int, y: int, moveSpeed: float = 1, waitTime: float = OPERATION_WAI
     time.sleep(waitTime)
 
 
+def MoveToDuration(x: int, y: int, duration: float, waitTime: float = OPERATION_WAIT_TIME) -> None:
+    """
+    Simulate mouse move to point x, y over a bounded duration from current cursor.
+    """
+    curX, curY = GetCursorPos()
+    if duration <= 0:
+        SetCursorPos(x, y)
+        time.sleep(waitTime)
+        return
+
+    stepCount = max(2, min(200, math.ceil(duration / 0.01)))
+    interval = duration / stepCount
+    for i in range(1, stepCount + 1):
+        ratio = i / stepCount
+        cx = curX + round((x - curX) * ratio)
+        cy = curY + round((y - curY) * ratio)
+        SetCursorPos(cx, cy)
+        time.sleep(interval)
+    time.sleep(waitTime)
+
+
 def DragDrop(
     x1: int,
     y1: int,
@@ -487,6 +510,7 @@ def DragDrop(
     y2: int,
     moveSpeed: float = 1,
     waitTime: float = OPERATION_WAIT_TIME,
+    duration: float | None = None,
 ) -> None:
     """
     Simulate mouse left button drag from point x1, y1 drop to point x2, y2.
@@ -496,9 +520,20 @@ def DragDrop(
     y2: int.
     moveSpeed: float, 1 normal speed, < 1 move slower, > 1 move faster.
     waitTime: float.
+    duration: optional seconds for bounded intermediate movement.
     """
-    PressMouse(x1, y1, 0.05)
-    MoveTo(x2, y2, moveSpeed, 0.05)
+    try:
+        PressMouse(x1, y1, 0.05)
+        if duration is None:
+            MoveTo(x2, y2, moveSpeed, 0.05)
+        else:
+            MoveToDuration(x2, y2, duration, 0.05)
+    except BaseException as move_error:
+        try:
+            ReleaseMouse(waitTime)
+        except BaseException as release_error:
+            raise release_error from move_error
+        raise
     ReleaseMouse(waitTime)
 
 
@@ -643,19 +678,154 @@ def GetVirtualScreenRect() -> Tuple[int, int, int, int]:
     )
 
 
-def GetMonitorsRect() -> List[Rect]:
+@dataclass(frozen=True)
+class DisplayInfo:
+    """Display identity and geometry from the Windows monitor APIs."""
+
+    index: int
+    device_name: str
+    rect: "Rect"
+    primary: bool
+    work_rect: "Rect | None" = None
+    effective_dpi: int | None = None
+    scale: float | None = None
+    orientation: str | None = None
+
+
+class _MonitorInfoExW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("rcMonitor", ctypes.wintypes.RECT),
+        ("rcWork", ctypes.wintypes.RECT),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("szDevice", ctypes.wintypes.WCHAR * 32),
+    ]
+
+
+class _DisplayDeviceW(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.wintypes.DWORD),
+        ("DeviceName", ctypes.wintypes.WCHAR * 32),
+        ("DeviceString", ctypes.wintypes.WCHAR * 128),
+        ("StateFlags", ctypes.wintypes.DWORD),
+        ("DeviceID", ctypes.wintypes.WCHAR * 128),
+        ("DeviceKey", ctypes.wintypes.WCHAR * 128),
+    ]
+
+
+def _get_system_dpi() -> int | None:
+    try:
+        dpi = int(ctypes.windll.user32.GetDpiForSystem())
+        if dpi > 0:
+            return dpi
+    except Exception:
+        pass
+
+    hdc = None
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        if hdc:
+            dpi = int(ctypes.windll.gdi32.GetDeviceCaps(hdc, 88))  # LOGPIXELSX
+            if dpi > 0:
+                return dpi
+    except Exception:
+        pass
+    finally:
+        if hdc:
+            try:
+                ctypes.windll.user32.ReleaseDC(0, hdc)
+            except Exception:
+                pass
+    return None
+
+
+def _dpi_metadata(dpi: int | None) -> tuple[int | None, float | None]:
+    if dpi is None:
+        return None, None
+    return dpi, round(dpi / 96, 6)
+
+
+def _get_monitor_effective_dpi(h_monitor: int) -> tuple[int | None, float | None]:
+    try:
+        dpi_x = ctypes.c_uint()
+        dpi_y = ctypes.c_uint()
+        result = ctypes.windll.shcore.GetDpiForMonitor(
+            ctypes.c_void_p(h_monitor),
+            0,
+            ctypes.byref(dpi_x),
+            ctypes.byref(dpi_y),
+        )
+        if result == 0 and dpi_x.value > 0:
+            return _dpi_metadata(int(dpi_x.value))
+    except Exception:
+        pass
+    return _dpi_metadata(_get_system_dpi())
+
+
+def _get_display_orientation(device_name: str, rect: "Rect") -> str:
+    dev_mode_size = 220
+    dm_size_offset = 68
+    dm_pels_width_offset = 172
+    dm_pels_height_offset = 176
+    dev_mode = bytearray(dev_mode_size)
+    dev_mode[dm_size_offset : dm_size_offset + 2] = struct.pack("<H", dev_mode_size)
+    c_dev_mode = (ctypes.c_byte * dev_mode_size).from_buffer(dev_mode)
+    try:
+        if ctypes.windll.user32.EnumDisplaySettingsW(
+            device_name,
+            ctypes.wintypes.DWORD(-1),
+            c_dev_mode,
+        ):
+            width = struct.unpack_from("<I", dev_mode, dm_pels_width_offset)[0]
+            height = struct.unpack_from("<I", dev_mode, dm_pels_height_offset)[0]
+            if width > 0 and height > 0:
+                return "landscape" if width >= height else "portrait"
+    except Exception:
+        pass
+    return "landscape" if rect.width() >= rect.height() else "portrait"
+
+
+def _active_display_indices() -> Dict[str, int]:
+    DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x00000001
+    display_indices: dict[str, int] = {}
+    device_index = 0
+    while True:
+        device = _DisplayDeviceW()
+        device.cb = ctypes.sizeof(_DisplayDeviceW)
+        if not ctypes.windll.user32.EnumDisplayDevicesW(
+            None,
+            device_index,
+            ctypes.byref(device),
+            0,
+        ):
+            break
+        if device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP:
+            display_indices[device.DeviceName.upper()] = len(display_indices)
+        device_index += 1
+    return display_indices
+
+
+def GetDisplays() -> List[DisplayInfo]:
     """
-    Get monitors' rect.
-    Return List[Rect].
+    Get active displays keyed by zero-based active display index.
+    Return List[DisplayInfo].
     """
     MonitorEnumProc = ctypes.WINFUNCTYPE(
         ctypes.c_int,
-        ctypes.c_size_t,
-        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
         ctypes.POINTER(ctypes.wintypes.RECT),
         ctypes.c_size_t,
     )
-    rects = []
+    displays: list[DisplayInfo] = []
+    display_indices = _active_display_indices()
+
+    def next_fallback_index() -> int:
+        used_indices = set(display_indices.values()) | {display.index for display in displays}
+        index = 0
+        while index in used_indices:
+            index += 1
+        return index
 
     def MonitorCallback(
         hMonitor: int,
@@ -663,19 +833,64 @@ def GetMonitorsRect() -> List[Rect]:
         lprcMonitor: ctypes.POINTER(ctypes.wintypes.RECT),
         dwData: int,
     ):
-        rect = Rect(
-            lprcMonitor.contents.left,
-            lprcMonitor.contents.top,
-            lprcMonitor.contents.right,
-            lprcMonitor.contents.bottom,
+        info = _MonitorInfoExW()
+        info.cbSize = ctypes.sizeof(_MonitorInfoExW)
+        if ctypes.windll.user32.GetMonitorInfoW(ctypes.c_void_p(hMonitor), ctypes.byref(info)):
+            rect = Rect(
+                info.rcMonitor.left,
+                info.rcMonitor.top,
+                info.rcMonitor.right,
+                info.rcMonitor.bottom,
+            )
+            work_rect = Rect(
+                info.rcWork.left,
+                info.rcWork.top,
+                info.rcWork.right,
+                info.rcWork.bottom,
+            )
+            device_name = info.szDevice
+            index = display_indices.get(device_name.upper(), next_fallback_index())
+            primary = bool(info.dwFlags & 1)
+        else:
+            rect = Rect(
+                lprcMonitor.contents.left,
+                lprcMonitor.contents.top,
+                lprcMonitor.contents.right,
+                lprcMonitor.contents.bottom,
+            )
+            work_rect = None
+            index = next_fallback_index()
+            device_name = f"DISPLAY{index}"
+            primary = False
+        effective_dpi, scale = _get_monitor_effective_dpi(hMonitor)
+        orientation = _get_display_orientation(device_name, rect)
+
+        displays.append(
+            DisplayInfo(
+                index=index,
+                device_name=device_name,
+                rect=rect,
+                primary=primary,
+                work_rect=work_rect,
+                effective_dpi=effective_dpi,
+                scale=scale,
+                orientation=orientation,
+            )
         )
-        rects.append(rect)
         return 1
 
     ctypes.windll.user32.EnumDisplayMonitors(
         ctypes.c_void_p(0), ctypes.c_void_p(0), MonitorEnumProc(MonitorCallback), 0
     )
-    return rects
+    return sorted(displays, key=lambda display: display.index)
+
+
+def GetMonitorsRect() -> List[Rect]:
+    """
+    Get monitors' rect.
+    Return List[Rect].
+    """
+    return [display.rect for display in GetDisplays()]
 
 
 def GetPixelColor(x: int, y: int, handle: int = 0) -> int:
@@ -2092,6 +2307,8 @@ class ExtendedProperty(ctypes.Structure):
         ("PropertyName", ctypes.c_wchar_p),
         ("PropertyValue", ctypes.c_wchar_p),
     ]
+
+
 class UIAutomationEventInfo(ctypes.Structure):
     _fields_ = [
         ("guid", ctypes.c_void_p),
@@ -2408,6 +2625,61 @@ def RemoveAllEventHandlers() -> None:
     Removes all registered Microsoft UI Automation event handlers.
     """
     _AutomationClient.instance().IUIAutomation.RemoveAllEventHandlers()
+
+
+_automation3_instance = None
+
+
+def _get_automation3():
+    """
+    Get an `IUIAutomation3` object, for the TextEdit-changed handlers below.
+
+    Naively QueryInterface-ing the shared `_AutomationClient.instance().IUIAutomation`
+    singleton up to `IUIAutomation3` does NOT work -- verified live: that singleton is created
+    from the `CUIAutomation` coclass (CLSID `{ff48dba4-...}`), which only ever implements
+    plain `IUIAutomation`; `QueryInterface(IUIAutomation2/3/.../6)` on it fails with
+    E_NOINTERFACE regardless of Windows version. The whole newer interface ladder
+    (IUIAutomation2 through IUIAutomation6) is only reachable through the separate
+    `CUIAutomation8` coclass, so this creates and caches its own independent COM object from
+    that coclass instead of trying to upgrade the existing one.
+    """
+    global _automation3_instance
+    if _automation3_instance is None:
+        _automation3_instance = comtypes.client.CreateObject(
+            _AutomationClient.instance().UIAutomationCore.CUIAutomation8,
+            interface=_AutomationClient.instance().UIAutomationCore.IUIAutomation3,
+        )
+    return _automation3_instance
+
+
+def AddTextEditTextChangedEventHandler(
+    element, scope: int, textEditChangeType: int, cacheRequest, handler
+) -> None:
+    """
+    Registers a method that handles UI Automation TextEdit text-changed events -- fired when a
+    control's text changes via IME composition or autocorrect/autocomplete, as opposed to the
+    plain `UIA_Text_TextChangedEventId` which covers ordinary edits.
+    Call IUIAutomation3::AddTextEditTextChangedEventHandler.
+
+    element: the root element to watch (native COM element, e.g. `control.Element`).
+    scope: int, a value in class `TreeScope`.
+    textEditChangeType: int, a value in class `TextEditChangeType`.
+    cacheRequest: a native `IUIAutomationCacheRequest` pointer, or None.
+    handler: `comtypes.COMObject` implementing `IUIAutomationTextEditTextChangedEventHandler`
+        (see `events.TextEditTextChangedEventHandler`).
+    Refer https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-iuiautomation3-addtexteditwexchangedeventhandler
+    """
+    _get_automation3().AddTextEditTextChangedEventHandler(
+        element, scope, textEditChangeType, cacheRequest, handler
+    )
+
+
+def RemoveTextEditTextChangedEventHandler(element, handler) -> None:
+    """
+    Removes the specified TextEdit text-changed event handler.
+    Call IUIAutomation3::RemoveTextEditTextChangedEventHandler.
+    """
+    _get_automation3().RemoveTextEditTextChangedEventHandler(element, handler)
 
 
 # Condition creation helper functions

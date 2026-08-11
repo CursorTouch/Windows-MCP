@@ -173,6 +173,7 @@ class PatternId:
     VirtualizedItemPattern = 10020
     WindowPattern = 10009
     SelectionPattern2 = 10034
+    StructuredMarkupPattern = 10035
 
 
 PatternIdNames = {
@@ -211,6 +212,7 @@ PatternIdNames = {
     PatternId.VirtualizedItemPattern: "VirtualizedItemPattern",
     PatternId.WindowPattern: "WindowPattern",
     PatternId.SelectionPattern2: "SelectionPattern2",
+    PatternId.StructuredMarkupPattern: "StructuredMarkupPattern",
 }
 
 
@@ -263,12 +265,14 @@ class PropertyId:
     GridItemRowSpanProperty = 30066
     GridRowCountProperty = 30062
     HasKeyboardFocusProperty = 30008
+    HeadingLevelProperty = 30173
     HelpTextProperty = 30013
     IsAnnotationPatternAvailableProperty = 30118
     IsContentElementProperty = 30017
     IsControlElementProperty = 30016
     IsCustomNavigationPatternAvailableProperty = 30151
     IsDataValidForFormProperty = 30103
+    IsDialogProperty = 30174
     IsDockPatternAvailableProperty = 30027
     IsDragPatternAvailableProperty = 30137
     IsDropTargetPatternAvailableProperty = 30141
@@ -294,6 +298,7 @@ class PropertyId:
     IsSelectionPatternAvailableProperty = 30037
     IsSpreadsheetItemPatternAvailableProperty = 30132
     IsSpreadsheetPatternAvailableProperty = 30128
+    IsStructuredMarkupPatternAvailableProperty = 30175
     IsStylesPatternAvailableProperty = 30127
     IsSynchronizedInputPatternAvailableProperty = 30110
     IsTableItemPatternAvailableProperty = 30039
@@ -439,12 +444,14 @@ PropertyIdNames = {
     PropertyId.GridItemRowSpanProperty: "GridItemRowSpanProperty",
     PropertyId.GridRowCountProperty: "GridRowCountProperty",
     PropertyId.HasKeyboardFocusProperty: "HasKeyboardFocusProperty",
+    PropertyId.HeadingLevelProperty: "HeadingLevelProperty",
     PropertyId.HelpTextProperty: "HelpTextProperty",
     PropertyId.IsAnnotationPatternAvailableProperty: "IsAnnotationPatternAvailableProperty",
     PropertyId.IsContentElementProperty: "IsContentElementProperty",
     PropertyId.IsControlElementProperty: "IsControlElementProperty",
     PropertyId.IsCustomNavigationPatternAvailableProperty: "IsCustomNavigationPatternAvailableProperty",
     PropertyId.IsDataValidForFormProperty: "IsDataValidForFormProperty",
+    PropertyId.IsDialogProperty: "IsDialogProperty",
     PropertyId.IsDockPatternAvailableProperty: "IsDockPatternAvailableProperty",
     PropertyId.IsDragPatternAvailableProperty: "IsDragPatternAvailableProperty",
     PropertyId.IsDropTargetPatternAvailableProperty: "IsDropTargetPatternAvailableProperty",
@@ -470,6 +477,7 @@ PropertyIdNames = {
     PropertyId.IsSelectionPatternAvailableProperty: "IsSelectionPatternAvailableProperty",
     PropertyId.IsSpreadsheetItemPatternAvailableProperty: "IsSpreadsheetItemPatternAvailableProperty",
     PropertyId.IsSpreadsheetPatternAvailableProperty: "IsSpreadsheetPatternAvailableProperty",
+    PropertyId.IsStructuredMarkupPatternAvailableProperty: "IsStructuredMarkupPatternAvailableProperty",
     PropertyId.IsStylesPatternAvailableProperty: "IsStylesPatternAvailableProperty",
     PropertyId.IsSynchronizedInputPatternAvailableProperty: "IsSynchronizedInputPatternAvailableProperty",
     PropertyId.IsTableItemPatternAvailableProperty: "IsTableItemPatternAvailableProperty",
@@ -810,6 +818,50 @@ class RowOrColumnMajor(IntEnum):
     RowMajor = 0
     ColumnMajor = 1
     Indeterminate = 2
+
+
+class HeadingLevel(IntEnum):
+    """
+    HeadingLevel from IUIAutomation, the value of `PropertyId.HeadingLevelProperty`.
+
+    The identifiers start at 80050 rather than 0, so a raw property value is
+    meaningless without this mapping: `None_` (80050) means "not a heading" and is what
+    the overwhelming majority of elements report.
+    Refer https://docs.microsoft.com/en-us/windows/win32/winauto/uiauto-headinglevel-ids
+    """
+
+    None_ = 80050
+    Level1 = 80051
+    Level2 = 80052
+    Level3 = 80053
+    Level4 = 80054
+    Level5 = 80055
+    Level6 = 80056
+    Level7 = 80057
+    Level8 = 80058
+    Level9 = 80059
+
+
+class LandmarkType(IntEnum):
+    """
+    LandmarkType from IUIAutomation, the value of `PropertyId.LandmarkTypeProperty`.
+
+    Marks a region's semantic role in a page or window (ARIA landmarks, and the WinUI /
+    Win32 equivalents). Like `HeadingLevel` the identifiers start at 80000, but unlike it
+    the "not a landmark" case is reported as plain `0`, not as a member of the 80000
+    range -- hence `None_ = 0`.
+
+    Observed in the wild on Paint, File Explorer, Snipping Tool, Calculator and Electron
+    apps; `Form` is the only member not seen during that sweep.
+    Refer https://docs.microsoft.com/en-us/windows/win32/winauto/uiauto-landmarktype-ids
+    """
+
+    None_ = 0
+    Custom = 80000
+    Form = 80001
+    Main = 80002
+    Navigation = 80003
+    Search = 80004
 
 
 class ExpandCollapseState(IntEnum):

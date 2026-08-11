@@ -1,8 +1,17 @@
 """MultiSelect and MultiEdit tools — batch element interaction."""
 
+import json
+
 from mcp.types import ToolAnnotations
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
+
+
+def _as_loc(value: list | str | None) -> list | None:
+    """Coerce a JSON-stringified list back to a list (Claude Desktop workaround)."""
+    if value is None or isinstance(value, list):
+        return value
+    return json.loads(value)
 
 
 def register(mcp, *, get_desktop, get_analytics):
@@ -19,12 +28,14 @@ def register(mcp, *, get_desktop, get_analytics):
     )
     @with_analytics(get_analytics(), "Multi-Select-Tool")
     def multi_select_tool(
-        locs: list[list[int]] | None = None,
-        labels: list[int] | None = None,
+        locs: list[list[int]] | str | None = None,
+        labels: list[int] | str | None = None,
         press_ctrl: bool | str = True,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
+        locs = _as_loc(locs)
+        labels = _as_loc(labels)
         if locs is None and labels is None:
             raise ValueError("Either locs or labels must be provided.")
         locs = locs or []
@@ -57,11 +68,13 @@ def register(mcp, *, get_desktop, get_analytics):
     )
     @with_analytics(get_analytics(), "Multi-Edit-Tool")
     def multi_edit_tool(
-        locs: list[list] | None = None,
-        labels: list[list] | None = None,
+        locs: list[list] | str | None = None,
+        labels: list[list] | str | None = None,
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
+        locs = _as_loc(locs)
+        labels = _as_loc(labels)
         if locs is None and labels is None:
             raise ValueError("Either locs or labels must be provided.")
         locs = locs or []

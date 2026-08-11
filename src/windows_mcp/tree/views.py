@@ -27,8 +27,16 @@ def _node_meta_str(metadata: dict[str, Any]) -> str:
     if metadata.get("is_password"):
         parts.append("password")
     value = metadata.get("value")
-    if value and value != "(empty)":
+    # Compare against None rather than testing truthiness: a slider sitting at its
+    # minimum reports value 0.0, which is falsy, so a plain `if value` silently hides
+    # the value of every zeroed volume/brightness/zoom control.
+    if value is not None and value not in ("", "(empty)"):
         parts.append(f'value:"{value}"')
+    # Range bounds are meaningless for most controls but essential for a slider -- without
+    # them an agent knows the current value yet has no idea how far it can be moved.
+    minimum, maximum = metadata.get("min"), metadata.get("max")
+    if minimum is not None and maximum is not None:
+        parts.append(f"range:{minimum}-{maximum}")
     toggle = metadata.get("toggle_state")
     if toggle:
         parts.append(f"toggle:{toggle}")
@@ -76,6 +84,15 @@ def _render_tree(nodes: list, meta_fn) -> str:
             lines.append(f'{connector} {coords} {ctrl} "{name}"  [action: {action}]{meta}')
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def _truncation_note(element_limit: int) -> str:
+    return (
+        f"... [truncated: reached the {element_limit}-element capture limit — "
+        "some elements were not visited. Narrow the view (filter by window, scroll to "
+        "the area of interest, use_dom=True for a browser page) or raise "
+        "WINDOWS_MCP_MAX_TREE_ELEMENTS for a complete tree.]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,23 +179,34 @@ class TreeState:
     dom_informative_nodes: list["TextElementNode"] = field(default_factory=list)
     capture_sec: float = 0.0
     semantic_tree_root: "SemanticNode | None" = None
+    truncated: bool = False
+    element_limit: int = 0
 
     def semantic_tree_to_string(self) -> str:
         if not self.semantic_tree_root:
             return "No elements"
         lines: list[str] = []
         _render_semantic_node(self.semantic_tree_root, lines, "", is_last=True)
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        if self.truncated:
+            text += "\n\n" + _truncation_note(self.element_limit)
+        return text
 
     def interactive_elements_to_string(self) -> str:
         if not self.interactive_nodes:
             return "No interactive elements"
-        return _render_tree(self.interactive_nodes, _node_meta_str)
+        text = _render_tree(self.interactive_nodes, _node_meta_str)
+        if self.truncated:
+            text += "\n\n" + _truncation_note(self.element_limit)
+        return text
 
     def scrollable_elements_to_string(self) -> str:
         if not self.scrollable_nodes:
             return "No scrollable elements"
-        return _render_tree(self.scrollable_nodes, _scroll_meta_str)
+        text = _render_tree(self.scrollable_nodes, _scroll_meta_str)
+        if self.truncated:
+            text += "\n\n" + _truncation_note(self.element_limit)
+        return text
 
 
 @dataclass

@@ -1,9 +1,8 @@
 from windows_mcp.desktop.utils import (
-    ps_quote,
-    ps_quote_for_xml,
     resolve_known_folder_guid_path,
 )
-from windows_mcp.desktop.powershell import PowerShellExecutor
+from windows_mcp.powershell.utils import ps_quote
+from windows_mcp.powershell import PowerShellExecutor
 from windows_mcp.vdm.core import (
     get_all_desktops,
     get_current_desktop,
@@ -14,13 +13,16 @@ from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
+from windows_mcp.desktop import flash_overlay
+from windows_mcp.infrastructure import validate_url
+from urllib.parse import urljoin
 from locale import getpreferredencoding
-from contextlib import contextmanager
 from typing import Literal
 from markdownify import markdownify
 from fuzzywuzzy import process
 from time import sleep, time, perf_counter
 from psutil import Process
+import math
 import win32process
 import win32gui
 import win32con
@@ -116,7 +118,11 @@ class Desktop:
         screenshot_capture_ms = 0.0
         screenshot_resize_ms = 0.0
         state_build_ms = 0.0
-        capture_rect = self.get_display_union_rect(display_indices) if display_indices else None
+        displays = self.get_displays()
+        available_displays = [self._display_to_view(display) for display in displays]
+        capture_rect = (
+            self.get_display_union_rect(display_indices, displays) if display_indices else None
+        )
         screenshot_region = self._rect_to_bounding_box(capture_rect) if capture_rect else None
 
         # Fast path for Screenshot tool (use_ui_tree=False): skip window enumeration.
@@ -157,9 +163,24 @@ class Desktop:
         logger.debug(f"Windows: {windows}")
 
         if use_ui_tree:
-            other_windows_handles = list(controls_handles - windows_handles)
+            other_windows_handles = set(controls_handles - windows_handles)
+            if active_window_handle is not None:
+                other_windows_handles.discard(active_window_handle)
+            tree_active_window_handle = active_window_handle
+            if screenshot_region:
+                active_window_in_region = (
+                    self._filter_window_to_region(active_window, screenshot_region) is not None
+                )
+                tree_active_window_handle = (
+                    active_window_handle if active_window_in_region else None
+                )
+                other_windows_handles.update(
+                    window.handle
+                    for window in windows
+                    if self._filter_window_to_region(window, screenshot_region) is not None
+                )
             tree_state = self.tree.get_state(
-                active_window_handle, other_windows_handles, use_dom=use_dom
+                tree_active_window_handle, list(other_windows_handles), use_dom=use_dom
             )
         else:
             root_box = screenshot_region or self.tree.screen_box
@@ -192,6 +213,7 @@ class Desktop:
             stage_started_at = perf_counter()
 
         screenshot_original_size = None
+        applied_scale = None
         if use_vision:
             if use_annotation:
                 nodes = tree_state.interactive_nodes
@@ -223,6 +245,7 @@ class Desktop:
                 )
                 scale = min(scale, scale_width, scale_height)
 
+            applied_scale = scale
             if scale != 1.0:
                 screenshot = screenshot.resize(
                     (int(screenshot.width * scale), int(screenshot.height * scale)),
@@ -249,10 +272,14 @@ class Desktop:
             screenshot=screenshot,
             cursor_position=cursor_position,
             screenshot_original_size=screenshot_original_size,
+            screenshot_scale=applied_scale,
             screenshot_region=screenshot_region,
             screenshot_displays=display_indices,
+            available_displays=available_displays,
             tree_state=tree_state,
-            screenshot_backend=getattr(self, "_last_screenshot_backend", None) if use_vision else None,
+            screenshot_backend=getattr(self, "_last_screenshot_backend", None)
+            if use_vision
+            else None,
             capture_sec=time() - start_time,
         )
         if profile_enabled:
@@ -290,9 +317,6 @@ class Desktop:
 
     def get_cursor_location(self) -> tuple[int, int]:
         return uia.GetCursorPos()
-
-    def get_element_under_cursor(self) -> uia.Control:
-        return uia.ControlFromCursor()
 
     def get_apps_from_start_menu(self) -> dict[str, str]:
         """Get installed apps. Tries Get-StartApps first, falls back to shortcut scanning."""
@@ -340,7 +364,9 @@ class Desktop:
                     apps[name] = lnk_path
         return apps
 
-    def execute_command(self, command: str, timeout: int = 10, shell: str | None = None) -> tuple[str, int]:
+    def execute_command(
+        self, command: str, timeout: int = 10, shell: str | None = None
+    ) -> tuple[str, int]:
         return PowerShellExecutor.execute_command(command, timeout, shell)
 
     def is_window_browser(self, node: uia.Control):
@@ -351,13 +377,9 @@ class Desktop:
         except Exception:
             return False
 
-    def get_default_language(self) -> str:
-        command = "Get-Culture | Select-Object Name,DisplayName | ConvertTo-Csv -NoTypeInformation"
-        response, _ = PowerShellExecutor.execute_command(command)
-        reader = csv.DictReader(io.StringIO(response))
-        return "".join([row.get("DisplayName") for row in reader])
-
-    def _find_window_by_name(self, name: str, refresh_state: bool = False) -> tuple["Window | None", str]:
+    def _find_window_by_name(
+        self, name: str, refresh_state: bool = False
+    ) -> tuple["Window | None", str]:
         """Find a window by fuzzy name match. Returns (window, error_msg).
         If the returned window is None, error_msg describes the failure reason.
 
@@ -417,11 +439,6 @@ class Desktop:
             width, height = size
             window_control.MoveWindow(x, y, width, height)
             return (f"{target_window.name} resized to {width}x{height} at {x},{y}.", 0)
-
-    def is_app_running(self, name: str) -> bool:
-        windows, _ = self.get_windows()
-        windows_dict = {window.name: window for window in windows}
-        return process.extractOne(name, list(windows_dict.keys()), score_cutoff=60) is not None
 
     def app(
         self,
@@ -631,7 +648,7 @@ class Desktop:
             results.append((element_node.center.x, element_node.center.y))
         return results
 
-    def click(self, loc: tuple[int, int]|list[int], button: str = "left", clicks: int = 2):
+    def click(self, loc: tuple[int, int] | list[int], button: str = "left", clicks: int = 1):
         if isinstance(loc, list):
             x, y = loc[0], loc[1]
         else:
@@ -654,6 +671,16 @@ class Desktop:
                 for _ in range(clicks):
                     uia.MiddleClick(x, y)
 
+    # Strings longer than this typed via clipboard paste instead of
+    # per-key SendKeys. SendKeys at high cadence loses keystrokes on
+    # slower / loaded systems (Win11 VMs in particular) — observed
+    # "hello from windows-mcp drive test" rendering as
+    # "hello tttttttttttttttttttttttttt" on a 4-core Win11 VM. The
+    # paste path is reliable because it bypasses the scan-code queue
+    # entirely. Plain-text only; control chars route through SendKeys
+    # so escape sequences ({Enter}, {Tab}, …) still work.
+    _LONG_TEXT_PASTE_THRESHOLD = 20
+
     def type(
         self,
         loc: tuple[int, int],
@@ -672,10 +699,40 @@ class Desktop:
             sleep(0.5)
             uia.SendKeys("{Ctrl}a", waitTime=0.05)
             uia.SendKeys("{Back}", waitTime=0.05)
-        escaped_text = _escape_text_for_sendkeys(text)
-        uia.SendKeys(escaped_text, interval=0.02, waitTime=0.05)
+        # Per-key SendKeys for short text (so escape sequences keep working);
+        # clipboard paste for long text (so the scan-code queue can't race).
+        has_control_chars = any(c in text for c in ("\n", "\t", "{", "}"))
+        if len(text) >= self._LONG_TEXT_PASTE_THRESHOLD and not has_control_chars:
+            self._paste_text(text)
+        else:
+            escaped_text = _escape_text_for_sendkeys(text)
+            # Bump interval from 0.02 → 0.04. Keeps short-text speed acceptable
+            # while reducing key-loss on slower systems.
+            uia.SendKeys(escaped_text, interval=0.04, waitTime=0.05)
         if press_enter is True or (isinstance(press_enter, str) and press_enter.lower() == "true"):
             uia.SendKeys("{Enter}", waitTime=0.05)
+
+    def _paste_text(self, text: str):
+        """Stash text on the clipboard, Ctrl+V, restore prior clipboard.
+        Plain-text only — control chars (newlines, tabs, braces) need to
+        route through SendKeys instead so escape sequences are honored.
+        """
+        prior = None
+        try:
+            prior = uia.GetClipboardText()
+        except Exception:
+            pass
+        uia.SetClipboardText(text)
+        # Tiny pause so the OS clipboard write settles before Ctrl+V reads.
+        sleep(0.05)
+        uia.SendKeys("{Ctrl}v", waitTime=0.05)
+        # Restore prior clipboard so we don't surprise other tools.
+        if prior is not None:
+            sleep(0.05)
+            try:
+                uia.SetClipboardText(prior)
+            except Exception:
+                pass
 
     def scroll(
         self,
@@ -713,14 +770,52 @@ class Desktop:
                 return 'Invalid type. Use "horizontal" or "vertical".'
         return None
 
-    def drag(self, loc: tuple[int, int]|list[int]):
-        if isinstance(loc, list):
-            x, y = loc[0], loc[1]
-        else:
-            x, y = loc
+    def _normalize_drag_duration(self, duration: float | int | str | None) -> float | None:
+        if duration is None:
+            return None
+        if isinstance(duration, bool):
+            raise ValueError("duration must be a finite number of seconds")
+        try:
+            effective_duration = float(duration)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("duration must be a finite number of seconds") from exc
+        if not math.isfinite(effective_duration):
+            raise ValueError("duration must be a finite number of seconds")
+        if effective_duration < 0 or effective_duration > 10:
+            raise ValueError("duration must be between 0 and 10 seconds")
+        return effective_duration
+
+    @staticmethod
+    def _normalize_drag_point(value: object, name: str) -> tuple[int, int]:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValueError(f"{name} must be a list or tuple of exactly 2 integers [x, y]")
+        x, y = value
+        if any(isinstance(item, bool) or not isinstance(item, int) for item in (x, y)):
+            raise ValueError(f"{name} must contain exactly 2 integers")
+        return x, y
+
+    def drag(
+        self,
+        loc: tuple[int, int] | list[int],
+        from_loc: tuple[int, int] | list[int] | None = None,
+        duration: float | int | str | None = None,
+    ) -> dict[str, object]:
+        x, y = self._normalize_drag_point(loc, "loc")
+        normalized_from_loc = (
+            None if from_loc is None else self._normalize_drag_point(from_loc, "from_loc")
+        )
+        effective_duration = self._normalize_drag_duration(duration)
         sleep(0.5)
-        cx, cy = uia.GetCursorPos()
-        uia.DragDrop(cx, cy, x, y, moveSpeed=1)
+        if normalized_from_loc is None:
+            cx, cy = uia.GetCursorPos()
+        else:
+            cx, cy = normalized_from_loc
+        uia.DragDrop(cx, cy, x, y, moveSpeed=1, duration=effective_duration)
+        return {
+            "start": [cx, cy],
+            "end": [x, y],
+            "duration": effective_duration,
+        }
 
     def move(self, loc: tuple[int, int]):
         x, y = loc
@@ -756,38 +851,29 @@ class Desktop:
             self.type((x, y), text=text, clear=True)
 
     def scrape(self, url: str) -> str:
+        current_url = url
         try:
-            response = requests.get(url, timeout=10)
+            for _ in range(5):
+                validate_url(current_url)
+                response = requests.get(current_url, timeout=10, allow_redirects=False)
+                if not response.is_redirect:
+                    break
+                location = response.headers.get("Location")
+                if not location:
+                    raise ValueError(f"Redirect from {current_url} has no Location header")
+                current_url = urljoin(current_url, location)
+            else:
+                raise ValueError("Too many redirects while fetching URL")
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            raise ValueError(f"HTTP error for {url}: {e}") from e
+            raise ValueError(f"HTTP error for {current_url}: {e}") from e
         except requests.exceptions.ConnectionError as e:
-            raise ConnectionError(f"Failed to connect to {url}: {e}") from e
+            raise ConnectionError(f"Failed to connect to {current_url}: {e}") from e
         except requests.exceptions.Timeout as e:
-            raise TimeoutError(f"Request timed out for {url}: {e}") from e
+            raise TimeoutError(f"Request timed out for {current_url}: {e}") from e
         html = response.text
         content = markdownify(html=html)
         return content
-
-    def get_window_from_element(self, element: uia.Control) -> Window | None:
-        if element is None:
-            return None
-        top_window = element.GetTopLevelControl()
-        if top_window is None:
-            return None
-        handle = top_window.NativeWindowHandle
-        windows, _ = self.get_windows()
-        for window in windows:
-            if window.handle == handle:
-                return window
-        return None
-
-    def is_window_visible(self, window: uia.Control) -> bool:
-        is_minimized = self.get_window_status(window) != Status.MINIMIZED
-        size = window.BoundingRectangle
-        area = size.width() * size.height()
-        is_overlay = self.is_overlay_window(window)
-        return not is_overlay and is_minimized and area > 10
 
     def is_overlay_window(self, element: uia.Control) -> bool:
         no_children = len(element.GetChildren()) == 0
@@ -821,45 +907,80 @@ class Desktop:
             handles.add(secondary_taskbar_hwnd)
         return handles
 
+    # Tuned retry envelope for transient UIA empty results. The OS
+    # briefly returns NULL from GetForegroundWindow during focus
+    # transitions, app launches, and notification overlays — three
+    # attempts at 100 ms each covers the typical race without
+    # noticeably slowing the snapshot path when state is steady.
+    _UIA_RETRIES = 3
+    _UIA_RETRY_SLEEP_MS = 100
+
     def get_active_window(self, windows: list[Window] | None = None) -> Window | None:
-        try:
-            if windows is None:
-                windows, _ = self.get_windows()
-            active_window = self.get_foreground_window()
-            if active_window.ClassName == "Progman":
-                return None
-            active_window_handle = active_window.NativeWindowHandle
-            for window in windows:
-                if window.handle != active_window_handle:
+        """Return the foreground app window, retrying briefly on transient
+        empty results.
+
+        GetForegroundWindow can return NULL during focus transitions, app
+        launches, and notification-overlay flicker — even when there is a
+        visible focused window on screen. Without a retry, Snapshot
+        reports "No active window found" and the caller is left blind.
+        """
+        last_error = None
+        for attempt in range(self._UIA_RETRIES):
+            try:
+                if windows is None:
+                    windows, _ = self.get_windows()
+                active_window = self.get_foreground_window()
+                if active_window is None:
+                    # NULL foreground — retry, this often clears on the
+                    # next pass once whatever was transitioning settles.
+                    sleep(self._UIA_RETRY_SLEEP_MS / 1000.0)
                     continue
-                return window
-            # In case active window is not present in the windows list
-            return Window(
-                **{
-                    "name": active_window.Name,
-                    "is_browser": self.is_window_browser(active_window),
-                    "depth": 0,
-                    "bounding_box": BoundingBox(
-                        left=active_window.BoundingRectangle.left,
-                        top=active_window.BoundingRectangle.top,
-                        right=active_window.BoundingRectangle.right,
-                        bottom=active_window.BoundingRectangle.bottom,
-                        width=active_window.BoundingRectangle.width(),
-                        height=active_window.BoundingRectangle.height(),
-                    ),
-                    "status": self.get_window_status(active_window),
-                    "handle": active_window_handle,
-                    "process_id": active_window.ProcessId,
-                }
+                if active_window.ClassName == "Progman":
+                    return None
+                active_window_handle = active_window.NativeWindowHandle
+                for window in windows:
+                    if window.handle != active_window_handle:
+                        continue
+                    return window
+                # In case active window is not present in the windows list
+                return Window(
+                    **{
+                        "name": active_window.Name,
+                        "is_browser": self.is_window_browser(active_window),
+                        "depth": 0,
+                        "bounding_box": BoundingBox(
+                            left=active_window.BoundingRectangle.left,
+                            top=active_window.BoundingRectangle.top,
+                            right=active_window.BoundingRectangle.right,
+                            bottom=active_window.BoundingRectangle.bottom,
+                            width=active_window.BoundingRectangle.width(),
+                            height=active_window.BoundingRectangle.height(),
+                        ),
+                        "status": self.get_window_status(active_window),
+                        "handle": active_window_handle,
+                        "process_id": active_window.ProcessId,
+                    }
+                )
+            except Exception as ex:
+                last_error = ex
+                # Same retry policy for transient exceptions —
+                # ControlFromHandle(NULL) raises during focus transitions
+                # and the next attempt usually succeeds.
+                sleep(self._UIA_RETRY_SLEEP_MS / 1000.0)
+                continue
+        if last_error is not None:
+            logger.error(
+                f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}"
             )
-        except Exception as ex:
-            logger.error(f"Error in get_active_window: {ex}")
         return None
 
-    def get_foreground_window(self) -> uia.Control:
+    def get_foreground_window(self) -> uia.Control | None:
         handle = uia.GetForegroundWindow()
-        active_window = self.get_window_from_element_handle(handle)
-        return active_window
+        # NULL handle means no window has foreground focus right now —
+        # don't pass that into ControlFromHandle, which would raise.
+        if not handle:
+            return None
+        return self.get_window_from_element_handle(handle)
 
     def get_window_from_element_handle(self, element_handle: int) -> uia.Control:
         current = uia.ControlFromHandle(element_handle)
@@ -926,67 +1047,20 @@ class Desktop:
             windows = []
         return windows, window_handles
 
-    def get_xpath_from_element(self, element: uia.Control):
-        current = element
-        if current is None:
-            return ""
-        path_parts = []
-        while current is not None:
-            parent = current.GetParentControl()
-            if parent is None:
-                # we are at the root node
-                path_parts.append(f"{current.ControlTypeName}")
-                break
-            children = parent.GetChildren()
-            same_type_children = [
-                "-".join(map(lambda x: str(x), child.GetRuntimeId()))
-                for child in children
-                if child.ControlType == current.ControlType
-            ]
-            index = same_type_children.index(
-                "-".join(map(lambda x: str(x), current.GetRuntimeId()))
-            )
-            if same_type_children:
-                path_parts.append(f"{current.ControlTypeName}[{index + 1}]")
-            else:
-                path_parts.append(f"{current.ControlTypeName}")
-            current = parent
-        path_parts.reverse()
-        xpath = "/".join(path_parts)
-        return xpath
-
-
-
-    def get_windows_version(self) -> str:
-        response, status = PowerShellExecutor.execute_command("(Get-CimInstance Win32_OperatingSystem).Caption")
-        if status == 0:
-            return response.strip()
-        return "Windows"
-
-    def get_user_account_type(self) -> str:
-        response, status = PowerShellExecutor.execute_command(
-            "(Get-LocalUser -Name $env:USERNAME).PrincipalSource"
-        )
-        return (
-            "Local Account"
-            if response.strip() == "Local"
-            else "Microsoft Account"
-            if status == 0
-            else "Local Account"
-        )
-
-    def get_dpi_scaling(self):
-        try:
-            user32 = ctypes.windll.user32
-            dpi = user32.GetDpiForSystem()
-            return dpi / 96.0 if dpi > 0 else 1.0
-        except Exception:
-            # Fallback to standard DPI if system call fails
-            return 1.0
-
     def get_screen_size(self) -> Size:
         width, height = uia.GetVirtualScreenSize()
         return Size(width=width, height=height)
+
+    def get_screen_box(self) -> BoundingBox:
+        left, top, width, height = uia.GetVirtualScreenRect()
+        return BoundingBox(
+            left=left,
+            top=top,
+            right=left + width,
+            bottom=top + height,
+            width=width,
+            height=height,
+        )
 
     @staticmethod
     def parse_display_selection(
@@ -996,41 +1070,66 @@ class Desktop:
             return None
 
         if isinstance(display, bool):
-            raise ValueError("display must be a JSON array of non-negative integers, for example [0] or [0,1]")
+            raise ValueError(
+                "display must be a JSON array of zero-based active display indices, for example [0] or [0,1]"
+            )
 
         if isinstance(display, int):
             values = [display]
         elif isinstance(display, (list, tuple)):
             values = list(display)
         else:
-            raise ValueError("display must be a JSON array of non-negative integers, for example [0] or [0,1]")
+            raise ValueError(
+                "display must be a JSON array of zero-based active display indices, for example [0] or [0,1]"
+            )
 
         unique_values: list[int] = []
         for value in values:
             if not isinstance(value, int) or value < 0:
-                raise ValueError("display must contain only non-negative integers")
+                raise ValueError("display must contain only zero-based active display indices")
             if value not in unique_values:
                 unique_values.append(value)
         return unique_values or None
 
-    def get_display_union_rect(self, display_indices: list[int]) -> uia.Rect:
-        monitor_rects = uia.GetMonitorsRect()
-        if not monitor_rects:
-            logger.warning("Monitor enumeration returned no monitors while display filter was requested")
+    @staticmethod
+    def get_displays() -> list[uia.DisplayInfo]:
+        return uia.GetDisplays()
+
+    @staticmethod
+    def _display_to_view(display: uia.DisplayInfo) -> Display:
+        return Display(
+            index=display.index,
+            device_name=display.device_name,
+            bounding_box=Desktop._rect_to_bounding_box(display.rect),
+            primary=display.primary,
+        )
+
+    def get_display_union_rect(
+        self,
+        display_indices: list[int],
+        displays: list[uia.DisplayInfo] | None = None,
+    ) -> uia.Rect:
+        displays = displays if displays is not None else self.get_displays()
+        if not displays:
+            logger.warning(
+                "Monitor enumeration returned no monitors while display filter was requested"
+            )
             raise ValueError("No displays detected")
 
-        invalid_indices = [index for index in display_indices if index >= len(monitor_rects)]
+        display_by_index = {display.index: display for display in displays}
+        invalid_indices = [index for index in display_indices if index not in display_by_index]
         if invalid_indices:
+            available_indices = ",".join(str(display.index) for display in displays)
             logger.warning(
-                "Invalid display selection %s. Available displays: 0-%s",
+                "Invalid display selection %s. Available displays: %s",
                 invalid_indices,
-                len(monitor_rects) - 1,
+                available_indices,
             )
             raise ValueError(
-                f"Invalid display index {invalid_indices[0]}. Available displays: 0-{len(monitor_rects) - 1}"
+                f"Invalid display index {invalid_indices[0]}. Available displays: {available_indices}"
             )
 
-        selected_rects = [monitor_rects[index] for index in display_indices]
+        selected_rects = [display_by_index[index].rect for index in display_indices]
         return uia.Rect(
             left=min(rect.left for rect in selected_rects),
             top=min(rect.top for rect in selected_rects),
@@ -1039,8 +1138,10 @@ class Desktop:
         )
 
     def get_screenshot(self, capture_rect: uia.Rect | None = None) -> Image.Image:
+        flash_overlay.cancel_active_flash()
         image, used_backend = screenshot_capture.capture(capture_rect)
         self._last_screenshot_backend = used_backend
+        flash_overlay.show_capture_flash(capture_rect)
         return image
 
     def get_annotated_screenshot(
@@ -1051,14 +1152,9 @@ class Desktop:
         capture_rect: uia.Rect | None = None,
     ) -> Image.Image:
         screenshot = self.get_screenshot(capture_rect=capture_rect)
-        # Add padding
-        padding = 5
-        width = int(screenshot.width + (1.5 * padding))
-        height = int(screenshot.height + (1.5 * padding))
-        padded_screenshot = Image.new("RGB", (width, height), color=(255, 255, 255))
-        padded_screenshot.paste(screenshot, (padding, padding))
-
-        draw = ImageDraw.Draw(padded_screenshot)
+        annotated_screenshot = screenshot.copy()
+        draw = ImageDraw.Draw(annotated_screenshot)
+        image_width, image_height = annotated_screenshot.size
         font_size = 12
         try:
             font = ImageFont.truetype("arial.ttf", font_size)
@@ -1068,6 +1164,23 @@ class Desktop:
         def get_random_color():
             return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
+        def clamp(value: float, minimum: float, maximum: float) -> float:
+            return max(minimum, min(value, maximum))
+
+        def get_label_size(text: str) -> tuple[int, int]:
+            text_box = draw.textbbox((0, 0), text, font=font)
+            return text_box[2] - text_box[0] + 4, text_box[3] - text_box[1] + 4
+
+        def draw_label(text: str, x: float, y: float, color: str) -> None:
+            label_width, label_height = get_label_size(text)
+            label_x = int(clamp(x, 0, max(0, image_width - label_width)))
+            label_y = int(clamp(y, 0, max(0, image_height - label_height)))
+            draw.rectangle(
+                [(label_x, label_y), (label_x + label_width, label_y + label_height)],
+                fill=color,
+            )
+            draw.text((label_x + 2, label_y + 2), text, fill=(255, 255, 255), font=font)
+
         if capture_rect:
             left_offset, top_offset = capture_rect.left, capture_rect.top
         else:
@@ -1076,59 +1189,40 @@ class Desktop:
         # Draw grid lines if requested
         if grid_lines:
             w_count, h_count = grid_lines
-            grid_left = padding
-            grid_top = padding
-            grid_width = screenshot.width
-            grid_height = screenshot.height
             for i in range(1, w_count):
-                x = grid_left + (grid_width * i // w_count)
-                draw.line(
-                    [(x, grid_top), (x, grid_top + grid_height)],
-                    fill=(200, 200, 200, 128),
-                    width=1,
-                )
+                x = image_width * i // w_count
+                draw.line([(x, 0), (x, image_height)], fill=(200, 200, 200, 128), width=1)
             for i in range(1, h_count):
-                y = grid_top + (grid_height * i // h_count)
-                draw.line(
-                    [(grid_left, y), (grid_left + grid_width, y)],
-                    fill=(200, 200, 200, 128),
-                    width=1,
-                )
+                y = image_height * i // h_count
+                draw.line([(0, y), (image_width, y)], fill=(200, 200, 200, 128), width=1)
 
         def draw_annotation(label, node: TreeElementNode):
             box = node.bounding_box
             color = get_random_color()
 
-            # Scale and pad the bounding box also clip the bounding box
-            # Adjust for virtual screen offset so coordinates map to the screenshot image
-            adjusted_box = (
-                int(box.left - left_offset) + padding,
-                int(box.top - top_offset) + padding,
-                int(box.right - left_offset) + padding,
-                int(box.bottom - top_offset) + padding,
+            adjusted_left = int(box.left - left_offset)
+            adjusted_top = int(box.top - top_offset)
+            adjusted_right = int(box.right - left_offset)
+            adjusted_bottom = int(box.bottom - top_offset)
+            clipped_box = (
+                int(clamp(adjusted_left, 0, image_width - 1)),
+                int(clamp(adjusted_top, 0, image_height - 1)),
+                int(clamp(adjusted_right, 0, image_width - 1)),
+                int(clamp(adjusted_bottom, 0, image_height - 1)),
             )
-            # Draw bounding box
-            draw.rectangle(adjusted_box, outline=color, width=2)
+            left, top, right, bottom = clipped_box
+            if right <= left or bottom <= top:
+                return
 
-            # Label dimensions
-            label_width = draw.textlength(str(label), font=font)
-            label_height = font_size
-            left, top, right, bottom = adjusted_box
+            draw.rectangle(clipped_box, outline=color, width=2)
 
-            # Label position above bounding box
-            label_x1 = right - label_width
-            label_y1 = top - label_height - 4
-            label_x2 = label_x1 + label_width
-            label_y2 = label_y1 + label_height + 4
-
-            # Draw label background and text
-            draw.rectangle([(label_x1, label_y1), (label_x2, label_y2)], fill=color)
-            draw.text(
-                (label_x1 + 2, label_y1 + 2),
-                str(label),
-                fill=(255, 255, 255),
-                font=font,
-            )
+            label_text = str(label)
+            label_width, label_height = get_label_size(label_text)
+            label_x = right - label_width
+            label_y = top - label_height - 2
+            if label_y < 0:
+                label_y = bottom + 2
+            draw_label(label_text, label_x, label_y, color)
 
         # Draw annotations sequentially: PIL ImageDraw is not thread-safe and
         # drawing is GIL-bound, so parallel execution adds risk without speed.
@@ -1138,9 +1232,8 @@ class Desktop:
         # Draw cursor highlight if pos provided
         if cursor_pos:
             cx, cy = cursor_pos
-            # Adjust for virtual screen offset and padding
-            acx = int(cx - left_offset) + padding
-            acy = int(cy - top_offset) + padding
+            acx = int(cx - left_offset)
+            acy = int(cy - top_offset)
 
             # Draw a distinctive marker (e.g., a circle or crosshair with a box)
             r = 15
@@ -1150,16 +1243,9 @@ class Desktop:
 
             # Draw "Cursor" label
             c_label = "CURSOR"
-            c_label_width = draw.textlength(c_label, font=font)
-            draw.rectangle([acx + r, acy - r, acx + r + c_label_width + 4, acy - r + 16], fill="red")
-            draw.text((acx + r + 2, acy - r), c_label, fill="white", font=font)
+            draw_label(c_label, acx + r, acy - r, "red")
 
-        if capture_rect:
-            return padded_screenshot.crop(
-                (padding, padding, padding + screenshot.width, padding + screenshot.height)
-            )
-
-        return padded_screenshot
+        return annotated_screenshot
 
     @staticmethod
     def _rect_to_bounding_box(rect: uia.Rect | None) -> BoundingBox | None:
@@ -1200,9 +1286,7 @@ class Desktop:
             height=bottom - top,
         )
 
-    def _filter_window_to_region(
-        self, window: Window | None, region: BoundingBox
-    ) -> Window | None:
+    def _filter_window_to_region(self, window: Window | None, region: BoundingBox) -> Window | None:
         if window is None:
             return None
         clipped_box = self._clip_bounding_box_to_region(window.bounding_box, region)
@@ -1218,9 +1302,7 @@ class Desktop:
             process_id=window.process_id,
         )
 
-    def _filter_windows_to_region(
-        self, windows: list[Window], region: BoundingBox
-    ) -> list[Window]:
+    def _filter_windows_to_region(self, windows: list[Window], region: BoundingBox) -> list[Window]:
         filtered_windows: list[Window] = []
         for window in windows:
             filtered_window = self._filter_window_to_region(window, region)
@@ -1256,6 +1338,41 @@ class Desktop:
             metadata=node.metadata,
         )
 
+    def _filter_semantic_node_to_region(
+        self,
+        node: SemanticNode | None,
+        region: BoundingBox,
+    ) -> SemanticNode | None:
+        if node is None:
+            return None
+
+        clipped_box = None
+        if node.bounding_box is not None:
+            clipped_box = self._clip_bounding_box_to_region(node.bounding_box, region)
+            if clipped_box is None:
+                return None
+
+        filtered_children = []
+        for child in node.children:
+            filtered_child = self._filter_semantic_node_to_region(child, region)
+            if filtered_child is not None:
+                filtered_children.append(filtered_child)
+
+        if node.element_type != "desktop" and clipped_box is None and not filtered_children:
+            return None
+
+        filtered_node = SemanticNode(
+            control_type=node.control_type,
+            element_type=node.element_type,
+            name=node.name,
+            window_name=node.window_name,
+            center=clipped_box.get_center() if clipped_box is not None else node.center,
+            bounding_box=clipped_box,
+            metadata=dict(node.metadata),
+        )
+        filtered_node.children = filtered_children
+        return filtered_node
+
     def _filter_tree_state_to_region(self, tree_state, region: BoundingBox):
         filtered_interactive_nodes = []
         for node in tree_state.interactive_nodes:
@@ -1273,6 +1390,14 @@ class Desktop:
         if tree_state.dom_node is not None:
             filtered_dom_node = self._filter_scroll_node_to_region(tree_state.dom_node, region)
 
+        filtered_semantic_root = self._filter_semantic_node_to_region(
+            tree_state.semantic_tree_root,
+            region,
+        )
+        if filtered_semantic_root is not None:
+            filtered_semantic_root.bounding_box = region
+            filtered_semantic_root.center = region.get_center()
+
         return tree_state.__class__(
             status=tree_state.status,
             root_node=TreeElementNode(
@@ -1288,143 +1413,7 @@ class Desktop:
             scrollable_nodes=filtered_scrollable_nodes,
             dom_informative_nodes=tree_state.dom_informative_nodes if filtered_dom_node else [],
             capture_sec=tree_state.capture_sec,
+            semantic_tree_root=filtered_semantic_root,
+            truncated=tree_state.truncated,
+            element_limit=tree_state.element_limit,
         )
-
-    def send_notification(self, title: str, message: str, app_id: str) -> str:
-        """Send a Windows toast notification with a title and message.
-
-        Args:
-            title: The title of the notification.
-            message: The message of the notification.
-            app_id: The valid Application User Model ID of the toast notification.
-                Required to display the notification in a specific app.
-
-        Returns:
-            A string indicating the result of the notification.
-
-        Notes:
-            The MCP client MUST provide an App ID because Windows uses it as the
-            app identity for desktop toast notifications, and it MUST match a
-            registered shortcut/AppUserModelID.
-        """
-        safe_title = ps_quote_for_xml(title)
-        safe_message = ps_quote_for_xml(message)
-        safe_app_id = ps_quote(app_id)
-
-        ps_script = (
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null\n"
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null\n"
-            f"$notifTitle = {safe_title}\n"
-            f"$notifMessage = {safe_message}\n"
-            f"$appId = {safe_app_id}\n"
-            '$template = @"\n'
-            "<toast>\n"
-            "    <visual>\n"
-            '        <binding template="ToastGeneric">\n'
-            "            <text>$notifTitle</text>\n"
-            "            <text>$notifMessage</text>\n"
-            "        </binding>\n"
-            "    </visual>\n"
-            "</toast>\n"
-            '"@\n'
-            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
-            "$xml.LoadXml($template)\n"
-            "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)\n"
-            "$toast = New-Object Windows.UI.Notifications.ToastNotification $xml\n"
-            "$notifier.Show($toast)"
-        )
-        # Use Windows PowerShell (5.1) explicitly because the WinRT toast APIs are not available in PowerShell 7+ (pwsh).
-        response, status = PowerShellExecutor.execute_command(ps_script, shell="powershell")
-        if status == 0:
-            return f'Notification sent: "{title}" - {message}'
-        else:
-            return f'Notification may have been sent. PowerShell output: {response[:200]}'
-
-    def list_processes(
-        self,
-        name: str | None = None,
-        sort_by: Literal["memory", "cpu", "name"] = "memory",
-        limit: int = 20,
-    ) -> str:
-        import psutil
-        from tabulate import tabulate
-
-        procs = []
-        for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
-            try:
-                info = p.info
-                mem_mb = info["memory_info"].rss / (1024 * 1024) if info["memory_info"] else 0
-                procs.append(
-                    {
-                        "pid": info["pid"],
-                        "name": info["name"] or "Unknown",
-                        "cpu": info["cpu_percent"] or 0,
-                        "mem_mb": round(mem_mb, 1),
-                    }
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        if name:
-            from thefuzz import fuzz
-
-            procs = [p for p in procs if fuzz.partial_ratio(name.lower(), p["name"].lower()) > 60]
-        sort_key = {
-            "memory": lambda x: x["mem_mb"],
-            "cpu": lambda x: x["cpu"],
-            "name": lambda x: x["name"].lower(),
-        }
-        procs.sort(key=sort_key.get(sort_by, sort_key["memory"]), reverse=(sort_by != "name"))
-        procs = procs[:limit]
-        if not procs:
-            return f"No processes found{f' matching {name}' if name else ''}."
-        table = tabulate(
-            [[p["pid"], p["name"], f"{p['cpu']:.1f}%", f"{p['mem_mb']:.1f} MB"] for p in procs],
-            headers=["PID", "Name", "CPU%", "Memory"],
-            tablefmt="simple",
-        )
-        return f"Processes ({len(procs)} shown):\n{table}"
-
-    def kill_process(
-        self, name: str | None = None, pid: int | None = None, force: bool = False
-    ) -> str:
-        import psutil
-
-        if pid is None and name is None:
-            return "Error: Provide either pid or name parameter for kill mode."
-        killed = []
-        if pid is not None:
-            try:
-                p = psutil.Process(pid)
-                pname = p.name()
-                if force:
-                    p.kill()
-                else:
-                    p.terminate()
-                killed.append(f"{pname} (PID {pid})")
-            except psutil.NoSuchProcess:
-                return f"No process with PID {pid} found."
-            except psutil.AccessDenied:
-                return f"Access denied to kill PID {pid}. Try running as administrator."
-        else:
-            for p in psutil.process_iter(["pid", "name"]):
-                try:
-                    if p.info["name"] and p.info["name"].lower() == name.lower():
-                        if force:
-                            p.kill()
-                        else:
-                            p.terminate()
-                        killed.append(f"{p.info['name']} (PID {p.info['pid']})")
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-        if not killed:
-            return f'No process matching "{name}" found or access denied.'
-        return f"{'Force killed' if force else 'Terminated'}: {', '.join(killed)}"
-
-    @contextmanager
-    def auto_minimize(self):
-        try:
-            handle = uia.GetForegroundWindow()
-            uia.ShowWindow(handle, win32con.SW_MINIMIZE)
-            yield
-        finally:
-            uia.ShowWindow(handle, win32con.SW_RESTORE)

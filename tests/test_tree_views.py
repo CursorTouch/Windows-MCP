@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from windows_mcp.tree.views import (
     BoundingBox,
     Center,
+    ScrollElementNode,
+    SemanticNode,
     TreeElementNode,
     TreeState,
 )
@@ -63,14 +65,64 @@ class TestTreeState:
         ts = TreeState()
         assert ts.interactive_elements_to_string() == "No interactive elements"
 
-    def test_interactive_elements_to_string_with_elements(self, sample_tree_element_node):
+    def test_truncated_appends_note_to_interactive_elements(
+        self, sample_tree_element_node: TreeElementNode
+    ) -> None:
+        ts = TreeState(
+            interactive_nodes=[sample_tree_element_node], truncated=True, element_limit=500
+        )
+        result = ts.interactive_elements_to_string()
+        assert "500-element capture limit" in result
+        assert "WINDOWS_MCP_MAX_TREE_ELEMENTS" in result
+
+    def test_truncated_appends_note_to_scrollable_elements(
+        self, sample_scroll_element_node: ScrollElementNode
+    ) -> None:
+        ts = TreeState(scrollable_nodes=[sample_scroll_element_node], truncated=True, element_limit=42)
+        result = ts.scrollable_elements_to_string()
+        assert "42-element capture limit" in result
+
+    def test_not_truncated_omits_note(self, sample_tree_element_node: TreeElementNode) -> None:
+        ts = TreeState(interactive_nodes=[sample_tree_element_node], truncated=False)
+        result = ts.interactive_elements_to_string()
+        assert "truncated" not in result
+
+    def test_truncated_with_no_elements_still_shows_note(self) -> None:
+        ts = TreeState(truncated=True, element_limit=10)
+        result = ts.interactive_elements_to_string()
+        assert result == "No interactive elements"
+
+    def test_truncated_appends_note_to_semantic_tree(self) -> None:
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(control_type="Window", element_type="window", name="Notepad")
+        root.add_child(window)
+        ts = TreeState(semantic_tree_root=root, truncated=True, element_limit=500)
+        result = ts.semantic_tree_to_string()
+        assert "window \"Notepad\"" in result
+        assert "500-element capture limit" in result
+
+    def test_semantic_tree_not_truncated_omits_note(self) -> None:
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        ts = TreeState(semantic_tree_root=root, truncated=False)
+        result = ts.semantic_tree_to_string()
+        assert "truncated" not in result
+
+    def test_interactive_elements_to_string_with_elements(
+        self, sample_tree_element_node: TreeElementNode
+    ) -> None:
         ts = TreeState(interactive_nodes=[sample_tree_element_node])
         result = ts.interactive_elements_to_string()
         lines = result.split("\n")
-        assert lines[0] == "# id|window|control_type|name|coords|metadata"
-        assert lines[1] == '0|Notepad|Button|OK|(200,100)|{"value": "", "shortcut": "Alt+O", "has_focused": true}'
+        assert lines[0] == "window \"Notepad\""
+        assert (
+            lines[1]
+            == "\u2514\u2500\u2500 (200,100) button \"OK\"  [action: click]  "
+            "[focused]  [shortcut:Alt+O]"
+        )
 
-    def test_interactive_elements_indices(self, sample_tree_element_node):
+    def test_interactive_elements_preserve_order(
+        self, sample_tree_element_node: TreeElementNode
+    ) -> None:
         node2 = TreeElementNode(
             bounding_box=sample_tree_element_node.bounding_box,
             center=sample_tree_element_node.center,
@@ -81,30 +133,37 @@ class TestTreeState:
         ts = TreeState(interactive_nodes=[sample_tree_element_node, node2])
         result = ts.interactive_elements_to_string()
         lines = result.split("\n")
-        assert lines[1].startswith("0|")
-        assert lines[2].startswith("1|")
+        assert (
+            lines[1]
+            == "\u251c\u2500\u2500 (200,100) button \"OK\"  [action: click]  "
+            "[focused]  [shortcut:Alt+O]"
+        )
+        assert lines[2] == "\u2514\u2500\u2500 (200,100) button \"Cancel\"  [action: click]"
 
     def test_scrollable_elements_to_string_empty(self):
         ts = TreeState()
         assert ts.scrollable_elements_to_string() == "No scrollable elements"
 
     def test_scrollable_elements_to_string_with_elements(
-        self, sample_scroll_element_node, sample_tree_element_node
-    ):
+        self,
+        sample_scroll_element_node: ScrollElementNode,
+        sample_tree_element_node: TreeElementNode,
+    ) -> None:
         ts = TreeState(
             interactive_nodes=[sample_tree_element_node],
             scrollable_nodes=[sample_scroll_element_node],
         )
         result = ts.scrollable_elements_to_string()
         lines = result.split("\n")
+        assert lines[0] == "window \"Notepad\""
         assert (
-            lines[0] == "# id|window|control_type|name|coords|metadata"
+            lines[1]
+            == "\u2514\u2500\u2500 (200,100) pane \"Document\"  [action: click]  [v:42.5%]"
         )
-        # base_index = len(interactive_nodes) = 1
-        assert lines[1].startswith("1|")
-        assert '"vertical_scroll_percent": 42.5' in lines[1]
 
-    def test_scrollable_elements_base_index_offset(self, sample_scroll_element_node):
+    def test_scrollable_elements_are_independent_from_interactive_count(
+        self, sample_scroll_element_node: ScrollElementNode
+    ) -> None:
         bb = BoundingBox(left=0, top=0, right=10, bottom=10, width=10, height=10)
         c = Center(x=5, y=5)
         interactive = [TreeElementNode(bounding_box=bb, center=c, name=f"btn{i}") for i in range(3)]
@@ -114,15 +173,14 @@ class TestTreeState:
         )
         result = ts.scrollable_elements_to_string()
         lines = result.split("\n")
-        # base_index = 3 (three interactive nodes)
-        assert lines[1].startswith("3|")
+        assert lines[0] == "window \"Notepad\""
+        assert (
+            lines[1]
+            == "\u2514\u2500\u2500 (200,100) pane \"Document\"  [action: click]  [v:42.5%]"
+        )
 
 
 class TestTreeElementNode:
-    def test_to_row(self, sample_tree_element_node):
-        row = sample_tree_element_node.to_row(0)
-        assert row == [0, "Notepad", "Button", "OK", "(200,100)"]
-
     def test_update_from_node(self, sample_tree_element_node):
         target = TreeElementNode(
             bounding_box=BoundingBox(left=0, top=0, right=0, bottom=0, width=0, height=0),
@@ -137,16 +195,3 @@ class TestTreeElementNode:
         assert target.metadata["has_focused"] is True
         assert target.bounding_box is sample_tree_element_node.bounding_box
         assert target.center is sample_tree_element_node.center
-
-
-class TestScrollElementNode:
-    def test_to_row_with_base_index(self, sample_scroll_element_node):
-        row = sample_scroll_element_node.to_row(index=0, base_index=5)
-        assert row[0] == 5  # base_index + index
-        assert row[1] == "Notepad"
-        assert row[2] == "Pane"
-        assert row[3] == "Document"
-        assert row[4] == "(200,100)"
-        import json
-        metadata = json.loads(row[5])
-        assert metadata["vertical_scroll_percent"] == 42.5

@@ -40,6 +40,17 @@ class CacheRequestFactory:
         cache_request.AddProperty(PropertyId.AcceleratorKeyProperty)
         cache_request.AddProperty(PropertyId.ClassNameProperty)
         cache_request.AddProperty(PropertyId.ControlTypeProperty)
+        # RuntimeId is the only exact element identity UIA offers — it is what makes
+        # deduplication sound rather than heuristic. FrameworkId ('Chrome'/'XAML'/
+        # 'Win32'/'WPF') gives per-element provider info; IsContentElement is the
+        # content-view counterpart of the already-cached IsControlElement, and
+        # ClickablePoint is absent on elements that cannot actually be clicked.
+        # These are batched into the existing BuildUpdatedCache round-trip, so they
+        # are effectively free — measured cost is below run-to-run noise.
+        cache_request.AddProperty(PropertyId.RuntimeIdProperty)
+        cache_request.AddProperty(PropertyId.IsContentElementProperty)
+        cache_request.AddProperty(PropertyId.FrameworkIdProperty)
+        cache_request.AddProperty(PropertyId.ClickablePointProperty)
         
         # State properties for visibility and interaction checks
         cache_request.AddProperty(PropertyId.IsEnabledProperty)

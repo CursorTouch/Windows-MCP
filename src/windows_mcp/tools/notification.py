@@ -4,8 +4,9 @@ from typing import Annotated
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
-from windows_mcp.analytics import with_analytics
+from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
+from windows_mcp import notifications
 
 
 def register(mcp, *, get_desktop, get_analytics):
@@ -39,6 +40,6 @@ def register(mcp, *, get_desktop, get_analytics):
         ctx: Context = None,
     ) -> str:
         try:
-            return get_desktop().send_notification(title, message, app_id)
+            return notifications.send_notification(title, message, app_id)
         except Exception as e:
-            return f"Error sending notification: {str(e)}"
+            raise
