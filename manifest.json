@@ -81,7 +81,7 @@
   "tools": [
     {
       "name": "App",
-      "description": "Manages Windows applications with three modes: 'launch' (opens the prescibed application), 'resize' (adjusts the size/position of a named window or the active window if name is omitted), 'switch' (brings specific window into focus)."
+      "description": "Launches applications and manages windows. Supports Start Menu or exact executable launch, convenient name-based resize and switch, and exact find_window, activate_window, and set_window_bounds modes using native window identity."
     },
     {
       "name": "PowerShell",
