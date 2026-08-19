@@ -8,8 +8,8 @@ from windows_mcp.vdm.core import (
     get_current_desktop,
     is_window_on_current_desktop,
 )
-from windows_mcp.desktop.views import DesktopState, Window, Browser, Status, Size
-from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState
+from windows_mcp.desktop.views import DesktopState, Window, Browser, Status, Size, Display
+from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState, SemanticNode
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
