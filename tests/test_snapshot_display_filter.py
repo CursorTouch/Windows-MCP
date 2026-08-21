@@ -50,6 +50,66 @@ class TestParseDisplaySelection:
             Desktop.parse_display_selection(["a"])
 
 
+class TestParseRegionSelection:
+    @pytest.fixture
+    def desktop(self):
+        with patch.object(Desktop, "__init__", lambda self: None):
+            desktop = Desktop()
+            return desktop
+
+    @pytest.fixture(autouse=True)
+    def _virtual_screen(self):
+        with patch(
+            "windows_mcp.desktop.service.uia.GetVirtualScreenRect",
+            return_value=(0, 0, 1920, 1080),
+        ):
+            yield
+
+    def test_none_keeps_default_behavior(self, desktop):
+        assert desktop.parse_region_selection(None) is None
+        assert desktop.parse_region_selection("") is None
+
+    def test_valid_region_returns_rect(self, desktop):
+        result = desktop.parse_region_selection([100, 200, 800, 600])
+        assert result == Rect(100, 200, 800, 600)
+
+    def test_rejects_wrong_length(self, desktop):
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([0, 0, 100])
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([0, 0, 100, 100, 100])
+
+    def test_rejects_non_list_type(self, desktop):
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection("0,0,100,100")
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection(42)
+
+    def test_rejects_non_integer_values(self, desktop):
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([0, 0, 100, "100"])
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([0, 0, 100.5, 100])
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([0, 0, True, 100])
+
+    def test_rejects_degenerate_region(self, desktop):
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([100, 100, 100, 200])
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([100, 100, 200, 100])
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([200, 100, 100, 200])
+
+    def test_rejects_region_fully_outside_virtual_screen(self, desktop):
+        with pytest.raises(ValueError):
+            desktop.parse_region_selection([5000, 5000, 5100, 5100])
+
+    def test_allows_region_partially_outside_virtual_screen(self, desktop):
+        result = desktop.parse_region_selection([1800, 900, 2200, 1300])
+        assert result == Rect(1800, 900, 2200, 1300)
+
+
 class TestDisplayFiltering:
     @pytest.fixture
     def desktop(self):
@@ -509,6 +569,89 @@ class TestDisplayFiltering:
         assert state.tree_state.interactive_nodes == []
         assert state.tree_state.scrollable_nodes == []
         assert state.screenshot_original_size.to_string() == "(800,600)"
+
+    def test_get_state_region_takes_precedence_over_display(self, desktop):
+        desktop.tree = MagicMock()
+        desktop.tree.screen_box = make_box(0, 0, 3840, 1080)
+        desktop.tree.get_state.return_value = TreeState(
+            interactive_nodes=[
+                TreeElementNode(
+                    name="Widget",
+                    control_type="Button",
+                    window_name="Widget App",
+                    bounding_box=make_box(2000, 50, 2100, 150),
+                    center=Center(x=2050, y=100),
+                    metadata={},
+                )
+            ]
+        )
+        desktop.get_displays = MagicMock(
+            return_value=[
+                DisplayInfo(
+                    index=0,
+                    device_name="\\\\.\\DISPLAY1",
+                    rect=Rect(0, 0, 1920, 1080),
+                    primary=True,
+                ),
+                DisplayInfo(
+                    index=1,
+                    device_name="\\\\.\\DISPLAY2",
+                    rect=Rect(1920, 0, 3840, 1080),
+                    primary=False,
+                ),
+            ]
+        )
+        active_window = Window(
+            name="Browser",
+            is_browser=True,
+            depth=0,
+            status=Status.NORMAL,
+            bounding_box=make_box(100, 100, 700, 500),
+            handle=1,
+            process_id=11,
+        )
+        widget_window = Window(
+            name="Widget App",
+            is_browser=False,
+            depth=1,
+            status=Status.NORMAL,
+            bounding_box=make_box(1950, 50, 2150, 200),
+            handle=2,
+            process_id=22,
+        )
+        desktop.get_controls_handles = MagicMock(return_value={1, 2, 3})
+        desktop.get_windows = MagicMock(return_value=([active_window, widget_window], {1, 2}))
+        desktop.get_active_window = MagicMock(return_value=active_window)
+        desktop.get_cursor_location = MagicMock(return_value=(150, 150))
+
+        with patch(
+            "windows_mcp.desktop.service.get_current_desktop", return_value={"name": "Desktop 1"}
+        ):
+            with patch(
+                "windows_mcp.desktop.service.get_all_desktops", return_value=[{"name": "Desktop 1"}]
+            ):
+                # display=[0] (left monitor) would select (0,0,1920,1080); region overrides it
+                # with a small rectangle on the right monitor instead.
+                state = desktop.get_state(
+                    use_vision=False,
+                    use_annotation=False,
+                    use_ui_tree=True,
+                    display_indices=[0],
+                    region=[1920, 0, 2200, 400],
+                )
+
+        assert state.screenshot_region == make_box(1920, 0, 2200, 400)
+        # The active window (in the left monitor) is outside the region, so it's dropped.
+        assert state.active_window is None
+        assert [window.name for window in state.windows] == ["Widget App"]
+        # Cursor is inside the left monitor but outside the region.
+        assert state.cursor_position is None
+        assert [node.name for node in state.tree_state.interactive_nodes] == ["Widget"]
+
+        desktop.tree.get_state.assert_called_once()
+        active_handle, other_handles = desktop.tree.get_state.call_args.args[:2]
+        assert active_handle is None
+        assert set(other_handles) == {2, 3}
 
     def test_get_state_rejects_dom_without_ui_tree(self, desktop):
         desktop.tree = MagicMock()

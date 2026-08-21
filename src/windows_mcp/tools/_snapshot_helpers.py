@@ -5,6 +5,7 @@ by the Snapshot and Screenshot tool modules.
 """
 
 import io
+import json
 import logging
 import os
 import time
@@ -42,6 +43,12 @@ def _as_bool(value: bool | str) -> bool:
     return value is True or (isinstance(value, str) and value.lower() == "true")
 
 
+def _as_region(value: list | str | None) -> list | None:
+    if value is None or isinstance(value, list):
+        return value
+    return json.loads(value)
+
+
 def capture_desktop_state(
     desktop: Desktop,
     *,
@@ -52,6 +59,7 @@ def capture_desktop_state(
     width_reference_line: int | None,
     height_reference_line: int | None,
     display: list[int] | None,
+    region: list[int] | None,
     tool_name: str,
 ):
     profile_enabled = _snapshot_profile_enabled()
@@ -79,6 +87,7 @@ def capture_desktop_state(
         scale=_screenshot_scale(),
         grid_lines=grid_lines,
         display_indices=display_indices,
+        region=region,
         max_image_size=Size(width=MAX_IMAGE_WIDTH, height=MAX_IMAGE_HEIGHT),
     )
     if profile_enabled:
