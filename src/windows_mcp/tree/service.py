@@ -2,7 +2,11 @@ from __future__ import annotations
 from windows_mcp.uia import Control, ComboBoxControl, DocumentControl, CheckBoxControl, EditControl, ButtonControl, SliderControl, ScrollPattern, WindowControl, ImageControl, Rect, ExpandCollapseState, ToggleState, PatternId, PropertyId, AccessibleRoleNames, TreeScope, ControlFromHandle, UIADeadElementError, from_com_error, TextPatternRangeEndpoint
 from windows_mcp.tree.config import INTERACTIVE_CONTROL_TYPE_NAMES, DOCUMENT_CONTROL_TYPE_NAMES, INFORMATIVE_CONTROL_TYPE_NAMES, DEFAULT_ACTIONS, INTERACTIVE_ROLES, THREAD_MAX_RETRIES, STRUCTURAL_CONTROL_TYPE_NAMES
 from windows_mcp.tree.views import TreeElementNode, ScrollElementNode, TextElementNode, Center, BoundingBox, TreeState, SemanticNode, _prune_structural, _reverse_children_order
-from windows_mcp.tree.cache_utils import CacheRequestFactory, CachedControlHelper
+from windows_mcp.tree.cache_utils import (
+    CacheRequestFactory,
+    CachedControlHelper,
+    is_uia_dead_element_error,
+)
 from windows_mcp.tree.budget import TreeElementBudget, resolve_max_tree_elements
 from windows_mcp.tree.utils import random_point_within_bounding_box
 from windows_mcp.tree import ia2 as ia2_traversal
@@ -811,6 +815,9 @@ class Tree:
                 e,
             )
         except Exception as e:
+            if is_uia_dead_element_error(e):
+                logger.debug("Skipping dead UIA subtree in '%s': %s", window_name, e)
+                return
             logger.error(f"Error in tree_traversal: {e}", exc_info=True)
             raise
 

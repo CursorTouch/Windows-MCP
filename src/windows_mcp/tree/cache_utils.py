@@ -5,11 +5,30 @@ This module provides utilities for implementing UI Automation caching
 to reduce cross-process COM calls during tree traversal.
 """
 
-from windows_mcp.uia import CacheRequest, PropertyId, PatternId, TreeScope, Control
+from _ctypes import COMError
+
+from windows_mcp.uia import (
+    CacheRequest,
+    PropertyId,
+    PatternId,
+    TreeScope,
+    Control,
+    UIADeadElementError,
+    from_com_error,
+)
 from typing import Optional, Any
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def is_uia_dead_element_error(error: BaseException) -> bool:
+    """Return True for UIA failures that mean the element no longer exists."""
+    if isinstance(error, UIADeadElementError):
+        return True
+    if isinstance(error, COMError):
+        return isinstance(from_com_error(error), UIADeadElementError)
+    return False
 
 
 class CacheRequestFactory:
@@ -180,5 +199,15 @@ class CachedControlHelper:
             return children
             
         except Exception as e:
+            if is_uia_dead_element_error(e):
+                logger.debug("UIA element is no longer available; pruning stale subtree")
+                return []
+
             logger.debug(f"Failed to get cached children, falling back to regular access: {e}")
-            return node.GetChildren()
+            try:
+                return node.GetChildren()
+            except Exception as fallback_error:
+                if is_uia_dead_element_error(fallback_error):
+                    logger.debug("UIA element died during fallback; pruning stale subtree")
+                    return []
+                raise

@@ -1,4 +1,6 @@
+from _ctypes import COMError
 from unittest.mock import MagicMock
+
 import pytest
 from windows_mcp.desktop.views import Size
 from windows_mcp.tree.budget import TreeElementBudget
@@ -181,6 +183,27 @@ class TestTreeTraversal:
 
         assert interactive_nodes == []
         assert semantic_root.children == []
+
+    def test_stale_uia_subtree_is_pruned(self, tree_instance):
+        class StaleNode:
+            @property
+            def CachedIsOffscreen(self):
+                raise COMError(
+                    -2147220991,
+                    "An event was unable to invoke any of the subscribers",
+                    (None, None, None, 0, None),
+                )
+
+        tree_instance.tree_traversal(
+            StaleNode(),
+            Rect(0, 0, 200, 200),
+            "Window",
+            False,
+            [],
+            [],
+            [],
+            [],
+        )
 
 
 def _make_button_child(name: str, left: int) -> MagicMock:
