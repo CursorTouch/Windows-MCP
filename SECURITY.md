@@ -77,6 +77,42 @@ If you must use Windows-MCP on a regular system:
 5. **Disable High-Risk Tools**: Remove or restrict access to Shell and other destructive tools
 6. **Test First**: Thoroughly test workflows in a safe environment before production use
 
+### Optional pre-execution protection with HOL Guard (Cursor)
+
+When Windows-MCP is used from Cursor, [HOL Guard](https://github.com/hashgraph-online/hol-guard) can add a local pre-execution policy boundary before Cursor sends MCP tool calls to this server. This is an optional defense-in-depth layer; it does not replace least privilege, isolation, backups, or Windows-MCP's own access controls.
+
+1. Install HOL Guard:
+
+   ```shell
+   pipx install hol-guard
+   ```
+
+2. Configure Windows-MCP in the Cursor project as `.cursor/mcp.json`:
+
+   ```json
+   {
+     "mcpServers": {
+       "windows-mcp": {
+         "command": "uvx",
+         "args": ["windows-mcp", "serve"]
+       }
+     }
+   }
+   ```
+
+3. Install HOL Guard's Cursor protection and verify the harness:
+
+   ```shell
+   hol-guard install cursor
+   hol-guard doctor cursor
+   ```
+
+4. Restart Cursor so its MCP configuration and hooks reload.
+
+HOL Guard's current Cursor integration installs `beforeMCPExecution` with fail-closed behavior plus related pre-tool hooks. If Guard returns a deny decision for a Cursor MCP invocation, Cursor blocks that invocation before the corresponding Windows-MCP tool call executes. This protection applies to supported Cursor agent-hook paths; commands or actions launched outside the Cursor agent loop are outside this boundary.
+
+For the exact current coverage and limitations, see HOL Guard's [Cursor protection contract](https://github.com/hashgraph-online/hol-guard/blob/main/docs/guard/cursor-local-cloud-contract.md) and [setup guide](https://github.com/hashgraph-online/hol-guard/blob/main/docs/guard/get-started.md).
+
 ## Security Considerations
 
 ### System Access Level
