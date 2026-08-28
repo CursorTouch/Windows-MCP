@@ -8,14 +8,7 @@ from windows_mcp.vdm.core import (
     get_current_desktop,
     is_window_on_current_desktop,
 )
-from windows_mcp.desktop.views import (
-    DesktopState,
-    Window,
-    Browser,
-    Status,
-    Size,
-    Display,
-)
+from windows_mcp.desktop.views import DesktopState, Window, Browser, Status, Size, Display
 from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState, SemanticNode
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
@@ -98,6 +91,7 @@ class Desktop:
         scale: float = 1.0,
         grid_lines: tuple[int, int] | None = None,
         display_indices: list[int] | None = None,
+        region: list[int] | tuple[int, ...] | None = None,
         max_image_size: Size | None = None,
     ) -> DesktopState:
         use_annotation = use_annotation is True or (
@@ -127,8 +121,13 @@ class Desktop:
         state_build_ms = 0.0
         displays = self.get_displays()
         available_displays = [self._display_to_view(display) for display in displays]
+        region_rect = self.parse_region_selection(region)
         capture_rect = (
-            self.get_display_union_rect(display_indices, displays) if display_indices else None
+            region_rect
+            if region_rect is not None
+            else (
+                self.get_display_union_rect(display_indices, displays) if display_indices else None
+            )
         )
         screenshot_region = self._rect_to_bounding_box(capture_rect) if capture_rect else None
 
@@ -1106,6 +1105,35 @@ class Desktop:
             if value not in unique_values:
                 unique_values.append(value)
         return unique_values or None
+
+    def parse_region_selection(self, region: list[int] | tuple[int, ...] | None) -> uia.Rect | None:
+        if region is None or region == "":
+            return None
+
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            raise ValueError("region must be a JSON array of 4 integers [left, top, right, bottom]")
+
+        values = []
+        for item in region:
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise ValueError("region must contain only integers [left, top, right, bottom]")
+            values.append(item)
+
+        left, top, right, bottom = values
+        if right <= left or bottom <= top:
+            raise ValueError("region must satisfy right > left and bottom > top")
+
+        candidate = uia.Rect(left, top, right, bottom)
+        screen_box = self.get_screen_box()
+        screen_rect = uia.Rect(screen_box.left, screen_box.top, screen_box.right, screen_box.bottom)
+        overlap = candidate.intersect(screen_rect)
+        if overlap.width() <= 0 or overlap.height() <= 0:
+            raise ValueError(
+                f"region {region} does not overlap the virtual screen bounds "
+                f"{screen_box.xyxy_to_string()}"
+            )
+
+        return candidate
 
     @staticmethod
     def get_displays() -> list[uia.DisplayInfo]:
