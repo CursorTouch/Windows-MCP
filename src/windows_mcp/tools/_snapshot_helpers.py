@@ -13,7 +13,7 @@ import time
 from fastmcp.utilities.types import Image
 from textwrap import dedent
 from windows_mcp.desktop.service import Desktop, Size
-from windows_mcp.desktop.utils import remove_private_use_chars
+from windows_mcp.desktop.utils import remove_private_use_chars, repair_surrogates
 
 
 logger = logging.getLogger(__name__)
@@ -162,6 +162,18 @@ def build_snapshot_response(
     interactive_elements = remove_private_use_chars(interactive_elements)
     scrollable_elements = remove_private_use_chars(scrollable_elements)
     semantic_tree = remove_private_use_chars(semantic_tree)
+
+    # Emoji reach us from UIA as raw UTF-16 surrogate pairs. Left alone they make
+    # the strict UTF-8 JSON encoder reject the entire response, so every string
+    # heading into it is repaired -- window titles included, since an emoji in a
+    # window title is enough to take the whole snapshot down.
+    interactive_elements = repair_surrogates(interactive_elements)
+    scrollable_elements = repair_surrogates(scrollable_elements)
+    semantic_tree = repair_surrogates(semantic_tree)
+    windows = repair_surrogates(windows)
+    active_window = repair_surrogates(active_window)
+    active_desktop = repair_surrogates(active_desktop)
+    all_desktops = repair_surrogates(all_desktops)
 
     def display_to_string(display):
         primary = " primary" if display.primary else ""

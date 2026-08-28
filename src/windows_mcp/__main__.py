@@ -15,6 +15,7 @@ from windows_mcp.infrastructure import (
     OAuthStore,
     build_oauth_routes,
     validate_oauth_token,
+    install_selfpipe_guard,
 )
 from click.core import ParameterSource
 from fastmcp import FastMCP
@@ -579,6 +580,7 @@ def serve(
     stateless_http,
 ):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    install_selfpipe_guard()
     if transport == Transport.STDIO.value:
         os.environ.setdefault("NO_COLOR", "1")
     if debug:

@@ -49,6 +49,59 @@ ProcessTime()  # need to call it once if python version <= 3.6
 TreeNode = Any
 
 
+class _ViewWalkerState:
+    """Tracks whether this process's UIA tree walker actually returns children.
+
+    On some configurations — Windows ARM64 running x86-emulated Python is the
+    reported one — `RawViewWalker.GetFirstChildElement` returns NULL for every
+    element while `IUIAutomationElement::FindAll` on the same element enumerates
+    its children normally. That turns every window into an apparent leaf and
+    empties out window enumeration and the whole accessibility tree.
+
+    Rather than pay for a redundant `FindAll` on every genuinely childless leaf,
+    cross-check only the first few empty walks. One `FindAll` that finds children
+    where the walker found none is proof the walker is broken, and from then on
+    `GetChildren` skips the walker entirely.
+    """
+
+    #: How many empty walks to cross-check before concluding the walker is fine.
+    #: On a healthy system this costs at most this many extra `FindAll` calls for
+    #: the lifetime of the process; on a broken one the first probe latches.
+    MAX_PROBES = 3
+
+    _lock = threading.Lock()
+    _broken = False
+    _probes = 0
+
+    @classmethod
+    def is_broken(cls) -> bool:
+        """Return True once the walker has been proven to return no children."""
+        return cls._broken
+
+    @classmethod
+    def should_probe(cls) -> bool:
+        """Return True if an empty walk is still worth cross-checking with FindAll."""
+        return not cls._broken and cls._probes < cls.MAX_PROBES
+
+    @classmethod
+    def record_probe(cls, walker_is_broken: bool) -> None:
+        """Record the outcome of one cross-check.
+
+        walker_is_broken: bool, True if FindAll returned children the walker missed.
+        """
+        with cls._lock:
+            cls._probes += 1
+            if walker_is_broken:
+                cls._broken = True
+
+    @classmethod
+    def reset(cls) -> None:
+        """Clear the latched state. For tests."""
+        with cls._lock:
+            cls._broken = False
+            cls._probes = 0
+
+
 class _PropertyNotSupported:
     """Sentinel type for a UI Automation property the provider does not implement.
 
@@ -1588,12 +1641,35 @@ class Control:
         """
         Return List[Control], a list of `Control` subclasses.
         """
+        if _ViewWalkerState.is_broken():
+            return self._FindChildren()
         children = []
         child = self.GetFirstChildControl()
         while child:
             children.append(child)
             child = child.GetNextSiblingControl()
+        if not children and _ViewWalkerState.should_probe():
+            # The RawViewWalker returns nothing for every element on some
+            # configurations (observed on Windows ARM64 running x86-emulated
+            # Python), while FindAll on the same element returns the children
+            # normally. Cross-check with FindAll the first few times a walk
+            # comes back empty, and latch onto whichever path works so the
+            # steady-state cost is one walk per element either way.
+            children = self._FindChildren()
+            _ViewWalkerState.record_probe(walker_is_broken=bool(children))
         return children
+
+    def _FindChildren(self) -> List["Control"]:
+        """
+        Enumerate direct children via IUIAutomationElement::FindAll instead of
+        the tree walker. Used as the fallback path when the walker is broken.
+
+        Return List[Control], a list of `Control` subclasses.
+        """
+        try:
+            return self.FindAll(TreeScope.TreeScope_Children, CreateTrueCondition())
+        except COMError:
+            return []
 
     def _CompareFunction(self, control: "Control", depth: int) -> bool:
         """

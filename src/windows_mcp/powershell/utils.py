@@ -96,8 +96,16 @@ def run_with_graceful_timeout(
     # Windows graceful-stop prerequisite: CREATE_NEW_PROCESS_GROUP is required
     # so that send_signal(CTRL_BREAK_EVENT) targets the child process group
     # rather than the current process (which would cause it to exit).
+    #
+    # CREATE_NO_WINDOW suppresses the console the child would otherwise get.
+    # When the server has no console of its own — the usual case when it runs
+    # as an MCP extension host — Windows allocates a *new* console for a
+    # console child, which flashes on screen and steals keyboard focus from
+    # whatever the user is typing in. Redirecting the streams does not prevent
+    # the allocation; only this flag does. It composes with the process-group
+    # flag, so CTRL_BREAK_EVENT and the graceful-stop path are unaffected.
     creationflags = kwargs.get("creationflags", 0)
-    creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     kwargs["creationflags"] = creationflags
 
     with subprocess.Popen(*popenargs, **kwargs) as process:
@@ -132,6 +140,7 @@ def run_with_graceful_timeout(
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
 
                 try:
@@ -153,6 +162,7 @@ def run_with_graceful_timeout(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             raise
 

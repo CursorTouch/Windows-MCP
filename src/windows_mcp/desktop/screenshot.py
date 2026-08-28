@@ -277,6 +277,13 @@ class _MssBackend(_ScreenshotBackend):
 
 _backend_instances: dict[str, _ScreenshotBackend] = {}
 
+#: Backends that have handed back an unusable frame in this process.
+#: On VM/RDP desktops dxcam can initialize successfully and then return empty
+#: frames from then on (issue #371). Retrying it on every call just reproduces
+#: the same broken capture, so a backend caught doing this is skipped for the
+#: rest of the process and the chain moves on to mss.
+_degraded_backends: set[str] = set()
+
 
 def _get_backend(name: str) -> _ScreenshotBackend:
     """Return a cached singleton instance for the given backend *name*."""
@@ -286,6 +293,30 @@ def _get_backend(name: str) -> _ScreenshotBackend:
             raise ValueError(f"Unknown screenshot backend: {name!r}")
         _backend_instances[name] = cls()
     return _backend_instances[name]
+
+
+def _is_usable_capture(image: Image.Image | None) -> bool:
+    """Return True if a captured frame is structurally sound enough to encode.
+
+    A backend that fails by raising is already handled by the chain below. The
+    case this catches is the quiet one behind issue #371: on VM/RDP desktops
+    dxcam can initialize successfully and then return frames carrying no pixel
+    data, which travel all the way to the client as an undecodable image with no
+    error anywhere in between.
+
+    Only structure is checked, never content -- a legitimately black screen is a
+    perfectly valid screenshot, and rejecting it would break locked and
+    screensaver desktops.
+    """
+    if image is None:
+        return False
+    if image.width <= 0 or image.height <= 0:
+        return False
+    try:
+        image.load()
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -311,17 +342,34 @@ def capture(
 
     # Try each candidate: skip unavailable ones, catch failures and fall through.
     for backend_cls in chain:
+        if backend_cls.name in _degraded_backends:
+            continue
         inst = _get_backend(backend_cls.name)
         if not inst.is_available(capture_rect):
             continue
         try:
-            return inst.capture(capture_rect), inst.name
+            image = inst.capture(capture_rect)
         except (OSError, RuntimeError, ValueError, IndexError):
             logger.warning(
                 "Screenshot backend '%s' failed; trying next backend",
                 inst.name,
                 exc_info=selected != "auto",
             )
+            continue
+
+        # A backend can also fail silently, returning a frame with nothing in it.
+        # Treat that exactly like a raised failure rather than shipping bytes the
+        # client cannot decode.
+        if not _is_usable_capture(image):
+            _degraded_backends.add(inst.name)
+            logger.warning(
+                "Screenshot backend '%s' returned an unusable frame; disabling it "
+                "for this process and trying the next backend",
+                inst.name,
+            )
+            continue
+
+        return image, inst.name
 
     # All candidates exhausted — pillow is always present as the last resort.
     return _get_backend("pillow").capture(capture_rect), "pillow"

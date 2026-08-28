@@ -882,9 +882,18 @@ class Desktop:
         return content
 
     def is_overlay_window(self, element: uia.Control) -> bool:
-        no_children = len(element.GetChildren()) == 0
-        is_name = "Overlay" in element.Name.strip()
-        return no_children or is_name
+        """Return True if the window is a decorative overlay rather than a real app window.
+
+        "No children" alone is deliberately not enough. When UIA child
+        enumeration degrades — as it does on Windows ARM64 under x86-emulated
+        Python — every window looks childless, and treating that as an overlay
+        filters out the entire desktop and leaves the caller blind. A real app
+        window always has a title, so require both signals.
+        """
+        name = element.Name.strip()
+        if "Overlay" in name:
+            return True
+        return not name and len(element.GetChildren()) == 0
 
     def get_controls_handles(self, optimized: bool = False):
         handles = set()

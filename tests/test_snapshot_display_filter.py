@@ -573,6 +573,11 @@ class TestDisplayFiltering:
     def test_get_state_region_takes_precedence_over_display(self, desktop):
         desktop.tree = MagicMock()
         desktop.tree.screen_box = make_box(0, 0, 3840, 1080)
+        # parse_region_selection validates the region against the real virtual
+        # screen, so without this the test only passes on a machine whose
+        # monitors happen to span the two displays mocked below. CI runs at
+        # 1024x768, where the region falls outside and the test fails.
+        desktop.get_screen_box = MagicMock(return_value=make_box(0, 0, 3840, 1080))
         desktop.tree.get_state.return_value = TreeState(
             interactive_nodes=[
                 TreeElementNode(
