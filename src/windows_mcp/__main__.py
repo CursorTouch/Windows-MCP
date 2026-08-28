@@ -199,6 +199,35 @@ def _exit_missing_dependency(exc: ModuleNotFoundError) -> NoReturn:
     sys.exit(1)
 
 
+def _start_watchdog(desktop):
+    """Create and start the UIA WatchDog, or return None if it is unavailable.
+
+    The watchdog only refreshes cached UI state, but importing it builds COM
+    interface wrappers at module scope. A transient codegen or COM failure
+    there used to abort startup and take every tool down with it, so failures
+    degrade to running without a watchdog instead. See #374 for the
+    comtypes.gen generation race and #332 for the COM failures.
+    """
+    if not _watchdog_enabled():
+        logger.debug("WatchDog disabled via WINDOWS_MCP_WATCHDOG")
+        return None
+
+    watchdog = None
+    try:
+        # Imported lazily so a disabled watchdog never loads comtypes.
+        from windows_mcp.watchdog.service import WatchDog
+
+        watchdog = WatchDog()
+        watchdog.set_focus_callback(desktop.tree.on_focus_change)
+        watchdog.start()
+        return watchdog
+    except Exception:
+        logger.warning("WatchDog unavailable; continuing without it", exc_info=True)
+        if watchdog is not None:
+            watchdog.stop()
+        return None
+
+
 def _build_mcp() -> FastMCP:
     """Create the MCP server instance."""
     global _mcp
@@ -223,19 +252,9 @@ def _build_mcp() -> FastMCP:
         desktop = Desktop()
         screen_size = desktop.get_screen_size()
 
-        if _watchdog_enabled():
-            # Imported lazily so a disabled watchdog never loads comtypes.
-            from windows_mcp.watchdog.service import WatchDog
-
-            watchdog = WatchDog()
-            watchdog.set_focus_callback(desktop.tree.on_focus_change)
-        else:
-            watchdog = None
-            logger.debug("WatchDog disabled via WINDOWS_MCP_WATCHDOG")
+        watchdog = _start_watchdog(desktop)
 
         try:
-            if watchdog:
-                watchdog.start()
             logger.debug("Server started, entering main loop")
             yield
         finally:
