@@ -19,6 +19,7 @@ from windows_mcp.infrastructure.config import (
     write_config,
 )
 from windows_mcp.infrastructure.oauth import OAuthStore, build_oauth_routes, validate_oauth_token
+from windows_mcp.infrastructure.eventloop import install_selfpipe_guard
 
 __all__ = [
     "AuthKeyMiddleware",
@@ -42,4 +43,5 @@ __all__ = [
     "OAuthStore",
     "build_oauth_routes",
     "validate_oauth_token",
+    "install_selfpipe_guard",
 ]
