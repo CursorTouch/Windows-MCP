@@ -163,20 +163,29 @@ class OptionsMiddleware:
 
 
 def _watchdog_enabled() -> bool:
-    """Whether the UIA focus WatchDog should run.
+    """Whether the UIA focus WatchDog should run. Off unless asked for.
 
-    Reads the ``WINDOWS_MCP_WATCHDOG`` environment variable. Disabling values
-    (case-insensitive, whitespace-trimmed): ``off``, ``0``, ``false``, ``no``,
-    ``disabled``. Anything else, including unset, keeps the watchdog enabled so
-    the default behavior is unchanged.
+    Reads the ``WINDOWS_MCP_WATCHDOG`` environment variable. Enabling values
+    (case-insensitive, whitespace-trimmed): ``on``, ``1``, ``true``, ``yes``,
+    ``enabled``. Unset, or anything else, leaves it off.
+
+    It is opt-in because it no longer earns its cost. Its only surviving
+    consumer is ``Tree.on_focus_change``, which debounces the event and writes
+    a debug log line -- the structure-change handling that once maintained
+    ``tree_state.interactive_nodes`` was removed, and nothing reads the focus
+    state it tracks. Against that, running it costs a dedicated STA thread, a
+    long-lived UIA event subscription, and exposure to a native access
+    violation in the event pump that takes the whole server down with no
+    Python traceback (#332). The accessibility tree is built on demand for
+    every tool call regardless, so leaving it off changes no tool behaviour.
 
     Returns:
         ``True`` when the watchdog should be started, ``False`` to skip it.
     """
     value = os.getenv("WINDOWS_MCP_WATCHDOG")
     if value is None:
-        return True
-    return value.strip().lower() not in {"off", "0", "false", "no", "disabled"}
+        return False
+    return value.strip().lower() in {"on", "1", "true", "yes", "enabled"}
 
 
 def _exit_missing_dependency(exc: ModuleNotFoundError) -> NoReturn:

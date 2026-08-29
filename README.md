@@ -668,7 +668,7 @@ All variables are optional unless noted. Set them via the `env` key in `claude_d
 
 | Variable | Default | Description |
 |---|---|---|
-| `WINDOWS_MCP_WATCHDOG` | `true` | Set to `off`, `0`, `false`, `no`, or `disabled` (case-insensitive) to disable the UIA focus watchdog that keeps the accessibility tree current. On unstable UIA environments the watchdog can degrade after long uptime (e.g. across a sleep/resume or session change); disabling it trades away automatic focus tracking for stability — the accessibility tree still refreshes on-demand for tool calls. |
+| `WINDOWS_MCP_WATCHDOG` | `false` | Set to `on`, `1`, `true`, `yes`, or `enabled` (case-insensitive) to run the UIA focus watchdog. It is off by default because its only remaining effect is debug logging of focus changes, while it costs a background thread and a long-lived UIA event subscription that can crash the server on unstable UIA environments after long uptime (e.g. across a sleep/resume or session change). The accessibility tree is built on demand for every tool call either way, so tool behaviour is unaffected. |
 
 **Example `claude_desktop_config.json`:**
 

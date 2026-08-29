@@ -73,9 +73,9 @@
     "watchdog": {
       "type": "boolean",
       "title": "UIA Focus WatchDog",
-      "description": "Run the UIAutomation focus watchdog that keeps the accessibility tree current. Disable if the watchdog degrades or crashes on unstable UIA environments after long uptime.",
+      "description": "Run the UIAutomation focus watchdog. Off by default: it currently only emits debug logging, while costing a background thread and a UIA event subscription that can crash the server on unstable UIA environments. Tool behaviour is unaffected either way.",
       "required": false,
-      "default": true
+      "default": false
     }
   },
   "tools": [

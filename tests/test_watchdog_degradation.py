@@ -56,8 +56,8 @@ def desktop():
 
 @pytest.fixture(autouse=True)
 def watchdog_enabled(monkeypatch):
-    """Default to enabled; the real env var must not leak into these tests."""
-    monkeypatch.delenv("WINDOWS_MCP_WATCHDOG", raising=False)
+    """Opt in for these tests; the real env var must not leak in either way."""
+    monkeypatch.setenv("WINDOWS_MCP_WATCHDOG", "on")
 
 
 def install_fake_module(monkeypatch, watchdog_factory):
@@ -139,7 +139,15 @@ class TestDisabled:
 
         assert cli._start_watchdog(desktop) is None
 
-    def test_enabled_by_default(self, desktop, monkeypatch):
+    def test_off_by_default_never_imports_the_watchdog(self, desktop, monkeypatch):
+        """The watchdog is opt-in, so an unset env var must not even import it."""
+        monkeypatch.delenv("WINDOWS_MCP_WATCHDOG", raising=False)
+        monkeypatch.setitem(sys.modules, WATCHDOG_MODULE, None)
+
+        assert cli._start_watchdog(desktop) is None
+
+    def test_explicit_opt_in_starts_it(self, desktop, monkeypatch):
+        monkeypatch.setenv("WINDOWS_MCP_WATCHDOG", "on")
         install_fake_module(monkeypatch, FakeWatchDog)
 
         assert cli._start_watchdog(desktop) is not None

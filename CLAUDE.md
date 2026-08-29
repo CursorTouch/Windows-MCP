@@ -79,7 +79,7 @@ The codebase follows a layered service architecture under `src/windows_mcp/`:
 | `ANONYMIZED_TELEMETRY` | `true` | Set to `false` to disable PostHog telemetry. Checked in `__main__.py` and `infrastructure/analytics.py`. |
 | `POSTHOG_API_KEY` | Project default | Override the PostHog project write key used for anonymous telemetry. Set to an empty string to skip PostHog client initialization. Checked in `infrastructure/analytics.py`. |
 | `POSTHOG_HOST` | `https://us.i.posthog.com` | Override the PostHog host for anonymous telemetry, such as for a self-hosted PostHog deployment. Checked in `infrastructure/analytics.py`. |
-| `WINDOWS_MCP_WATCHDOG` | _(enabled)_ | Set to `off`/`0`/`false`/`no`/`disabled` to skip starting the UIA focus WatchDog thread. Any other value, including unset, leaves it running. Resolved in `__main__.py`. |
+| `WINDOWS_MCP_WATCHDOG` | _(off)_ | Set to `on`/`1`/`true`/`yes`/`enabled` to start the UIA focus WatchDog thread. Unset, or any other value, leaves it off. Opt-in because it only emits debug logging today but can crash the server via the UIA event pump (#332). Resolved in `__main__.py`. |
 | `WINDOWS_MCP_DEBUG` | `false` | Set to `1`/`true`/`yes`/`on` to enable debug mode. Checked in `config.py`. Also available as `--debug` CLI flag. |
 | `WINDOWS_MCP_DISABLE_FLASH` | _(off)_ | Set to `1`/`true`/`yes`/`on` to suppress the orange-red glowing border that briefly appears after every screenshot. Resolved in `desktop/flash_overlay.py`. |
 
