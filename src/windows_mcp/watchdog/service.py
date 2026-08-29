@@ -9,6 +9,7 @@ from threading import Thread, Event
 import comtypes.client
 import comtypes
 import logging
+import time
 
 from .event_handlers import (
     FocusChangedEventHandler,
@@ -25,6 +26,12 @@ logger.setLevel(logging.INFO)
 # the pump loop, so we detect it from the callback side instead.
 FAIL_THRESHOLD = 5
 MAX_BACKOFF_SECONDS = 30.0
+
+# How long a run must survive before its exit is treated as a one-off rather
+# than a symptom of a still-broken environment. Below this, the backoff keeps
+# growing, so a UIA stack that degrades immediately on every rebuild is retried
+# ever more slowly instead of churning COM clients at 1 Hz forever.
+HEALTHY_RUN_SECONDS = 60.0
 
 
 class WatchDog:
@@ -127,6 +134,7 @@ class WatchDog:
         backoff = 1.0
         while self.is_running.is_set():
             comtypes.CoInitialize()
+            started = time.monotonic()
             try:
                 self.uia = self._create_uia()
                 self._needs_rebuild.clear()
@@ -134,12 +142,19 @@ class WatchDog:
                 self._structure_fail_count = 0
                 self._property_fail_count = 0
                 self._event_loop()
-                backoff = 1.0  # clean exit (stopped or rebuild requested)
             except Exception as e:
                 logger.warning(f"WatchDog degraded, rebuilding UIA client: {e}")
             finally:
                 self._teardown_handlers()
                 comtypes.CoUninitialize()
+
+            # Only a run that lasted earns a reset. A rebuild requested seconds
+            # after starting means the environment is still broken, and
+            # resetting here would retry at 1 Hz indefinitely -- rebuilding the
+            # COM client and logging a warning every second, in exactly the
+            # degraded state this backoff exists to damp.
+            if time.monotonic() - started >= HEALTHY_RUN_SECONDS:
+                backoff = 1.0
 
             if self.is_running.is_set():
                 self.is_running.wait(backoff)
