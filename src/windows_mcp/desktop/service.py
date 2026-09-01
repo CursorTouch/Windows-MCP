@@ -329,6 +329,7 @@ class Desktop:
         command = "Get-StartApps | ConvertTo-Csv -NoTypeInformation"
         apps_info, status = PowerShellExecutor.execute_command(command)
 
+        apps: dict[str, str] = {}
         if status == 0 and apps_info and apps_info.strip():
             try:
                 reader = csv.DictReader(io.StringIO(apps_info.strip()))
@@ -337,14 +338,39 @@ class Desktop:
                     for row in reader
                     if row.get("Name") and row.get("AppID")
                 }
-                if apps:
-                    return apps
             except Exception as e:
                 logger.warning(f"Error parsing Get-StartApps output: {e}")
 
-        # Fallback: scan Start Menu shortcut folders (works on all Windows versions)
-        logger.info("Get-StartApps unavailable, falling back to Start Menu folder scan")
-        return self._get_apps_from_shortcuts()
+        if not apps:
+            # Fallback: scan Start Menu shortcut folders (works on all Windows versions)
+            logger.info("Get-StartApps unavailable, falling back to Start Menu folder scan")
+            apps = self._get_apps_from_shortcuts()
+
+        # AppsFolder supplies the display name rendered for the current Windows locale.
+        for name, appid in self._get_apps_folder_display_names().items():
+            apps.setdefault(name, appid)
+        return apps
+
+    def _get_apps_folder_display_names(self) -> dict[str, str]:
+        """Return localized Start Menu display names mapped to AppUserModelIDs."""
+        command = (
+            "(New-Object -ComObject Shell.Application)."
+            "NameSpace('shell:::{4234d49b-0245-4df3-b780-3893943456e1}').Items() "
+            "| Select-Object Name,@{n='AppID';e={$_.Path}} | ConvertTo-Csv -NoTypeInformation"
+        )
+        apps_info, status = PowerShellExecutor.execute_command(command)
+
+        if status == 0 and apps_info and apps_info.strip():
+            try:
+                reader = csv.DictReader(io.StringIO(apps_info.strip()))
+                return {
+                    row.get("Name", "").lower(): row.get("AppID", "")
+                    for row in reader
+                    if row.get("Name") and row.get("AppID")
+                }
+            except Exception as e:
+                logger.warning(f"Error parsing AppsFolder display names: {e}")
+        return {}
 
     def _get_apps_from_shortcuts(self) -> dict[str, str]:
         """Scan Start Menu folders for .lnk shortcuts as a fallback for Get-StartApps."""
