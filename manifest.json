@@ -150,6 +150,10 @@
     {
       "name": "Registry",
       "description": "Accesses the Windows Registry. Use mode=\"get\" to read a value, mode=\"set\" to create/update a value, mode=\"delete\" to remove a value or key, mode=\"list\" to list values and sub-keys under a path."
+    },
+    {
+      "name": "TextCursor",
+      "description": "Inspects or manipulates the caret/selection of the focused Windows text control through UI Automation. Modes: 'get_info' (read caret/selection info), 'move_relative' and 'move_absolute' (move the caret by a signed delta or to an absolute character offset), 'select_relative' and 'select_absolute' (select a text range), 'select_all', 'collapse_selection' (collapse a selection to its start or end edge). Offsets use provider-defined UIA TextUnit_Character steps from the document start. Requires a control that exposes the UIA TextPattern."
     }
   ],
   "compatibility": {
