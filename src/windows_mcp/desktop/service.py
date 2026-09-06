@@ -14,6 +14,7 @@ from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
 from windows_mcp.desktop import flash_overlay
+from windows_mcp.desktop.pointer import MouseButton, PointerController
 from windows_mcp.infrastructure import validate_url
 from urllib.parse import urljoin
 from locale import getpreferredencoding
@@ -80,6 +81,11 @@ class Desktop:
         self.encoding = getpreferredencoding()
         self.tree = Tree(self)
         self.desktop_state = None
+        self._pointer = PointerController()
+
+    def close(self) -> None:
+        """Release stateful input owned by this desktop service."""
+        self._pointer.close()
 
     def get_state(
         self,
@@ -852,6 +858,31 @@ class Desktop:
     def move(self, loc: tuple[int, int]):
         x, y = loc
         uia.MoveTo(x, y, moveSpeed=10)
+
+    def pointer_down(
+        self,
+        loc: tuple[int, int] | list[int],
+        button: MouseButton = "left",
+        timeout: float | int | str | None = None,
+    ) -> dict[str, object]:
+        """Press a mouse button for a bounded stateful gesture."""
+        return self._pointer.down(loc, button, timeout)
+
+    def pointer_move(
+        self,
+        loc: tuple[int, int] | list[int],
+        duration: float | int | str | None = None,
+    ) -> dict[str, object]:
+        """Move the pointer while its tracked button remains held."""
+        return self._pointer.move(loc, duration)
+
+    def pointer_up(self, button: MouseButton | None = None) -> dict[str, object]:
+        """Release the tracked mouse button."""
+        return self._pointer.up(button)
+
+    def pointer_cancel(self) -> dict[str, object]:
+        """Release all mouse buttons and clear tracked pointer state."""
+        return self._pointer.cancel()
 
     def shortcut(self, shortcut: str):
         keys = shortcut.split("+")
