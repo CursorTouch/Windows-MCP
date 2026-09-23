@@ -3,7 +3,7 @@
 > 调研快照：2026-09-23（Asia/Shanghai）。  
 > 证据范围：`browser-use/jev-ultrafast` 本地完整副本、GitHub API 元数据、TypeSafe 官方 Markdown / `llms-full.txt`、Laya / Von / SemIf 等开源实现源码或 README、Hacker News / Dev.to / 掘金 / 独立中文博客的公开材料。  
 > 本次没有运行任何模型、浏览器基准或 TypeSafe API，因此下文所有延迟都明确标注为“官方宣称”“仓库自报实测”或“第三方公开实测”，没有冒充本次实测。  
-> 本报告只新建本文件，不修改源码；`docs/web-automation-research.md` 在写入前后的 SHA-256 保持不变。
+> 本报告只新增文档，不改动任何源码。
 
 ## 1. TL;DR
 
@@ -449,7 +449,7 @@ Jev Ultrafast 明确规定：
 
 ### 8.1 先把“模型决策”和“确定性执行”分开
 
-现有 [web-automation-research.md](C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/docs/web-automation-research.md) 已经给出正确方向：Playwright / CDP 是确定性控制层，Jev / Laya 是可选决策层，不应把托管 Jev API 设为默认依赖。Jev Ultrafast 的证据进一步支持：
+现有 [web-automation-research.md](web-automation-research.md) 已经给出正确方向：Playwright / CDP 是确定性控制层，Jev / Laya 是可选决策层，不应把托管 Jev API 设为默认依赖。Jev Ultrafast 的证据进一步支持：
 
 - 模型只输出**选择**：operation、target index、概率 / confidence。
 - 代码拥有**权限和副作用**：真实 node、hit-test、click、type、wait、done / blocked 退出。
@@ -501,7 +501,7 @@ Windows-MCP 当前代码已经部分落在这个方向上：
 
 ### 10.1 Jev Ultrafast 一手源码与测量
 
-本地只读副本路径：`C:/Users/admin/Documents/ChatGPT/工具-windows操作/jev-ultrafast-main/`
+本报告按以下上游仓库逐文件核对（核对时使用完整本地副本）：
 
 - [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
 - [README.md](https://github.com/browser-use/jev-ultrafast/blob/main/README.md)
@@ -573,21 +573,21 @@ Windows-MCP 当前代码已经部分落在这个方向上：
 - [知乎：万字长文解读 Jev 模型](https://zhuanlan.zhihu.com/p/2084624500726022179) — 搜索索引可见，但本次正文受反爬限制，未作为数据来源。
 - [GitHub API 仓库元数据](https://api.github.com/repos/browser-use/jev-ultrafast) — Star / license / language 快照的接口形式；同类项目也通过 `/repos/<owner>/<repo>` 读取。
 
-### 10.6 Windows-MCP 只读上下文
+### 10.6 本仓库内的对照实现（仓库相对路径）
 
-- `C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/docs/web-automation-research.md`
-- `C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/src/windows_mcp/web/service.py`
-- `C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/src/windows_mcp/agent/action_space.py`
-- `C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/src/windows_mcp/agent/jev.py`
-- `C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/src/windows_mcp/agent/laya.py`
-- `C:/Users/admin/Documents/ChatGPT/工具-windows操作/Windows-MCP-main/src/windows_mcp/agent/policy.py`
+- `docs/web-automation-research.md`
+- `src/windows_mcp/web/service.py`
+- `src/windows_mcp/agent/action_space.py`
+- `src/windows_mcp/agent/jev.py`
+- `src/windows_mcp/agent/laya.py`
+- `src/windows_mcp/agent/policy.py`
 
 ## 11. 最终结论
 
 Jev / System One 的速度来自一组必须一起看的工程决策：
 
 - **模型输出面变窄**：从自由文本 / JSON / 坐标变成有限 option 上的概率分布。
-- **决策并发化**：同一 state 上 operation、target、done、guardrail 等问题在一次请求内 fan-out。
+- **决策并发化**：同一 state 上 `operation`（候选里含 `DONE` / `BLOCKED`）与每个 operation 的 `<operation>_target` 在一次请求内 fan-out。注意 `DONE` / `BLOCKED` 只是 `operation` 问题的候选值，并不是独立的 done / guardrail question；fan-out 的实际问题集合是 `operation` 加每种 target-producing operation 的 `*_target`。
 - **感知结构化**：默认 DOM / UIA / accessibility 文本，不把截图塞进决策模型。
 - **执行确定化**：模型只给编号，代码持有 node identity，动作前重新校验，动作后 bounded observe。
 - **热路径常驻**：浏览器 daemon / CDP session / 本地模型 preload，避免每步冷启动。
@@ -595,3 +595,27 @@ Jev / System One 的速度来自一组必须一起看的工程决策：
 - **文本单独处理**：只有真正需要写字段时才引入生成式模型。
 
 最重要的反直觉结论是：**单步 100ms 级并不自动导致整任务秒级以内**。Jev Ultrafast 的 7.073s 说明一个真实浏览器任务仍然要支付多次模型调用、浏览器协议、页面加载、结果等待和文本生成；Jev 的真正优势是把每一次“模型决策”变得足够便宜、有效和可组合，而不是让整个互联网变成零延迟。
+## 12. 代码级机制证据索引（可复核定位）
+
+上面各节的机制结论，都能在 `browser-use/jev-ultrafast` 的源码里按行号复核。行号相对 `jev_ultrafast/` 目录；对应文件可直接用 10.1 的 GitHub 链接打开。
+
+| 机制 | 代码定位 | 证据等级 |
+|---|---|---|
+| 页面侧 node → id 缓存：`WeakMap` / `Map` 保存真实节点，断开的节点被清理 | `snapshot.js:3-8` | 代码可证 |
+| 只扫描可交互选择器，过滤 password / file / hidden、不可见、disabled、越界节点 | `snapshot.js:9-11, 24-27, 55-60` | 代码可证 |
+| 每个动作候选保存真实 node、role / name / value / 几何 / 状态 | `snapshot.js:61-80` | 代码可证 |
+| 可见文本最多 6,000 字符，动作候选最多 250 个，超出直接 `splice` 丢弃 | `snapshot.js:82-92, 99-101` | 代码可证 |
+| freshness 用语义 marker / page key / guard 比较，而不是 DOM mutation 计数 | `snapshot.js:44-54, 93-98` | 代码可证 |
+| 模型元素编号按 node 去重，一个真实节点只占一个编号，每个 operation 有独立 target map | `model.py:48-78` | 代码可证 |
+| `operation` 与每个 `<operation>_target` 在同一个 body 里，一次 POST 完成 | `model.py:81-133`、`docs/design.md:5-7` | 代码可证 |
+| 类型化校验：choice 必须命中候选集、概率 key 完全匹配、概率和为 1，否则在动作前抛错 | `model.py:30-45, 120-133` | 代码可证 |
+| 浏览器侧常驻 daemon + 后台 tab + flattened CDP session，不在每步重建 | `browser.py:1, 20-28` | 代码可证 |
+| 一轮 observation = 一次 `Runtime.evaluate(READ_STATE)` 拿整张元素表 | `browser.py:44-86, 188-193` | 代码可证 |
+| 输入前重新解析真实节点并检查 connected / disabled / inert / readOnly / 可见性 / 视口 / `elementFromPoint()` 遮挡 | `browser.py:135-165` | 代码可证 |
+| 有界等待：普通动作 2 rAF 且最多 50ms，autocomplete 最多 200ms，显式 WAIT 100ms | `browser.py:44-71, 103-104` | 代码可证 |
+| mutation 前先清空 `state["decision"]`，且不对浏览器 mutation 做 transport retry | `agent.py:86-96, 116-118` | 代码可证 |
+| 只有 `fill` 才调用文本 helper；输出必须恰好一个 key、非空、≤2000 字符，否则不输入 | `agent.py:105-117`、`model.py:160-197` | 代码可证 |
+| 截图是显式额外路径，不在默认观察链上 | `browser.py:12-14, 188-193` | 代码可证 |
+| Google Flights 整任务分账（7,073ms / 17 次决策 / 中位 178ms / 合计 3,720ms） | `docs/flights-measurement.json:2-6, 16-20, 47-49, 115-235` | 测量文件可证 |
+
+> 注意：上表只覆盖“代码可证”和“测量文件可证”两类。本报告里所有外部项目的延迟数字（Laya、Von、MLX、CoreML、SemIf、jev-browser、ego-jev、screenpeek 等）都是**项目自报或官方宣称**，没有本地复现条件，不应与本次核对过的源码证据混为一谈。

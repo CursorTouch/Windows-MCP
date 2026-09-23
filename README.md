@@ -829,6 +829,18 @@ The remaining packs need **no extra dependencies** and load automatically:
   `WINDOWS_MCP_TYPESAFE_API_KEY` / `WINDOWS_MCP_OPENROUTER_API_KEY` (environment wins).
   `dry_run=true` previews a single decision without touching the page.
 
+## 📚 Documentation
+
+- [Feature coverage](docs/feature-coverage.md) — the tool set compared against the raw Windows
+  API surface and against the 影刀 (YingDao) instruction library, plus the remaining gaps.
+- [Gap remediation](docs/gap-remediation.md) — every gap this change set closes, the module and
+  tool that closes it, and the gaps that are deliberately left open.
+- [Web automation research](docs/web-automation-research.md) — Playwright/CDP vs. Jev-ultrafast
+  vs. Laya, and the indexed-action-space design adopted here.
+- [Why Jev is fast](docs/why-jev-is-fast.md) — a source-level breakdown of why TypeSafe System
+  One style decisions are fast, with per-file evidence and an end-to-end latency account.
+- [Reviews](docs/reviews/) — the independent verification and research fact-check records.
+
 ## 🤝 Connect with Us
 Stay updated and join our community:
 
