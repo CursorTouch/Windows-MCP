@@ -650,6 +650,8 @@ class Desktop:
 
     def get_coordinates_from_label(self, label: int) -> tuple[int, int]:
         tree_state = self.desktop_state.tree_state
+        if label < 0:
+            raise IndexError(f"Label {label} out of range")
         if label < len(tree_state.interactive_nodes):
             element_node = tree_state.interactive_nodes[label]
         else:
@@ -669,6 +671,8 @@ class Desktop:
 
         results = []
         for label in labels:
+            if label < 0:
+                raise IndexError(f"Label {label} out of range")
             if label < interactive_len:
                 element_node = interactive_nodes[label]
             else:
