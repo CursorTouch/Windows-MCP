@@ -1,6 +1,17 @@
+import asyncio
+from unittest.mock import MagicMock
+
 import pytest
 
-from tests.test_multi_tools import make_desktop_with_tree_state
+from tests.test_multi_tools import FakeMCP, make_desktop_with_tree_state
+
+
+def _input_tools(desktop):
+    from windows_mcp.tools.input import register
+
+    mcp = FakeMCP()
+    register(mcp, get_desktop=lambda: desktop, get_analytics=lambda: None)
+    return mcp.tools
 
 
 def test_negative_label_raises_instead_of_indexing_from_the_end():
@@ -32,3 +43,16 @@ def test_labels_above_range_still_raise():
 
     with pytest.raises(IndexError, match="Label 3 out of range"):
         desktop.get_coordinates_from_label(3)
+
+
+def test_click_tool_reports_the_label_as_out_of_range():
+    desktop = make_desktop_with_tree_state()
+    # Keep the real tree state but stub the pointer: a regression here must not
+    # move the mouse of whoever runs the suite.
+    desktop.click = MagicMock()
+
+    tools = _input_tools(desktop)
+    with pytest.raises(ValueError, match="Failed to find element with label -1"):
+        asyncio.run(tools["Click"](label=-1))
+
+    desktop.click.assert_not_called()
