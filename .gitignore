@@ -172,3 +172,9 @@ node_modules
 experiment
 .tau
 .pi
+# Local dev caches / machine-specific config (must never be committed)
+.ruff_cache/
+.uv-cache/
+.venv-*/
+config.toml
+**/.windows-mcp/config.toml

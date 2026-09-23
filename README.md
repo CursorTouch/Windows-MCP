@@ -78,6 +78,37 @@ mcp-name: io.github.CursorTouch/Windows-MCP
 - UV (Package Manager) from Astra, install with `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - `English` as the default language in Windows preferred else disable the `App-Tool` in the MCP Server for Windows with other languages.
 
+### Interpreter version requirements and `doctor`
+
+The authoritative interpreter constraint is `project.requires-python` in
+`pyproject.toml`. The repository's `.python-version` intentionally uses the
+major/minor form `3.14`, so uv can resolve any installed or downloadable 3.14.x
+release without pinning an unavailable patch version.
+
+Check the current machine without overriding the Python version:
+
+```shell
+uv run python scripts/check_python.py
+uv run windows-mcp doctor
+```
+
+If no compatible interpreter exists, `doctor` explains the available versions
+and asks for explicit `y`/`yes` authorization before running
+`uv python install 3.14`. Use `windows-mcp doctor --yes` to authorize that
+isolated install without a prompt, or `windows-mcp doctor --check-only` to
+report only. Non-interactive invocations never wait for input; they fail with
+the manual uv command instead.
+
+uv installs the new interpreter in its own managed interpreter directory. It
+does not replace, upgrade, uninstall, or modify Python installations owned by
+the operating system, conda, pyenv, or other projects. Existing projects keep
+using their current interpreters. Once a compatible interpreter is available,
+start the server without a `--python` override:
+
+```shell
+uv run windows-mcp serve
+```
+
 ### Run at Login
 
 Run the server directly when needed:
@@ -733,6 +764,70 @@ MCP Client can access the following tools to interact with Windows:
 - `Notification`: Send a Windows toast notification with a title and message.
 - `Registry`: Read, write, delete, or list Windows Registry values and keys.
 
+
+### 🧩 Optional Capability Packs
+
+Beyond the core toolset there are seven optional packs. Each lives in its own module
+under `src/windows_mcp/tools/` and is **skipped with a warning when its dependencies are
+missing**, so a minimal install keeps working and you opt into only what you need.
+
+```shell
+uv sync --extra ocr --extra web --extra office
+uv sync --extra all          # everything below
+# with uvx instead of a checkout:
+uvx --with rapidocr --with onnxruntime windows-mcp serve
+```
+
+| Pack | Install | Added tools |
+|---|---|---|
+| OCR | `--extra ocr` | `Ocr` — offline OCR (RapidOCR / PP-OCRv6 on ONNX Runtime, CPU, bundled models, no cloud call). Returns per-line and per-word text **with bounding boxes**, so recognised text can be clicked — this is the fallback for canvas, self-drawn UI, scanned images and anything the accessibility tree cannot see. Modes: `screen`, `region`, `file`, `element`. |
+| Web | `--extra web` | `Web` — Playwright/CDP browser control. `connect` to your real, already-logged-in Chrome (`--remote-debugging-port=9222`) or `launch` a fresh browser; indexed element snapshots (`[1] textbox "Where from?" value="…"`), click/type/select/scroll by ref, `eval` JS, cookies, network capture, waits, screenshots, structured extraction. |
+| Office | `--extra office` | `Office` — Excel `.xlsx` (openpyxl), Word `.docx` (python-docx), PDF text/split/merge (pypdf), CSV and SQLite. No Microsoft Office install required. |
+
+The remaining packs need **no extra dependencies** and load automatically:
+
+- `Act` — **Jev-style single-round action.** One call performs an operation, verifies the
+  result, waits a bounded amount and retries on failure, so a step no longer costs a
+  `Snapshot` → `Click` round trip. Re-resolves the target before each retry and rejects
+  occluded targets. Returns `{ok, operation, resolved_target, elapsed_ms, verified,
+  attempts, detail}`. Backed by `windows_mcp.reliability` (`retry_call`, `with_retry`,
+  `resolve_target`, `element_occluded`, `wait_for_change`) for reuse by other tools.
+- `KeyDown`, `KeyUp`, `Hold`, `Press`, `Hotkey`, `ReleaseKeys` — real key down/up with 137
+  mapped key names, covering long presses and held modifiers that a press-only `Shortcut`
+  cannot express.
+- `TypeHuman`, `MoveHuman`, `ClickHuman`, `DragHuman` — human-like input: Bézier cursor
+  paths with easing and slight overshoot, plus keystroke timing jitter and optional
+  typo-then-correct, for targets that fingerprint robotic input.
+- `WindowControl` — close / show / hide / minimize / maximize / restore / set-topmost, and
+  list every window with class, PID, handle and state.
+- `ClipboardAdvanced` — image, file-list (`CF_HDROP`) and HTML clipboard formats, clear and
+  format enumeration (the core `Clipboard` tool handles text only).
+- `Archive` — zip / tar / tar.gz create, extract (with zip-slip protection) and list.
+- `SystemControl` — lock screen, volume and mute, brightness, input-language switching,
+  screensaver, and power control (`shutdown` / `restart` / `logoff` / `suspend` /
+  `hibernate` / `abort`). Shutdown and restart take a grace period so `abort` can still
+  cancel them; every power mode accepts `dry_run=True` to preview without acting.
+- `SystemProcess` — start a process, set priority, suspend/resume, list Windows services,
+  start/stop a service.
+- `SystemDialog` — message, input, choice, file, folder and date dialogs, executed in an
+  isolated Tk subprocess so the server needs no UI thread.
+- `Net` — HTTP requests and resumable downloads, SMTP send (HTML and attachments), IMAP
+  read/search, full FTP sessions, and webhooks for WeCom / DingTalk / Feishu group bots.
+- `WebAgent` — **goal-driven browser agent.** Give it a URL and a natural-language goal;
+  it observes the page, picks one validated `(operation, target)` per step and executes it
+  through indexed Playwright refs. The model never sees selectors or coordinates — it may
+  only choose elements it was shown — and every decision is freshly re-checked before it
+  runs. Powered by a pluggable **Policy** backend:
+
+  | Backend | Needs | Notes |
+  |---|---|---|
+  | `jev` | `TYPESAFE_API_KEY` | TypeSafe's hosted System One model; true calibrated probabilities. Preferred when configured. |
+  | `openrouter` | OpenRouter key | Recreates the same typed-choice contract with structured output. Selected automatically when no TypeSafe key is present. |
+  | `laya` | — | **Reserved entry point.** Local Jev-compatible ONNX model (`@receptron/laya`); not wired up yet. |
+
+  Configure credentials in `~/.windows-mcp/config.toml` under `[agent]`, or via
+  `WINDOWS_MCP_TYPESAFE_API_KEY` / `WINDOWS_MCP_OPENROUTER_API_KEY` (environment wins).
+  `dry_run=true` previews a single decision without touching the page.
 
 ## 🤝 Connect with Us
 Stay updated and join our community:

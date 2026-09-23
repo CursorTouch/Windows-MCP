@@ -39,6 +39,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Capability packs, one per optional tool module under src/windows_mcp/tools/.
+# A pack that is not installed is skipped at registration time (see
+# src/windows_mcp/tools/__init__.py), so the base server stays lightweight.
+#   uv sync --extra ocr --extra web --extra office      (or: --extra all)
+ocr = [
+    "rapidocr>=3.9.2",
+    "onnxruntime>=1.30.0",
+]
+web = [
+    "playwright>=1.63.0",
+]
+office = [
+    "openpyxl>=3.1.5",
+    "python-docx>=1.2.0",
+    "pypdf>=6.19.0",
+]
+all = [
+    "rapidocr>=3.9.2",
+    "onnxruntime>=1.30.0",
+    "playwright>=1.63.0",
+    "openpyxl>=3.1.5",
+    "python-docx>=1.2.0",
+    "pypdf>=6.19.0",
+]
 dev = [
     "ruff>=0.9.0",
     "pytest>=8.0.0",

@@ -95,7 +95,12 @@ async def test_handshake_completes_and_lists_tools() -> None:
     async with Client(_transport()) as client:
         tools = await asyncio.wait_for(client.list_tools(), STARTUP_TIMEOUT)
 
-    assert {tool.name for tool in tools} == EXPECTED_TOOLS
+    tool_names = {tool.name for tool in tools}
+
+    # The core toolset must always be present. Optional capability packs (ocr,
+    # web, office, act, inputx, systemx, net) register only when their
+    # dependencies are installed, so assert containment rather than equality.
+    assert EXPECTED_TOOLS <= tool_names
 
 
 async def test_tool_call_round_trips_over_stdio() -> None:

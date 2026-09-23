@@ -445,6 +445,76 @@ def main():
 
 
 @main.command()
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Authorize an isolated uv Python install without prompting.",
+)
+@click.option(
+    "--check-only",
+    is_flag=True,
+    help="Report interpreter status without installing anything.",
+)
+def doctor(yes: bool, check_only: bool) -> None:
+    """Check Python and uv interoperability for running windows-mcp."""
+    import platform
+
+    from windows_mcp.interpreter import (
+        InterpreterResolutionError,
+        discover_interpreters,
+        ensure_interpreter,
+        format_interpreters,
+        get_uv_version,
+        parse_requires_python,
+    )
+
+    requirement = parse_requires_python()
+    interpreters = discover_interpreters()
+    compatible = [info for info in interpreters if info.satisfies_requirement]
+
+    _echo_section("Environment")
+    click.echo(f"  OS              : {platform.system()} {platform.release()}")
+    click.echo(f"  Python          : {sys.version.split()[0]} ({sys.executable})")
+    click.echo(f"  uv              : {get_uv_version() or 'not found on PATH'}")
+    click.echo(f"  requires-python : {requirement or 'not declared'}")
+    compatible_versions = ", ".join(dict.fromkeys(info.version_text for info in compatible)) or "none"
+    click.echo(f"  compatible      : {compatible_versions}")
+
+    _echo_section("Python interpreters")
+    click.echo(format_interpreters(interpreters))
+
+    if compatible:
+        _echo_section("Result")
+        click.echo("A compatible Python interpreter is already available.")
+        click.echo("No version override is needed. Run:")
+        click.echo("  uv run windows-mcp serve")
+        return
+
+    if check_only:
+        _echo_section("Result")
+        click.echo("No compatible Python interpreter is installed.")
+        click.echo("`--check-only` did not modify the machine.")
+        if requirement:
+            click.echo(
+                "Install an isolated interpreter with a matching uv command, then rerun doctor."
+            )
+        raise click.ClickException("No compatible Python interpreter is available.")
+
+    _echo_section("Interpreter setup")
+    try:
+        interpreter = ensure_interpreter(assume_yes=yes)
+    except InterpreterResolutionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    _echo_section("Result")
+    click.echo(
+        f"Using Python {interpreter.version_text} from {interpreter.source}: {interpreter.path}"
+    )
+    click.echo("No version override is needed. Run:")
+    click.echo("  uv run windows-mcp serve")
+
+
+@main.command()
 @click.pass_context
 @click.option(
     "--transport",
