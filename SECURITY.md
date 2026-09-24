@@ -99,6 +99,7 @@ These tools can make permanent changes to your system:
 |------|------|-------------|
 | **Shell** | Critical | Can execute arbitrary PowerShell commands, including system modifications, file deletions, and network operations |
 | **Click** | High | Can trigger destructive UI actions (delete confirmations, system dialogs) |
+| **Pointer** | High | Can hold and move mouse buttons across calls; use `up` or `cancel` to finish gestures |
 | **Type** | High | Can overwrite text, potentially destroying data when `clear=True` |
 | **Drag** | High | Can move/reorganize files, potentially overwriting existing files |
 | **Shortcut** | High | Can execute destructive keyboard shortcuts (Ctrl+D delete, Alt+F4 close) |

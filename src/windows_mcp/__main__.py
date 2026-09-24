@@ -269,6 +269,11 @@ def _build_mcp() -> FastMCP:
             yield
         finally:
             logger.debug("Shutting down: stopping watchdog and analytics")
+            if desktop:
+                try:
+                    desktop.close()
+                except Exception:
+                    logger.exception("Failed to release desktop input during shutdown")
             if watchdog:
                 watchdog.stop()
             if analytics:

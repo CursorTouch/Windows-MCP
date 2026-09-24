@@ -116,6 +116,10 @@
       "description": "Moves mouse cursor to coordinates [x, y] or passing a UI element's label/id. Set drag=True to perform a drag-and-drop operation from the current mouse position to the target coordinates. Default (drag=False) is a simple cursor move (hover). Provide either loc or label."
     },
     {
+      "name": "Pointer",
+      "description": "Controls one stateful mouse-button gesture across calls with down, move, up, and cancel actions. Held buttons are automatically released after 30 seconds by default (maximum 120 seconds). Prefer Move with drag=True for a simple atomic drag."
+    },
+    {
       "name": "Shortcut",
       "description": "Executes keyboard shortcuts using key combinations separated by +. Examples: \"ctrl+c\" (copy), \"ctrl+v\" (paste), \"alt+tab\" (switch apps), \"win+r\" (Run dialog), \"win\" (Start menu), \"ctrl+shift+esc\" (Task Manager). Use for quick actions and system commands."
     },
