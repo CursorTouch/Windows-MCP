@@ -100,6 +100,10 @@
       "description": "Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Use this when you need interactive element ids, scrollable regions, or browser DOM extraction with use_dom=True. Set use_vision=True to include screenshot. Set display=[0] or display=[0,1] using zero-based active Windows display indices; omit it to keep the default full-desktop behavior."
     },
     {
+      "name": "DisplayInventory",
+      "description": "Reads the active display layout and DPI metadata. Reports each display's index, device name, monitor and work-area bounds, resolution, orientation, primary flag, effective DPI, and scale."
+    },
+    {
       "name": "Click",
       "description": "Performs mouse clicks at specified coordinates [x, y] or passing a UI element's label/id. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only (no click), 1=single click (select/focus), 2=double click (open/activate). Provide either loc or label."
     },
@@ -122,6 +126,10 @@
     {
       "name": "Wait",
       "description": "Pauses execution for specified duration in seconds. Use when waiting for: applications to launch/load, UI animations to complete, page content to render, dialogs to appear, or between rapid actions. Helps ensure UI is ready before next interaction."
+    },
+    {
+      "name": "WaitFor",
+      "description": "Waits until a UI condition is met by polling the accessibility tree inside a single call, avoiding repeated Snapshot calls. Conditions: text_exists, active_window, element_exists, element_enabled, focused_element. Provide text and/or window_name depending on the condition. Set use_dom=True to match browser DOM text."
     },
     {
       "name": "Scrape",
