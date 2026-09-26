@@ -37,7 +37,7 @@ def register(mcp, *, get_desktop, get_analytics):
             if not tree_state.dom_node:
                 return f"No DOM information found. Please open {url} in browser first."
             dom_node = tree_state.dom_node
-            vertical_scroll_percent = getattr(dom_node, 'vertical_scroll_percent', 0)
+            vertical_scroll_percent = dom_node.metadata.get("vertical_scroll_percent", 0)
             content = "\n".join([node.text for node in tree_state.dom_informative_nodes])
             header_status = "Reached top" if vertical_scroll_percent <= 0 else "Scroll up to see more"
             footer_status = (
