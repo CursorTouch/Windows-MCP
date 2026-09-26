@@ -349,7 +349,7 @@ def capture(
             continue
         try:
             image = inst.capture(capture_rect)
-        except (OSError, RuntimeError, ValueError, IndexError):
+        except (OSError, RuntimeError, ValueError, IndexError, COMError):
             logger.warning(
                 "Screenshot backend '%s' failed; trying next backend",
                 inst.name,

@@ -7,6 +7,8 @@ image. The reporter's workaround was to pin WINDOWS_MCP_SCREENSHOT_BACKEND=mss
 by hand; these tests cover doing that automatically.
 """
 
+from _ctypes import COMError
+
 import pytest
 from PIL import Image
 
@@ -110,6 +112,17 @@ class TestCaptureFallback:
         mss = FakeBackend("mss", 20, result=good_image())
         registry(
             FakeBackend("dxcam", 10, raises=RuntimeError("DXGI capture returned no frame")),
+            mss,
+            FakeBackend("pillow", 100),
+        )
+        assert capture(None)[1] == "mss"
+
+    def test_com_error_falls_through(self, registry):
+        """dxcam raises COMError when DXGI refuses duplication, e.g. on the secure desktop."""
+        access_denied = COMError(-2147024891, "Access is denied.", (None, None, None, 0, None))
+        mss = FakeBackend("mss", 20, result=good_image())
+        registry(
+            FakeBackend("dxcam", 10, raises=access_denied),
             mss,
             FakeBackend("pillow", 100),
         )
