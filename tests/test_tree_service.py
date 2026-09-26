@@ -6,7 +6,7 @@ from windows_mcp.desktop.views import Size
 from windows_mcp.tree.budget import TreeElementBudget
 from windows_mcp.tree.service import Tree, _is_comtypes_variant_ord_typeerror
 from windows_mcp.tree.views import BoundingBox, SemanticNode
-from windows_mcp.uia import Rect
+from windows_mcp.uia import PropertyId, Rect
 
 
 @pytest.fixture
@@ -381,3 +381,126 @@ class TestElementBudgetStopsTraversal:
         )
 
         assert calls == []
+
+
+def _with_runtime_id(control: MagicMock, runtime_id: tuple[int, ...]) -> MagicMock:
+    """Report `runtime_id` from the cached RuntimeId property, keeping the role default."""
+
+    def get_cached_property(property_id):
+        if property_id == PropertyId.RuntimeIdProperty:
+            return list(runtime_id)
+        return 43
+
+    control.GetCachedPropertyValue.side_effect = get_cached_property
+    return control
+
+
+class TestCyclicRuntimeIdGuard:
+    """A provider can hand back a child whose RuntimeId equals one of its own ancestors.
+
+    The element budget cannot bound that walk, because a cyclic pane appends no output
+    nodes and so never trips the limit — see budget.py.
+    """
+
+    def test_unbounded_cycle_terminates_without_losing_its_siblings(
+        self, tree_instance, monkeypatch
+    ):
+        """The reported shape: a pane keeps handing back a child carrying its own id.
+
+        Unguarded this recurses until RecursionError and Snapshot never returns.
+        """
+        select = _with_runtime_id(_make_pane_parent(), (1, 100))
+        echo = _with_runtime_id(_make_pane_parent(), (1, 100))
+        option = _with_runtime_id(_make_button_child("option", 60), (1, 200))
+
+        def fake_get_children(node, cache_request):
+            if node is select:
+                return [echo, option]
+            if node is echo:
+                return [echo]
+            return []
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            fake_get_children,
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {43: "PushButton"})
+
+        interactive_nodes = []
+        tree_instance.tree_traversal(
+            select,
+            Rect(0, 0, 500, 500),
+            "Window",
+            False,
+            interactive_nodes,
+            [],
+            [],
+            [],
+        )
+
+        assert {node.name for node in interactive_nodes} == {"option"}
+
+    def test_repeated_id_in_separate_branches_is_not_cut(self, tree_instance, monkeypatch):
+        """Siblings may legitimately share an id; only an ancestor repeat is a cycle."""
+        parent = _with_runtime_id(_make_pane_parent(), (1, 100))
+        first = _with_runtime_id(_make_pane_parent(), (1, 200))
+        second = _with_runtime_id(_make_pane_parent(), (1, 200))
+        first_child = _with_runtime_id(_make_button_child("first", 10), (1, 300))
+        second_child = _with_runtime_id(_make_button_child("second", 60), (1, 301))
+
+        def fake_get_children(node, cache_request):
+            if node is parent:
+                return [first, second]
+            if node is first:
+                return [first_child]
+            if node is second:
+                return [second_child]
+            return []
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            fake_get_children,
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {43: "PushButton"})
+
+        interactive_nodes = []
+        tree_instance.tree_traversal(
+            parent,
+            Rect(0, 0, 500, 500),
+            "Window",
+            False,
+            interactive_nodes,
+            [],
+            [],
+            [],
+        )
+
+        assert {node.name for node in interactive_nodes} == {"first", "second"}
+
+    def test_unreadable_runtime_id_leaves_traversal_unchanged(self, tree_instance, monkeypatch):
+        """Providers that expose no usable RuntimeId keep walking exactly as before."""
+        parent = _make_pane_parent()
+        children = [_make_button_child(f"btn{i}", 10 * i) for i in range(5)]
+
+        def fake_get_children(node, cache_request):
+            return children if node is parent else []
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            fake_get_children,
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {43: "PushButton"})
+
+        interactive_nodes = []
+        tree_instance.tree_traversal(
+            parent,
+            Rect(0, 0, 500, 500),
+            "Window",
+            False,
+            interactive_nodes,
+            [],
+            [],
+            [],
+        )
+
+        assert len(interactive_nodes) == 5
