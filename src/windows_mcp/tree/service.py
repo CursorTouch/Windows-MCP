@@ -43,6 +43,19 @@ def _is_comtypes_variant_ord_typeerror(error: TypeError) -> bool:
 
     return False
 
+
+def _runtime_identity(node: Any) -> Optional[tuple[int, ...]]:
+    """Return a hashable UIA RuntimeId for `node`, or None when none can be read.
+
+    RuntimeId is already part of the tree-traversal cache request, so this reads a
+    value cached in-process instead of issuing another cross-process UIA round-trip.
+    """
+    try:
+        parts = tuple(int(part) for part in node.GetCachedPropertyValue(PropertyId.RuntimeIdProperty))
+    except (TypeError, ValueError, COMError):
+        return None
+    return parts or None
+
 if TYPE_CHECKING:
     from windows_mcp.desktop.service import Desktop
 
@@ -381,7 +394,8 @@ class Tree:
                     dom_interactive_nodes:Optional[list[TreeElementNode]]=None, dom_informative_nodes:Optional[list[TextElementNode]]=None,
                     is_dom:bool=False, is_dialog:bool=False,
                     element_cache_req:Optional[Any]=None, children_cache_req:Optional[Any]=None,
-                    current_semantic_node:'Optional[SemanticNode]'=None):
+                    current_semantic_node:'Optional[SemanticNode]'=None,
+                    ancestor_runtime_ids:Optional[frozenset[tuple[int, ...]]]=None):
         try:
             # Build cached control if caching is enabled
             if not hasattr(node, '_is_cached') and element_cache_req:
@@ -392,6 +406,25 @@ class Tree:
             control_type_name = node.CachedControlTypeName
             # class_name = node.CachedClassName
             semantic_added = False
+
+            # A provider can hand back a child whose RuntimeId equals one of its own
+            # ancestors (seen with an expanded Edge <select>), which sends this recursion
+            # around in circles. The element budget cannot catch that: a cyclic pane
+            # appends no output nodes, so it never consumes budget and never trips the
+            # limit — the walk just runs until RecursionError, and Snapshot never returns.
+            # This sits after the property reads above so stale elements keep taking the
+            # established dead-element path instead of failing on a missing accessor.
+            runtime_id = _runtime_identity(node)
+            if runtime_id is not None:
+                if ancestor_runtime_ids is not None and runtime_id in ancestor_runtime_ids:
+                    logger.warning(
+                        "[Tree] Cutting cyclic UIA branch in '%s': element %s repeats an "
+                        "ancestor's RuntimeId",
+                        window_name,
+                        runtime_id,
+                    )
+                    return
+                ancestor_runtime_ids = (ancestor_runtime_ids or frozenset()) | {runtime_id}
 
             # Scrollable check
             if scrollable_nodes is not None:
@@ -770,7 +803,7 @@ class Tree:
                         height=bounding_box.height())
                         self.dom=child
                         # enter DOM subtree
-                        self.tree_traversal(child, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=True, is_dialog=is_dialog, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=None)
+                        self.tree_traversal(child, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=True, is_dialog=is_dialog, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=None, ancestor_runtime_ids=ancestor_runtime_ids)
                     # Check if the child is a dialog
                     elif isinstance(child,WindowControl):
                         if not child.CachedIsOffscreen:
@@ -790,10 +823,10 @@ class Tree:
                                 if is_modal:
                                     interactive_nodes.clear()
                         # enter dialog subtree
-                        self.tree_traversal(child, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=is_dom, is_dialog=True, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=semantic_parent)
+                        self.tree_traversal(child, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=is_dom, is_dialog=True, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=semantic_parent, ancestor_runtime_ids=ancestor_runtime_ids)
                     else:
                         # normal non-dialog children
-                        self.tree_traversal(child, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=is_dom, is_dialog=is_dialog, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=semantic_parent)
+                        self.tree_traversal(child, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=is_dom, is_dialog=is_dialog, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=semantic_parent, ancestor_runtime_ids=ancestor_runtime_ids)
                 except TypeError as e:
                     if not _is_comtypes_variant_ord_typeerror(e):
                         raise
