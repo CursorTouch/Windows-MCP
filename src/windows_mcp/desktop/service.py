@@ -511,7 +511,7 @@ class Desktop:
             case "switch":
                 response, status = self.switch_app(name)
                 if status != 0:
-                    return response
+                    raise ValueError(response)
                 else:
                     return response
 
@@ -563,6 +563,15 @@ class Desktop:
 
             was_minimized = uia.IsIconic(target_handle)
             self.bring_window_to_top(target_handle)
+            # Windows can deny activation without raising; verify the foreground HWND.
+            deadline = perf_counter() + 1.0
+            while win32gui.GetForegroundWindow() != target_handle:
+                if perf_counter() >= deadline:
+                    return (
+                        f"Failed to bring {window.name} to the foreground within 1 second.",
+                        1,
+                    )
+                sleep(0.05)
             if was_minimized:
                 content = f"Restored {window.name.title()} from minimized and switched to it."
             else:
