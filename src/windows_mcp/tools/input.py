@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, Literal
@@ -58,6 +59,14 @@ def _as_loc(value: list | str | None) -> list | None:
     return json.loads(value)
 
 
+# One optional leading sign followed by decimal digits — exactly what int()
+# accepts. `.lstrip("+-").isdigit()` used to strip *any* run of signs, so
+# "+-5"/"--5" passed the check and then int() raised a confusing low-level
+# error instead of the intended message; `.isdigit()` also accepts digits
+# int() rejects (e.g. the superscript "²").
+_SIGNED_INT_RE = re.compile(r"^[+-]?\d+$")
+
+
 def _as_point(value: object, name: str) -> list[int]:
     if not isinstance(value, list) or len(value) != 2:
         raise ValueError(f"{name} must be a list of exactly 2 integers [x, y]")
@@ -70,7 +79,7 @@ def _as_point(value: object, name: str) -> list[int]:
             continue
         if isinstance(item, str):
             stripped = item.strip()
-            if stripped and stripped.lstrip("+-").isdigit():
+            if _SIGNED_INT_RE.match(stripped):
                 parsed.append(int(stripped))
                 continue
         raise ValueError(f"{name} must contain exactly 2 integers")
