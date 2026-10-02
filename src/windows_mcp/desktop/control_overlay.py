@@ -43,7 +43,15 @@ _user32.IsWindowVisible.restype = wintypes.BOOL
 
 class _Layer:
     def __init__(
-        self, x: int, y: int, width: int, height: int, bgra: bytes, name: str, *, breathes: bool = True
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        bgra: bytes,
+        name: str,
+        *,
+        breathes: bool = True,
     ):
         self.x, self.y, self.width, self.height = x, y, width, height
         self.breathes = breathes
@@ -121,7 +129,9 @@ def _monitor_rects() -> tuple[tuple[int, int, int, int], ...]:
     return tuple((r.left, r.top, r.right, r.bottom) for r in uia.GetMonitorsRect())
 
 
-def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -> tuple[list[_Layer], _Layer]:
+def _build_layers(
+    rects: tuple[tuple[int, int, int, int], ...], pending: bool
+) -> tuple[list[_Layer], _Layer]:
     if not rects:
         raise RuntimeError("no display available for AI control indicator")
     color = _AMBER if pending else _BLUE
@@ -144,7 +154,9 @@ def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -
             )
             for x, y, w, h, side in strips:
                 if w and h:
-                    layers.append(_Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}"))
+                    layers.append(
+                        _Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}")
+                    )
             notice = _notice_bitmap(width)
             if notice is not None:
                 notice_width, notice_height, bitmap = notice
@@ -154,23 +166,27 @@ def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -
                     continue
                 notice_x = left + (width - notice_width) // 2
                 notice_y = top + border + glow_pad
-                layers.append(_Layer(
-                    notice_x - glow_pad,
-                    notice_y - glow_pad,
-                    notice_width + 2 * glow_pad,
-                    notice_height + 2 * glow_pad,
-                    _notice_glow_bitmap(notice_width, notice_height, color, glow_pad),
-                    f"{index}_notice_glow",
-                ))
-                layers.append(_Layer(
-                    notice_x,
-                    notice_y,
-                    notice_width,
-                    notice_height,
-                    bitmap,
-                    f"{index}_notice",
-                    breathes=False,
-                ))
+                layers.append(
+                    _Layer(
+                        notice_x - glow_pad,
+                        notice_y - glow_pad,
+                        notice_width + 2 * glow_pad,
+                        notice_height + 2 * glow_pad,
+                        _notice_glow_bitmap(notice_width, notice_height, color, glow_pad),
+                        f"{index}_notice_glow",
+                    )
+                )
+                layers.append(
+                    _Layer(
+                        notice_x,
+                        notice_y,
+                        notice_width,
+                        notice_height,
+                        bitmap,
+                        f"{index}_notice",
+                        breathes=False,
+                    )
+                )
         point = flash_overlay._POINT()
         if not _user32.GetCursorPos(ctypes.byref(point)):
             raise RuntimeError("cannot locate cursor for AI control indicator")

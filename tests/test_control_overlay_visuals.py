@@ -47,7 +47,9 @@ def test_notice_uses_clear_english_and_transparent_corners():
         assert all(a <= b for a, b in zip(edge, edge[1:]))
     assert _alpha_at(bgra, width, 10, height // 2) == 204  # 204/255 is 0.8.
     assert max(bgra[3::4]) == 255  # Text stays fully legible while the glow breathes.
-    assert any(bgra[offset : offset + 4] == b"\x00\x00\x00\xff" for offset in range(0, len(bgra), 4))
+    assert any(
+        bgra[offset : offset + 4] == b"\x00\x00\x00\xff" for offset in range(0, len(bgra), 4)
+    )
     narrow = control_overlay_art._notice_bitmap(300)
     assert narrow is not None and narrow[0] <= 268
 
@@ -62,10 +64,14 @@ def test_notice_outer_glow_fades_without_changing_the_panel():
     middle_y = pad + height // 2
     assert _alpha_at(glow, glow_width, pad + width // 2, middle_y) == 0
     assert _alpha_at(glow, glow_width, 0, 0) == 0
-    assert 208 <= max(glow[3::4]) <= 214  # Keep the accepted aura brightness after shifting it inward.
-    assert _alpha_at(glow, glow_width, pad - 1, middle_y) > _alpha_at(
-        glow, glow_width, pad - 15, middle_y
-    ) > 0
+    assert (
+        208 <= max(glow[3::4]) <= 214
+    )  # Keep the accepted aura brightness after shifting it inward.
+    assert (
+        _alpha_at(glow, glow_width, pad - 1, middle_y)
+        > _alpha_at(glow, glow_width, pad - 15, middle_y)
+        > 0
+    )
 
 
 def test_notice_glow_meets_the_feathered_background():

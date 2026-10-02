@@ -93,7 +93,9 @@ def _notice_panel_mask(width: int, height: int) -> Image.Image:
     horizontal = [edge_fade[min(8, x, width - 1 - x)] for x in range(width)]
     vertical = [edge_fade[min(8, y, height - 1 - y)] for y in range(height)]
     fade_mask = Image.new("L", (width, height))
-    fade_mask.putdata([min(horizontal[x], vertical[y]) for y in range(height) for x in range(width)])
+    fade_mask.putdata(
+        [min(horizontal[x], vertical[y]) for y in range(height) for x in range(width)]
+    )
     return ImageChops.multiply(_notice_shape_mask(width, height), fade_mask)
 
 
@@ -119,7 +121,10 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
         shortcut_width = math.ceil(measure.textlength(_NOTICE_SHORTCUT, font=hint_font))
         suffix_width = math.ceil(measure.textlength(hint_suffix, font=hint_font))
         title_width, title_height = title_box[2] - title_box[0], title_box[3] - title_box[1]
-        hint_width, hint_height = prefix_width + shortcut_width + suffix_width + 16, hint_box[3] - hint_box[1]
+        hint_width, hint_height = (
+            prefix_width + shortcut_width + suffix_width + 16,
+            hint_box[3] - hint_box[1],
+        )
         width = max(title_width, hint_width) + 2 * horizontal_padding
         if width <= available_width:
             break
@@ -133,20 +138,33 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     draw = ImageDraw.Draw(image)
     title_y = 18 - title_box[1]
     hint_y = 28 + title_height - hint_box[1]
-    draw.text(((width - title_width) // 2 - title_box[0], title_y), _NOTICE_TITLE,
-              font=title_font, fill=(248, 251, 255, 255))
+    draw.text(
+        ((width - title_width) // 2 - title_box[0], title_y),
+        _NOTICE_TITLE,
+        font=title_font,
+        fill=(248, 251, 255, 255),
+    )
     hint_x = (width - hint_width) // 2
     badge_left = hint_x + prefix_width
     # A solid black key label separates the takeover shortcut from its sentence.
     draw.rounded_rectangle(
-        (badge_left, 24 + title_height, badge_left + shortcut_width + 15,
-         31 + title_height + hint_height),
-        radius=6, fill=(0, 0, 0, 255),
+        (
+            badge_left,
+            24 + title_height,
+            badge_left + shortcut_width + 15,
+            31 + title_height + hint_height,
+        ),
+        radius=6,
+        fill=(0, 0, 0, 255),
     )
     draw.text((hint_x, hint_y), hint_prefix, font=hint_font, fill=(225, 240, 255, 255))
     draw.text((badge_left + 8, hint_y), _NOTICE_SHORTCUT, font=hint_font, fill=(255, 255, 255, 255))
-    draw.text((badge_left + shortcut_width + 16, hint_y), hint_suffix,
-              font=hint_font, fill=(225, 240, 255, 255))
+    draw.text(
+        (badge_left + shortcut_width + 16, hint_y),
+        hint_suffix,
+        font=hint_font,
+        fill=(225, 240, 255, 255),
+    )
     return width, height, premultiplied_bgra(image, 1.0)
 
 
