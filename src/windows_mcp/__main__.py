@@ -290,13 +290,13 @@ def _build_mcp() -> FastMCP:
             logger.exception("AI control indicator failed; releasing physical input")
 
     def show_control_state(status: dict) -> None:
-        if threading.current_thread() is controller._thread or (
-            status["state"] in ("ai", "takeover_pending")
-            and not getattr(controller, "visible_ack_required", lambda: True)()
+        if threading.current_thread() is controller._thread or not (
+            status["state"] == "ai" and controller.visible_ack_required()
         ):
             # Never wait for a window-owner acknowledgement on the hook thread.
             # A capture may hold the overlay lock for an unbounded backend call;
-            # offload the wait so ControlStatus stays responsive on the loop.
+            # only a new MCP lease may wait for the visible AI acknowledgement.
+            # Other state transitions must not block the MCP event loop.
             try:
                 if control_loop is None or control_loop.is_closed():
                     raise RuntimeError("server event loop unavailable")

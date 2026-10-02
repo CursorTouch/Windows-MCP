@@ -464,6 +464,16 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
         await asyncio.sleep(0.2)
         assert calls == [True, True]
 
+        # A normal tool can advance user -> ready on the event loop. Its
+        # visual acknowledgement must not delay other MCP calls.
+        controller.sync_visible = True
+        for state in ("user", "ready"):
+            start = time.monotonic()
+            callback({"state": state})
+            assert time.monotonic() - start < 0.1
+        await asyncio.sleep(0.2)
+        assert calls == [True, True, False, False]
+
         elapsed = []
 
         def from_hook_thread():
@@ -477,7 +487,7 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
         thread.join(timeout=1)
         assert elapsed and elapsed[0] < 0.1
         await asyncio.sleep(0.2)
-        assert calls == [True, True, False]
+        assert calls == [True, True, False, False, False]
 
         monkeypatch.setattr(
             control_overlay,
