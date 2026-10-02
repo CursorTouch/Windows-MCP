@@ -718,9 +718,10 @@ MCP Client can access the following tools to interact with Windows:
   movement.
 - `Pointer`: Build a stateful gesture across calls with `down`, one or more `move`
   actions, and `up`. Use `cancel` to release only the tracked button for recovery;
-  held buttons are automatically released
-  after 30 seconds by default (maximum 120 seconds). Prefer `Move(drag=True)` for a
-  simple atomic drag.
+  held buttons are automatically released after 30 seconds by default (maximum
+  120 seconds). If Windows rejects an automatic release, it retries twice and
+  retains the tracked state so `cancel` can retry manually. Prefer `Move(drag=True)`
+  for a simple atomic drag.
 - `Shortcut`: Press keyboard shortcuts (`Ctrl+c`, `Alt+Tab`, etc).
 - `Wait`: Pause for a defined duration.
 - `WaitFor`: Wait until text, an active window, an element, or a focused element appears by polling UI state inside one tool call.

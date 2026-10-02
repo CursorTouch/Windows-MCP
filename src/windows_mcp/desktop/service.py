@@ -1015,7 +1015,7 @@ class Desktop:
         return self._pointer.up(button)
 
     def pointer_cancel(self) -> dict[str, object]:
-        """Release all mouse buttons and clear tracked pointer state."""
+        """Release only the tracked mouse button and clear pointer state."""
         return self._pointer.cancel()
 
     def shortcut(self, shortcut: str):

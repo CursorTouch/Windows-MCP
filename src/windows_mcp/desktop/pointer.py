@@ -13,6 +13,8 @@ MouseButton = Literal["left", "right", "middle"]
 DEFAULT_POINTER_TIMEOUT = 30.0
 MAX_POINTER_TIMEOUT = 120.0
 MAX_POINTER_MOVE_DURATION = 10.0
+RELEASE_RETRY_DELAY = 1.0
+MAX_RELEASE_ATTEMPTS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +122,13 @@ class PointerController:
     def _release_owned_locked(self) -> None:
         """Release only this controller's button, not unrelated physical input."""
         button = self._button
-        try:
-            if button is not None:
-                self._release(button)
-        finally:
-            self._clear_locked(cancel_timer=True)
+        if button is not None:
+            # A failed Win32 release may leave the button down. Keep ownership
+            # and the timer so cancel or a later timeout can retry safely.
+            self._release(button)
+        self._clear_locked(cancel_timer=True)
 
-    def _timeout_release(self, generation: int) -> None:
+    def _timeout_release(self, generation: int, attempt: int = 1) -> None:
         with self._lock:
             if self._button is None or self._generation != generation:
                 return
@@ -134,6 +136,19 @@ class PointerController:
                 self._release_owned_locked()
             except Exception:
                 logger.exception("Automatic pointer release failed")
+                if attempt >= MAX_RELEASE_ATTEMPTS:
+                    # Keep ownership visible for an explicit cancel retry.
+                    return
+                try:
+                    timer = self._timer_factory(
+                        RELEASE_RETRY_DELAY,
+                        lambda: self._timeout_release(generation, attempt + 1),
+                    )
+                    timer.daemon = True
+                    self._timer = timer
+                    timer.start()
+                except Exception:
+                    logger.exception("Failed to schedule pointer release retry")
 
     def down(
         self,
@@ -151,19 +166,12 @@ class PointerController:
                 raise RuntimeError(
                     f"Cannot press {normalized_button}; {self._button} mouse button is already held"
                 )
-            try:
-                self._press(normalized_button, x, y)
-            except BaseException as press_error:
-                try:
-                    self._release(normalized_button)
-                except BaseException as release_error:
-                    raise release_error from press_error
-                raise
-
             self._button = normalized_button
             self._generation += 1
             generation = self._generation
             try:
+                # Arm recovery before injecting input: even an ambiguous press
+                # failure retains a timed path to release the tracked button.
                 timer = self._timer_factory(
                     normalized_timeout,
                     lambda: self._timeout_release(generation),
@@ -171,13 +179,19 @@ class PointerController:
                 timer.daemon = True
                 self._timer = timer
                 timer.start()
-            except BaseException as timer_error:
+            except BaseException:
+                self._clear_locked(cancel_timer=True)
+                raise
+
+            try:
+                self._press(normalized_button, x, y)
+            except BaseException as press_error:
                 try:
                     self._release(normalized_button)
                 except BaseException as release_error:
-                    raise release_error from timer_error
-                finally:
-                    self._clear_locked(cancel_timer=True)
+                    # Keep the tracked state and timer for a later retry.
+                    raise release_error from press_error
+                self._clear_locked(cancel_timer=True)
                 raise
 
             return {

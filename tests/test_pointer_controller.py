@@ -207,7 +207,7 @@ def test_pointer_move_failure_releases_tracked_button(
     assert controller.held_button is None
 
 
-def test_pointer_timer_setup_failure_releases_pressed_button(
+def test_pointer_timer_setup_failure_does_not_press_button(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _mouse_calls(monkeypatch)
@@ -216,8 +216,151 @@ def test_pointer_timer_setup_failure_releases_pressed_button(
     with pytest.raises(RuntimeError, match="timer setup failed"):
         controller.down([1, 2])
 
-    assert [call[0] for call in calls] == ["press-left", "release-left"]
+    assert calls == []
     assert controller.held_button is None
+
+
+def test_pointer_cancel_retries_after_release_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _mouse_calls(monkeypatch)
+    timers = TimerFactory()
+    controller = PointerController(timer_factory=timers)
+    controller.down([1, 2])
+    release = pointer.uia.ReleaseMouse
+    attempts = 0
+
+    def flaky_release(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("release failed")
+        release(*args, **kwargs)
+
+    monkeypatch.setattr(pointer.uia, "ReleaseMouse", flaky_release)
+
+    with pytest.raises(OSError, match="release failed"):
+        controller.cancel()
+
+    assert controller.held_button == "left"
+    assert timers.timers[0].cancelled is False
+    assert [call[0] for call in calls] == ["press-left"]
+
+    controller.cancel()
+    assert controller.held_button is None
+    assert timers.timers[0].cancelled is True
+    assert [call[0] for call in calls] == ["press-left", "release-left"]
+
+
+def test_pointer_timeout_retries_after_cursor_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _mouse_calls(monkeypatch)
+    timers = TimerFactory()
+    controller = PointerController(timer_factory=timers)
+    controller.down([1, 2], button="right")
+    release = pointer.uia.RightReleaseMouse
+
+    def release_after_cursor_lookup(*args: object, **kwargs: object) -> None:
+        pointer.uia.GetCursorPos()
+        release(*args, **kwargs)
+
+    monkeypatch.setattr(pointer.uia, "RightReleaseMouse", release_after_cursor_lookup)
+    monkeypatch.setattr(
+        pointer.uia,
+        "GetCursorPos",
+        lambda: (_ for _ in ()).throw(OSError("GetCursorPos failed")),
+    )
+
+    timers.timers[0].fire()
+    assert controller.held_button == "right"
+    assert len(timers.timers) == 2
+    assert timers.timers[1].interval == pointer.RELEASE_RETRY_DELAY
+    assert [call[0] for call in calls] == ["press-right"]
+
+    monkeypatch.setattr(pointer.uia, "GetCursorPos", lambda: (1, 2))
+    timers.timers[1].fire()
+    assert controller.held_button is None
+    assert [call[0] for call in calls] == ["press-right", "release-right"]
+
+
+def test_pointer_timeout_exhaustion_keeps_ownership_for_manual_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _mouse_calls(monkeypatch)
+    timers = TimerFactory()
+    controller = PointerController(timer_factory=timers)
+    controller.down([1, 2])
+    release = pointer.uia.ReleaseMouse
+    monkeypatch.setattr(
+        pointer.uia,
+        "ReleaseMouse",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("release failed")),
+    )
+
+    for attempt in range(pointer.MAX_RELEASE_ATTEMPTS):
+        timers.timers[attempt].fire()
+
+    assert len(timers.timers) == pointer.MAX_RELEASE_ATTEMPTS
+    assert controller.held_button == "left"
+    assert [call[0] for call in calls] == ["press-left"]
+
+    monkeypatch.setattr(pointer.uia, "ReleaseMouse", release)
+    controller.cancel()
+    assert controller.held_button is None
+    assert [call[0] for call in calls] == ["press-left", "release-left"]
+
+
+def test_pointer_press_and_compensation_failure_retains_retriable_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _mouse_calls(monkeypatch)
+    timers = TimerFactory()
+    controller = PointerController(timer_factory=timers)
+    release = pointer.uia.ReleaseMouse
+    monkeypatch.setattr(
+        pointer.uia,
+        "PressMouse",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("press failed")),
+    )
+    monkeypatch.setattr(
+        pointer.uia,
+        "ReleaseMouse",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("release failed")),
+    )
+
+    with pytest.raises(OSError, match="release failed") as error:
+        controller.down([1, 2])
+
+    assert str(error.value.__cause__) == "press failed"
+    assert controller.held_button == "left"
+    assert timers.timers[0].started is True
+    assert timers.timers[0].cancelled is False
+
+    monkeypatch.setattr(pointer.uia, "ReleaseMouse", release)
+    timers.timers[0].fire()
+    assert controller.held_button is None
+    assert [call[0] for call in calls] == ["release-left"]
+
+
+def test_pointer_press_failure_with_successful_compensation_clears_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _mouse_calls(monkeypatch)
+    timers = TimerFactory()
+    controller = PointerController(timer_factory=timers)
+    monkeypatch.setattr(
+        pointer.uia,
+        "PressMouse",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("press failed")),
+    )
+
+    with pytest.raises(OSError, match="press failed"):
+        controller.down([1, 2])
+
+    assert [call[0] for call in calls] == ["release-left"]
+    assert controller.held_button is None
+    assert timers.timers[0].cancelled is True
 
 
 @pytest.mark.parametrize(
