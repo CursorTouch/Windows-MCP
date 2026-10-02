@@ -1,8 +1,18 @@
 """Shared pixel conversion for the control indicator and capture flash."""
 
+from PIL import Image
 
-def premultiplied_bgra(rgba_image, intensity: float) -> bytes:
-    """Convert a PIL RGBA image to scaled, premultiplied BGRA bytes."""
+
+def premultiplied_bgra(rgba_image: Image.Image, intensity: float) -> bytes:
+    """Convert a PIL RGBA image to scaled, premultiplied BGRA bytes.
+
+    Args:
+        rgba_image: Source RGBA bitmap.
+        intensity: Opacity multiplier for the layered window.
+
+    Returns:
+        Premultiplied BGRA pixels in row-major order.
+    """
     bgra = bytearray(rgba_image.tobytes("raw", "BGRA"))
     if intensity >= 1.0:
         for i in range(0, len(bgra), 4):

@@ -2,6 +2,7 @@
 
 import ctypes
 import time
+from typing import Any
 
 from windows_mcp.desktop.control_win32 import (
     _CHORD,
@@ -14,7 +15,8 @@ from windows_mcp.desktop.control_win32 import (
 )
 
 
-def physical_mouse(owner, code, wparam, lparam):
+def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
+    """Handle a physical mouse hook callback without waiting on other threads."""
     if code < 0:
         return _user32.CallNextHookEx(owner._mouse_hook, code, wparam, lparam)
     valid = False
@@ -49,7 +51,8 @@ def physical_mouse(owner, code, wparam, lparam):
     return _user32.CallNextHookEx(owner._mouse_hook, code, wparam, lparam)
 
 
-def physical_key(owner, code, wparam, lparam):
+def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
+    """Track each physical key independently and honor the takeover chord."""
     if code < 0:
         return _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
     vk = None
@@ -99,7 +102,8 @@ def physical_key(owner, code, wparam, lparam):
     return _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
 
 
-def raw_input(owner, lparam) -> None:
+def raw_input(owner: Any, lparam: int) -> None:
+    """Queue relative mouse data from a device, independent of injected input."""
     raw = _read_raw_mouse(lparam)
     if raw is None:
         return  # Null devices can be touchpads; do not infer source.

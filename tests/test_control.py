@@ -148,6 +148,19 @@ def test_opposite_modifier_release_does_not_clear_held_key(monkeypatch, left, ri
     assert owner.status()["state"] == "ready"
 
 
+@pytest.mark.parametrize("generic,side", [(0x10, 0xA0), (0x11, 0xA3), (0x12, 0xA4)])
+def test_delivered_modifier_lookup_never_iterates_live_hook_set(generic, side):
+    class NoIteration(set):
+        def __iter__(self):
+            raise AssertionError("hook-owned set must not be iterated")
+
+    owner = ready_controller()
+    owner._delivered_keys = NoIteration({side})
+    assert owner.physical_key_down(generic)
+    assert owner.physical_key_down(side)
+    assert not owner.physical_key_down(0x41)
+
+
 def test_start_preserves_cooldown_after_real_physical_input(monkeypatch):
     owner = control.ControlCoordinator()
     monkeypatch.setattr(control, "_interactive_desktop", lambda: True)

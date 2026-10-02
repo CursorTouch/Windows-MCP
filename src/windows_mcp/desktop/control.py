@@ -287,8 +287,16 @@ class ControlCoordinator:
 
     def physical_key_down(self, vk: int) -> bool:
         # A swallowed physical down did not reach the app, so the AI must
-        # release its own injected down when its tool is preempted.
-        return _key(vk) in {_key(held) for held in self._delivered_keys}
+        # release its own injected down when its tool is preempted. Hook
+        # callbacks mutate this set concurrently: use atomic membership checks
+        # rather than iterating it while resolving left/right modifiers.
+        normalized = _key(vk)
+        aliases = {
+            0x10: (0x10, 0xA0, 0xA1),
+            0x11: (0x11, 0xA2, 0xA3),
+            0x12: (0x12, 0xA4, 0xA5),
+        }
+        return any(key in self._delivered_keys for key in aliases.get(normalized, (vk,)))
 
     def physical_mouse_down(self, button: str) -> bool:
         return {"left": 1, "right": 2, "middle": 3}[button] in self._delivered_mouse
