@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from PIL import Image
 import pytest
 
-from windows_mcp.desktop import control_overlay, flash_overlay
+from windows_mcp.desktop import control, control_overlay, flash_overlay
 from windows_mcp.desktop.service import Desktop
 
 
@@ -356,6 +356,52 @@ def test_screenshot_error_restores_indicator_without_flash(monkeypatch):
     with pytest.raises(OSError, match="capture failed"):
         Desktop.__new__(Desktop).get_screenshot()
     assert events == ["hide", "capture", "restore"]
+
+
+def test_stalled_capture_releases_physical_input_and_keeps_status_available(monkeypatch):
+    owner = control.ControlCoordinator()
+    with owner._lock:
+        owner._set_locked("ready")
+    owner.set_health_probe(lambda: True)
+    owner.subscribe(
+        lambda status: owner.arm_visible(status["generation"]) if status["state"] == "ai" else None
+    )
+    token = owner.begin_call("Screenshot")
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr("windows_mcp.desktop.service.get_controller", lambda: owner)
+    monkeypatch.setattr(flash_overlay, "cancel_active_flash", lambda: True)
+    monkeypatch.setattr(flash_overlay, "show_capture_flash", lambda rect: None)
+
+    @contextmanager
+    def hidden():
+        assert not owner._suppress
+        yield
+
+    def capture(rect):
+        started.set()
+        assert release.wait(2.0)
+        return Image.new("RGB", (2, 2)), "test"
+
+    monkeypatch.setattr(control_overlay, "suspend_for_capture", hidden)
+    monkeypatch.setattr("windows_mcp.desktop.service.screenshot_capture.capture", capture)
+    result = []
+    worker = threading.Thread(
+        target=lambda: result.append(Desktop.__new__(Desktop).get_screenshot())
+    )
+    worker.start()
+    try:
+        assert started.wait(1.0)
+        assert not owner._suppress
+        assert owner.status()["state"] == "ai"
+        with pytest.raises(control.ControlBlocked):
+            owner.checkpoint(token)
+        owner._handle(("key",))  # Input delivered during the hidden interval wins.
+        assert owner.status()["state"] == "user"
+    finally:
+        release.set()
+        worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert result and not owner._suppress
 
 
 def test_unclosed_flash_prevents_new_capture(monkeypatch):

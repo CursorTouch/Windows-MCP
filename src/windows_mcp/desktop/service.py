@@ -1353,12 +1353,20 @@ class Desktop:
 
     def get_screenshot(self, capture_rect: uia.Rect | None = None) -> Image.Image:
         # The persistent AI indicator is hidden and acknowledged before any
-        # screenshot backend reads pixels; it is restored even if capture fails.
-        with control_overlay.suspend_for_capture():
-            if not flash_overlay.cancel_active_flash():
-                raise RuntimeError("Previous screenshot flash did not close before capture")
-            image, used_backend = screenshot_capture.capture(capture_rect)
-            self._last_screenshot_backend = used_backend
+        # screenshot backend reads pixels. Physical input is released first so
+        # a stalled capture cannot leave the user blocked by an invisible AI.
+        controller = get_controller()
+        capture_generation = controller.pause_for_capture()
+        restored = False
+        try:
+            with control_overlay.suspend_for_capture():
+                if not flash_overlay.cancel_active_flash():
+                    raise RuntimeError("Previous screenshot flash did not close before capture")
+                image, used_backend = screenshot_capture.capture(capture_rect)
+                self._last_screenshot_backend = used_backend
+            restored = True
+        finally:
+            controller.resume_after_capture(capture_generation, restored=restored)
         flash_overlay.show_capture_flash(capture_rect)
         return image
 

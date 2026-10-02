@@ -14,14 +14,12 @@ import time
 from typing import Callable
 from windows_mcp.desktop.control_context import current_token, current_steps, get_step_count
 from windows_mcp.desktop.control_ledger import InputLedger
+from windows_mcp.desktop import control_hooks
 from windows_mcp.desktop.control_win32 import (
-    _CHORD,
-    _MouseHookData,
-    _KeyHookData,
+    _MouseHookData as _MouseHookData,  # Keep hook test helpers on this module.
+    _KeyHookData as _KeyHookData,
     _user32,
     _key,
-    _mouse_button,
-    _read_raw_mouse,
     _interactive_desktop,
     run_input_monitor,
 )
@@ -52,6 +50,9 @@ class ControlCoordinator:
         self._listeners: list[Callable[[dict], None]] = []
         self.input_ledger = InputLedger()
         self._health_probe: Callable[[], bool] | None = None
+        self._visual_armed = False
+        self._visual_paused = False
+        self._visual_event_stamp = 0.0
         self._events: queue.Queue[tuple] = queue.Queue(maxsize=4096)
         self._stop = threading.Event()
         self._release_requested = threading.Event()
@@ -85,6 +86,53 @@ class ControlCoordinator:
     def set_health_probe(self, probe: Callable[[], bool]) -> None:
         """Require the visual indicator to stay alive during AI control."""
         self._health_probe = probe
+
+    def arm_visible(self, generation: int) -> None:
+        """Suppress physical input only after the AI indicator is visible."""
+        with self._lock:
+            if self._state != "ai" or self._generation != generation or self._visual_paused:
+                return
+            if (
+                self._last_physical_event != self._visual_event_stamp
+                or self._pressed
+                or self._mouse_down
+                or self._fast_takeover
+                or self._fast_pending
+                or self._emergency
+            ):
+                return
+            self.input_ledger.enable()
+            self._visual_armed = True
+            self._deadline = time.monotonic() + 1.0
+            self._suppress = True
+            if self._last_physical_event != self._visual_event_stamp:
+                self._suppress = False
+                self._visual_armed = False
+                self.input_ledger.block_new()
+
+    def pause_for_capture(self) -> int | None:
+        """Release physical input before an AI indicator is hidden for capture."""
+        with self._lock:
+            if self._state != "ai" or not self._visual_armed:
+                return None
+            self._suppress = False
+            self._visual_armed = False
+            self._visual_paused = True
+            self._visual_event_stamp = self._last_physical_event
+            self.input_ledger.block_new()
+            return self._generation
+
+    def resume_after_capture(self, generation: int | None, *, restored: bool) -> None:
+        """Re-arm only after the indicator is restored and no user event occurred."""
+        if generation is None:
+            return
+        if not restored or (self._health_probe is not None and not self._health_probe()):
+            self._fail_open()
+            return
+        with self._lock:
+            if generation == self._generation:
+                self._visual_paused = False
+        self.arm_visible(generation)
 
     def _snapshot_locked(self, now: float) -> dict:
         state = (
@@ -138,12 +186,15 @@ class ControlCoordinator:
         if state != "ai":
             self.input_ledger.block_new()
         self._generation += 1
+        self._visual_armed = state == "ai" and self._health_probe is None
+        self._visual_paused = False
+        self._visual_event_stamp = self._last_physical_event
         self._point_origin = None
         self._raw_origin.clear()
         self._raw_device = None
         if state != "takeover_pending":
             self._fast_pending = False
-        self._suppress = state in ("ai", "takeover_pending") and not self._emergency
+        self._suppress = self._visual_armed and not self._emergency
         self._deadline = time.monotonic() + 1.0 if self._suppress else 0.0
         return True
 
@@ -186,6 +237,7 @@ class ControlCoordinator:
                 or self._fast_takeover
                 or self._fast_pending
                 or self._rotating
+                or self._visual_paused
                 or self._state not in ("ready", "ai")
             ):
                 status = self._snapshot_locked(now)
@@ -236,7 +288,7 @@ class ControlCoordinator:
     def physical_key_down(self, vk: int) -> bool:
         # A swallowed physical down did not reach the app, so the AI must
         # release its own injected down when its tool is preempted.
-        return _key(vk) in self._delivered_keys
+        return _key(vk) in {_key(held) for held in self._delivered_keys}
 
     def physical_mouse_down(self, button: str) -> bool:
         return {"left": 1, "right": 2, "middle": 3}[button] in self._delivered_mouse
@@ -372,97 +424,13 @@ class ControlCoordinator:
             self._fail_open()
 
     def _physical_mouse(self, code, wparam, lparam):
-        if code < 0:
-            return _user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
-        valid = False
-        button = None
-        try:
-            data = ctypes.cast(lparam, ctypes.POINTER(_MouseHookData)).contents
-            if data.flags & 1:  # LL mouse injection flags.
-                return _user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
-            valid = True
-            self._last_physical_event = time.monotonic()
-            if wparam == 0x200 and self._suppress:
-                self._fast_pending = True  # Pause AI before queued movement is processed.
-                self.input_ledger.block_new()
-            button = _mouse_button(wparam, data.mouseData)
-            if button:
-                if button[1]:
-                    self._mouse_down.add(button[0])
-                else:
-                    self._mouse_down.discard(button[0])
-            self._queue(("point", data.pt.x, data.pt.y, int(wparam)))
-            if self._suppress and not self._emergency:
-                if time.monotonic() <= self._deadline:
-                    return 1
-                self._fail_open()
-        except Exception:
-            self._fail_open()
-        if valid and button:
-            if button[1]:
-                self._delivered_mouse.add(button[0])
-            else:
-                self._delivered_mouse.discard(button[0])
-        return _user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
+        return control_hooks.physical_mouse(self, code, wparam, lparam)
 
     def _physical_key(self, code, wparam, lparam):
-        if code < 0:
-            return _user32.CallNextHookEx(self._key_hook, code, wparam, lparam)
-        vk = None
-        down = False
-        try:
-            data = ctypes.cast(lparam, ctypes.POINTER(_KeyHookData)).contents
-            if data.flags & 0x10:  # LLKHF_INJECTED: AI SendInput stays usable.
-                return _user32.CallNextHookEx(self._key_hook, code, wparam, lparam)
-            self._last_physical_event = time.monotonic()
-            vk = _key(data.vkCode)
-            down = wparam in (0x100, 0x104)
-            was_down = vk in self._pressed
-            if down:
-                self._pressed.add(vk)
-            else:
-                self._pressed.discard(vk)
-            if vk in self._quarantine:
-                if not down:
-                    self._quarantine.discard(vk)
-                    self._queue(("key",))  # Idle starts after the last chord key is released.
-                return 1
-            if (
-                down
-                and vk == 0x08
-                and not was_down
-                and not self._fast_takeover
-                and self._suppress
-                and _CHORD.issubset(self._pressed)
-            ):
-                self._quarantine.update(self._pressed & _CHORD)
-                self._fast_takeover = True
-                self._suppress = False  # Release first, then tell the coordinator.
-                self.input_ledger.block_new()
-                self._queue(("hotkey",))
-                return 1
-            self._queue(("key",))
-            if self._suppress and not self._emergency:
-                if time.monotonic() <= self._deadline:
-                    return 1
-                self._fail_open()
-        except Exception:
-            self._fail_open()
-        if vk is not None and down:
-            self._delivered_keys.add(vk)
-        elif vk is not None:
-            self._delivered_keys.discard(vk)
-        return _user32.CallNextHookEx(self._key_hook, code, wparam, lparam)
+        return control_hooks.physical_key(self, code, wparam, lparam)
 
     def _raw_input(self, lparam) -> None:
-        raw = _read_raw_mouse(lparam)
-        if raw is None:
-            return  # Null devices can be touchpads; do not infer source.
-        self._last_physical_event = time.monotonic()
-        if self._suppress:
-            self._fast_pending = True
-            self.input_ledger.block_new()
-        self._queue(("raw", *raw))
+        control_hooks.raw_input(self, lparam)
 
     def _handle(self, event: tuple) -> None:
         now = time.monotonic()
@@ -472,6 +440,14 @@ class ControlCoordinator:
             else:
                 changed = self._tick_locked(now)
                 kind = event[0]
+                if (
+                    kind in ("key", "point", "raw")
+                    and self._state == "ai"
+                    and not self._visual_armed
+                ):
+                    # Physical input was delivered while the indicator was not armed.
+                    self._last_user = now
+                    changed = self._set_locked("user") or changed
                 if kind == "hotkey" and self._state in ("ai", "takeover_pending"):
                     self._last_user = now
                     changed = self._set_locked("user") or changed
@@ -565,7 +541,7 @@ class ControlCoordinator:
                 self._fail_open()
                 continue
             try:
-                if self._state in ("ai", "takeover_pending") and not self._fast_takeover:
+                if self._state == "ai" and self._visual_armed and not self._fast_takeover:
                     self._deadline = now + 1.0
                     self._suppress = True
                 else:

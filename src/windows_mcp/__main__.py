@@ -277,6 +277,8 @@ def _build_mcp() -> FastMCP:
                 return
             if status["state"] == "ai":
                 control_overlay.set_active(True)
+                if status.get("generation") is not None:
+                    controller.arm_visible(status["generation"])
             elif status["state"] == "takeover_pending":
                 control_overlay.set_pending(True)
             else:
@@ -289,11 +291,16 @@ def _build_mcp() -> FastMCP:
     def show_control_state(status: dict) -> None:
         if threading.current_thread() is controller._thread:
             # Never wait for a window-owner acknowledgement on the hook thread.
-            # Windows can silently remove a low level hook after a slow callback.
+            # A capture may hold the overlay lock for an unbounded backend call;
+            # offload the wait so ControlStatus stays responsive on the loop.
             try:
                 if control_loop is None or control_loop.is_closed():
                     raise RuntimeError("server event loop unavailable")
-                control_loop.call_soon_threadsafe(apply_control_state, status.copy())
+                control_loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        asyncio.to_thread(apply_control_state, status.copy())
+                    )
+                )
             except RuntimeError:
                 controller._fail_open()
                 logger.exception("Could not schedule AI control indicator update")

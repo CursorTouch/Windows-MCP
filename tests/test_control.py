@@ -40,6 +40,114 @@ def test_start_is_ready_without_physical_input(monkeypatch):
         owner.stop()
 
 
+def test_indicator_ack_precedes_suppression_and_physical_input_wins(monkeypatch):
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    observed = []
+    owner.subscribe(lambda status: observed.append((status["state"], owner._suppress)))
+    token = owner.begin_call("Type")
+    assert observed == [("ai", False)]
+    with pytest.raises(control.ControlBlocked):
+        owner.checkpoint(token)
+
+    monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 7)
+    event = control._KeyHookData()
+    event.vkCode = 0x41
+    assert owner._physical_key(0, 0x100, ctypes.addressof(event)) == 7
+    owner.arm_visible(token)  # A late visual acknowledgement cannot reclaim the key.
+    assert not owner._suppress
+    owner._handle(owner._events.get_nowait())
+    assert owner.status()["state"] == "user"
+
+
+def test_indicator_ack_arms_and_capture_pause_releases_physical_input():
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    owner.subscribe(
+        lambda status: owner.arm_visible(status["generation"]) if status["state"] == "ai" else None
+    )
+    token = owner.begin_call("Screenshot")
+    owner.checkpoint(token)
+    assert owner._suppress
+
+    generation = owner.pause_for_capture()
+    assert generation == token
+    assert not owner._suppress
+    with pytest.raises(control.ControlBlocked):
+        owner.checkpoint(token)
+    owner.resume_after_capture(generation, restored=True)
+    owner.checkpoint(token)
+    assert owner._suppress
+
+
+def test_capture_restore_failure_never_rearms():
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    owner.subscribe(
+        lambda status: owner.arm_visible(status["generation"]) if status["state"] == "ai" else None
+    )
+    owner.begin_call("Screenshot")
+    generation = owner.pause_for_capture()
+    owner.resume_after_capture(generation, restored=False)
+    assert owner._emergency and not owner._suppress
+
+
+def test_stale_capture_generation_never_rearms_after_takeover():
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    owner.subscribe(
+        lambda status: owner.arm_visible(status["generation"]) if status["state"] == "ai" else None
+    )
+    owner.begin_call("Screenshot")
+    generation = owner.pause_for_capture()
+    owner._handle(("key",))
+    assert owner.status()["state"] == "user"
+    owner.resume_after_capture(generation, restored=True)
+    assert not owner._suppress
+
+
+def test_watchdog_does_not_rearm_hidden_indicator(monkeypatch):
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    owner.subscribe(
+        lambda status: owner.arm_visible(status["generation"]) if status["state"] == "ai" else None
+    )
+    owner.begin_call("Screenshot")
+    owner.pause_for_capture()
+    owner._thread = Mock()
+    owner._thread.is_alive.return_value = True
+    owner._thread_beat = control.time.monotonic()
+    owner._stop.is_set = Mock(side_effect=[False, True])
+    owner._release_requested.wait = Mock()
+    monkeypatch.setattr(control, "_interactive_desktop", lambda: True)
+    owner._watch()
+    assert not owner._suppress
+
+
+@pytest.mark.parametrize("left,right", [(0xA0, 0xA1), (0xA2, 0xA3), (0xA4, 0xA5)])
+def test_opposite_modifier_release_does_not_clear_held_key(monkeypatch, left, right):
+    clock = [100.0]
+    monkeypatch.setattr(control.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 7)
+    owner = ready_controller()
+    owner._handle(("key",))
+
+    def send(vk, message):
+        data = control._KeyHookData()
+        data.vkCode = vk
+        return owner._physical_key(0, message, ctypes.addressof(data))
+
+    send(left, 0x100)
+    send(right, 0x100)
+    send(left, 0x101)  # Releasing one side must not clear the other.
+    assert owner._pressed == {right}
+    clock[0] = 120.0
+    assert owner.status()["state"] == "user"
+    send(right, 0x101)
+    clock[0] = 130.0
+    assert owner.status()["state"] == "ready"
+
+
 def test_start_preserves_cooldown_after_real_physical_input(monkeypatch):
     owner = control.ControlCoordinator()
     monkeypatch.setattr(control, "_interactive_desktop", lambda: True)

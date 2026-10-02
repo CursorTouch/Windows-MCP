@@ -149,6 +149,36 @@ async def test_queued_call_rechecks_after_takeover():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_active_and_queued_calls_release_gate_and_lease():
+    controller = FakeController()
+    gate = ControlToolGate(controller, ControlNotifier(controller))
+    context = SimpleNamespace(message=SimpleNamespace(name="Action"), fastmcp_context=None)
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def hold(_context):
+        started.set()
+        await never.wait()
+
+    active = asyncio.create_task(gate.on_call_tool(context, hold))
+    await asyncio.wait_for(started.wait(), 1)
+    queued = asyncio.create_task(gate.on_call_tool(context, hold))
+    await asyncio.sleep(0)
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    active.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await active
+    assert not gate._call_lock.locked()
+    assert controller.calls == [("begin", "Action"), ("end", 7)]
+
+    controller.state = "ready"
+    assert await gate.on_call_tool(context, lambda _: asyncio.sleep(0, result="ok")) == "ok"
+    assert controller.calls[-2:] == [("begin", "Action"), ("end", 7)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", ["App", "PowerShell"])
 async def test_already_running_external_command_is_not_claimed_cancelled(tool_name):
     controller = FakeController()

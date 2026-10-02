@@ -14,6 +14,7 @@ from ctypes import wintypes
 from PIL import Image, ImageDraw, ImageFilter
 
 from windows_mcp.desktop import flash_overlay
+from windows_mcp.desktop.overlay_bitmap import premultiplied_bgra
 from windows_mcp import uia
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]
         else:
             x = width - 1 - depth
             draw.line((x, 0, x, height - 1), fill=(*color, alpha))
-    return flash_overlay._premultiplied_bgra(image, 1.0)
+    return premultiplied_bgra(image, 1.0)
 
 
 def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
@@ -61,7 +62,7 @@ def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
     box = (inset, inset, _CURSOR_SIZE - inset - 1, _CURSOR_SIZE - inset - 1)
     draw.ellipse(box, outline=(*color, 210), width=5)
     glow = image.filter(ImageFilter.GaussianBlur(9))
-    return flash_overlay._premultiplied_bgra(Image.alpha_composite(glow, image), 1.0)
+    return premultiplied_bgra(Image.alpha_composite(glow, image), 1.0)
 
 
 class _Layer:
