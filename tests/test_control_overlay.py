@@ -171,6 +171,45 @@ def test_capture_ack_timeout_cannot_hide_recovered_indicator(monkeypatch):
         control_overlay.set_active(True)
 
 
+def test_newer_user_state_rejects_ai_show_waiting_behind_capture(monkeypatch):
+    indicator = control_overlay._Indicator()
+    indicator.thread = Mock()
+    indicator.thread.is_alive.return_value = True
+    monkeypatch.setattr(control_overlay, "_instance", indicator)
+    stop_ack = threading.Event()
+
+    def acknowledge():
+        while not stop_ack.is_set():
+            with indicator.condition:
+                indicator.condition.wait(timeout=0.01)
+                indicator.applied = indicator.version
+                indicator.condition.notify_all()
+
+    ack_thread = threading.Thread(target=acknowledge)
+    ack_thread.start()
+    result = []
+    old_ai = threading.Thread(
+        target=lambda: result.append(control_overlay.set_active(True, generation=1))
+    )
+    try:
+        with control_overlay._capture_lock:
+            old_ai.start()
+            assert control_overlay.set_active(False, generation=2)
+        old_ai.join(timeout=1.0)
+        assert not old_ai.is_alive()
+        assert result == [False]
+        assert indicator.generation == 2
+        assert not indicator.active
+    finally:
+        stop_ack.set()
+        with indicator.condition:
+            indicator.condition.notify_all()
+        ack_thread.join(timeout=1.0)
+        if old_ai.is_alive():
+            old_ai.join(timeout=1.0)
+        monkeypatch.setattr(control_overlay, "_instance", None)
+
+
 def test_actual_owner_thread_stall_expires_heartbeat(monkeypatch):
     entered = threading.Event()
     release = threading.Event()

@@ -390,6 +390,7 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
     class Controller(FakeController):
         _thread = None
         fail_count = 0
+        sync_visible = True
 
         def start(self):
             self.state = "user"
@@ -402,6 +403,9 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
 
         def set_health_probe(self, probe):
             self.health_probe = probe
+
+        def visible_ack_required(self):
+            return self.sync_visible
 
     class Desktop:
         tree = type("Tree", (), {"on_focus_change": lambda *args: None})()
@@ -422,9 +426,10 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
     controller = Controller()
     calls = []
 
-    def slow_show(active):
+    def slow_show(active, *, generation=None):
         time.sleep(0.15)
         calls.append(active)
+        return True
 
     monkeypatch.setenv("ANONYMIZED_TELEMETRY", "false")
     monkeypatch.setattr(wm, "_mcp", None)
@@ -435,7 +440,11 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
     monkeypatch.setattr(control_overlay, "start", lambda: None)
     monkeypatch.setattr(control_overlay, "stop", lambda: None)
     monkeypatch.setattr(control_overlay, "set_active", slow_show)
-    monkeypatch.setattr(control_overlay, "set_pending", lambda active: calls.append(active))
+    monkeypatch.setattr(
+        control_overlay,
+        "set_pending",
+        lambda active, *, generation=None: calls.append(active),
+    )
 
     mcp = wm._build_mcp()
     callback = controller.listeners[0]
@@ -446,6 +455,14 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
         callback({"state": "ai"})
         assert time.monotonic() - start >= 0.14
         assert calls == [True]
+
+        # A ControlStatus-triggered visual update must not block the server loop.
+        controller.sync_visible = False
+        start = time.monotonic()
+        callback({"state": "ai"})
+        assert time.monotonic() - start < 0.1
+        await asyncio.sleep(0.2)
+        assert calls == [True, True]
 
         elapsed = []
 
@@ -460,13 +477,14 @@ async def test_overlay_callback_never_waits_on_hook_thread(monkeypatch):
         thread.join(timeout=1)
         assert elapsed and elapsed[0] < 0.1
         await asyncio.sleep(0.2)
-        assert calls == [True, False]
+        assert calls == [True, True, False]
 
         monkeypatch.setattr(
             control_overlay,
             "set_active",
-            lambda active: (_ for _ in ()).throw(RuntimeError("lost")),
+            lambda active, *, generation=None: (_ for _ in ()).throw(RuntimeError("lost")),
         )
+        controller.sync_visible = True
         callback({"state": "ai"})
         assert controller.fail_count == 1
 

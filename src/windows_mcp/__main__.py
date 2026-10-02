@@ -275,21 +275,25 @@ def _build_mcp() -> FastMCP:
                 "generation"
             ] != controller.status().get("generation"):
                 return
+            generation = status.get("generation")
             if status["state"] == "ai":
-                control_overlay.set_active(True)
-                if status.get("generation") is not None:
+                applied = control_overlay.set_active(True, generation=generation)
+                if applied and generation is not None:
                     controller.arm_visible(status["generation"])
             elif status["state"] == "takeover_pending":
-                control_overlay.set_pending(True)
+                control_overlay.set_pending(True, generation=generation)
             else:
-                control_overlay.set_active(False)
+                control_overlay.set_active(False, generation=generation)
         except Exception:
             # A missing visual indicator invalidates the AI control lease.
             controller._fail_open()
             logger.exception("AI control indicator failed; releasing physical input")
 
     def show_control_state(status: dict) -> None:
-        if threading.current_thread() is controller._thread:
+        if threading.current_thread() is controller._thread or (
+            status["state"] in ("ai", "takeover_pending")
+            and not getattr(controller, "visible_ack_required", lambda: True)()
+        ):
             # Never wait for a window-owner acknowledgement on the hook thread.
             # A capture may hold the overlay lock for an unbounded backend call;
             # offload the wait so ControlStatus stays responsive on the loop.

@@ -185,6 +185,7 @@ class _Indicator:
         self.stopping = False
         self.version = 0
         self.applied = 0
+        self.generation = -1
         self.error: BaseException | None = None
         self.heartbeat = 0.0
         self.started = threading.Event()
@@ -197,15 +198,26 @@ class _Indicator:
             raise RuntimeError("AI control indicator thread failed at startup") from self.error
 
     def change(
-        self, *, active: bool | None = None, pending: bool | None = None, suspended: int = 0
-    ) -> None:
+        self,
+        *,
+        active: bool | None = None,
+        pending: bool | None = None,
+        suspended: int = 0,
+        generation: int | None = None,
+    ) -> bool:
         with self.condition:
+            # A newer takeover can hide immediately while an older AI show
+            # waits behind screenshot capture. Never apply that stale show.
+            if generation is not None and generation < self.generation:
+                return False
             if self.stopping:
                 raise RuntimeError("AI control indicator is stopping")
             if self.error:
                 raise RuntimeError("AI control indicator failed") from self.error
             if not self.thread.is_alive():
                 raise RuntimeError("AI control indicator stopped")
+            if generation is not None:
+                self.generation = generation
             if active is not None:
                 self.active = active
             if pending is not None:
@@ -236,6 +248,7 @@ class _Indicator:
                 raise RuntimeError("AI control indicator is stopping")
             if self.error:
                 raise RuntimeError("AI control indicator failed") from self.error
+            return True
 
     def stop(self) -> None:
         with self.condition:
@@ -374,34 +387,34 @@ def stop() -> None:
                     _instance = None
 
 
-def set_active(active: bool) -> None:
+def set_active(active: bool, *, generation: int | None = None) -> bool:
     """Display or hide AI indication; activation failure raises."""
 
     # Deactivation must remain immediate during a capture: the screenshot's
     # final resume will then observe active=False and leave the window hidden.
-    def apply() -> None:
+    def apply() -> bool:
         with _lock:
             indicator = _instance
         if indicator is None:
             if not active:
-                return
+                return True
             raise RuntimeError("AI control indicator has not started")
-        indicator.change(active=active, pending=False)
+        return indicator.change(active=active, pending=False, generation=generation)
 
     if active:
         with _capture_lock:
-            apply()
-    else:
-        apply()
+            return apply()
+    return apply()
 
 
-def set_pending(pending: bool) -> None:
+def set_pending(pending: bool, *, generation: int | None = None) -> bool:
     """Use amber edge indication without cursor following during takeover check."""
     with _capture_lock:
         with _lock:
             indicator = _instance
         if indicator:
-            indicator.change(pending=pending)
+            return indicator.change(pending=pending, generation=generation)
+    return True
 
 
 def is_healthy() -> bool:

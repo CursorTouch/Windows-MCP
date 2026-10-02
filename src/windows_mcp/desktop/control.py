@@ -50,6 +50,7 @@ class ControlCoordinator:
         self._listeners: list[Callable[[dict], None]] = []
         self.input_ledger = InputLedger()
         self._health_probe: Callable[[], bool] | None = None
+        self._begin_notification = threading.local()
         self._visual_armed = False
         self._visual_paused = False
         self._visual_event_stamp = 0.0
@@ -86,6 +87,10 @@ class ControlCoordinator:
     def set_health_probe(self, probe: Callable[[], bool]) -> None:
         """Require the visual indicator to stay alive during AI control."""
         self._health_probe = probe
+
+    def visible_ack_required(self) -> bool:
+        """Only a new MCP lease must wait for its visual acknowledgement."""
+        return bool(getattr(self._begin_notification, "active", False))
 
     def arm_visible(self, generation: int) -> None:
         """Suppress physical input only after the AI indicator is visible."""
@@ -256,7 +261,11 @@ class ControlCoordinator:
             token = self._generation
             result = self._snapshot_locked(now)
         if changed:
-            self._notify(result)
+            self._begin_notification.active = True
+            try:
+                self._notify(result)
+            finally:
+                self._begin_notification.active = False
         return token
 
     def checkpoint(self, token: int) -> None:
