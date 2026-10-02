@@ -7,6 +7,7 @@ import os
 from time import perf_counter, sleep
 from typing import Any, Literal
 
+import pywintypes
 from psutil import Process
 import win32con
 import win32gui
@@ -20,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class ExactWindowController:
-    """Operate on exact native windows and reuse Desktop foreground switching."""
+    """Operate on exact top-level HWNDs and reuse Desktop foreground switching.
+
+    Args:
+        desktop: Desktop service used to activate a window.
+    """
 
     def __init__(self, desktop: Any) -> None:
         self._desktop = desktop
@@ -117,6 +122,20 @@ class ExactWindowController:
                 raise ValueError(f"{name} must be a positive integer")
 
     @staticmethod
+    def _require_top_level_handle(handle: int) -> None:
+        """Reject stale or child HWNDs before acting on an explicit identity."""
+        try:
+            if not win32gui.IsWindow(handle):
+                raise ValueError("Invalid or stale window handle")
+            root = win32gui.GetAncestor(handle, win32con.GA_ROOT)
+        except (pywintypes.error, OSError) as exc:
+            raise ValueError(f"Could not inspect window handle {handle}") from exc
+        if not root:
+            raise ValueError("Invalid or stale window handle")
+        if root != handle:
+            raise ValueError("Window handle must refer to a top-level window")
+
+    @staticmethod
     def _validate_window_bounds(bounds: list[int] | None, name: str) -> list[int] | None:
         if bounds is None:
             return None
@@ -149,7 +168,21 @@ class ExactWindowController:
         process_id: int | None = None,
         handle: int | None = None,
     ) -> list[dict[str, object]]:
-        """Find top-level windows using explicit identity filters."""
+        """Find top-level windows using exact native identity filters.
+
+        Args:
+            title: Optional window title to match.
+            title_match: Match the whole title or a substring, ignoring case.
+            process: Optional executable name to match, ignoring case.
+            process_id: Optional process ID to match.
+            handle: Optional top-level HWND; bypasses desktop enumeration.
+
+        Returns:
+            Matching windows with their native identity and actual bounds.
+
+        Raises:
+            ValueError: If a filter or explicit HWND is invalid.
+        """
         if title_match not in {"exact", "contains"}:
             raise ValueError('title_match must be "exact" or "contains"')
         self._validate_exact_identity_values(
@@ -159,38 +192,47 @@ class ExactWindowController:
             handle=handle,
         )
 
-        handles: list[int] = [handle] if handle is not None else []
-        if handle is None:
+        if handle is not None:
+            self._require_top_level_handle(handle)
+            handles = [handle]
+        else:
+            handles = []
             win32gui.EnumWindows(lambda candidate, _: handles.append(candidate) or True, None)
         matches = []
         expected_process = os.path.basename(process).casefold() if process else None
         for candidate in handles:
-            if handle is not None and candidate != handle:
-                continue
-            if not win32gui.IsWindow(candidate):
-                continue
-            _, candidate_process_id = win32process.GetWindowThreadProcessId(candidate)
-            if process_id is not None and candidate_process_id != process_id:
-                continue
-            candidate_title = win32gui.GetWindowText(candidate)
-            if title is not None:
-                actual_title = candidate_title.casefold()
-                expected_title = title.casefold()
-                if title_match == "exact" and actual_title != expected_title:
+            try:
+                if not win32gui.IsWindow(candidate):
+                    if handle is not None:
+                        raise ValueError("Invalid or stale window handle")
                     continue
-                if title_match == "contains" and expected_title not in actual_title:
+                _, candidate_process_id = win32process.GetWindowThreadProcessId(candidate)
+                if process_id is not None and candidate_process_id != process_id:
                     continue
-            if expected_process is not None:
-                process_name = self._window_process_name(candidate_process_id)
-                if process_name is None or process_name.casefold() != expected_process:
-                    continue
-            matches.append(
-                self._window_identity_from_handle(
-                    candidate,
-                    title=candidate_title,
-                    process_id=candidate_process_id,
+                candidate_title = win32gui.GetWindowText(candidate)
+                if title is not None:
+                    actual_title = candidate_title.casefold()
+                    expected_title = title.casefold()
+                    if title_match == "exact" and actual_title != expected_title:
+                        continue
+                    if title_match == "contains" and expected_title not in actual_title:
+                        continue
+                if expected_process is not None:
+                    process_name = self._window_process_name(candidate_process_id)
+                    if process_name is None or process_name.casefold() != expected_process:
+                        continue
+                matches.append(
+                    self._window_identity_from_handle(
+                        candidate,
+                        title=candidate_title,
+                        process_id=candidate_process_id,
+                    )
                 )
-            )
+            except (pywintypes.error, OSError) as exc:
+                if handle is not None:
+                    raise ValueError(f"Could not inspect window handle {handle}") from exc
+                # EnumWindows can outlive a window. Keep other candidates usable.
+                logger.debug("Skipping unavailable window handle %s: %s", candidate, exc)
         return matches
 
     def _require_exact_window(
@@ -207,8 +249,7 @@ class ExactWindowController:
             process_id=process_id,
             handle=handle,
         )
-        if not win32gui.IsWindow(handle):
-            raise ValueError("Invalid or stale window handle")
+        self._require_top_level_handle(handle)
         matches = self.find_exact_windows(
             title=title,
             title_match=title_match,
@@ -230,7 +271,21 @@ class ExactWindowController:
         title: str | None = None,
         title_match: Literal["exact", "contains"] = "contains",
     ) -> dict[str, object]:
-        """Activate an exact window and verify foreground readback."""
+        """Activate a top-level window and verify that it reaches foreground.
+
+        Args:
+            handle: Top-level HWND to activate.
+            process_id: Optional expected process ID.
+            process: Optional expected executable name.
+            title: Optional expected title.
+            title_match: Match the whole title or a substring.
+
+        Returns:
+            The window's refreshed native identity and bounds.
+
+        Raises:
+            ValueError: If the window is invalid, changed, or cannot be activated.
+        """
         self._require_exact_window(handle, process_id, process, title, title_match)
         if win32gui.GetForegroundWindow() != handle:
             self._desktop.bring_window_to_top(handle)
@@ -258,7 +313,24 @@ class ExactWindowController:
         title: str | None = None,
         title_match: Literal["exact", "contains"] = "contains",
     ) -> dict[str, object]:
-        """Set outer or client bounds and return the actual applied geometry."""
+        """Set one kind of window bounds and return the actual geometry.
+
+        Args:
+            handle: Top-level HWND to resize or move.
+            outer: Requested outer [x, y, width, height], if any.
+            client: Requested client [x, y, width, height], if any.
+            process_id: Optional expected process ID.
+            process: Optional expected executable name.
+            title: Optional expected title.
+            title_match: Match the whole title or a substring.
+
+        Returns:
+            The window's refreshed native identity and bounds.
+
+        Raises:
+            ValueError: If the window, identity, or bounds are invalid.
+            TimeoutError: If Windows does not apply the requested bounds.
+        """
         outer = self._validate_window_bounds(outer, "outer")
         client = self._validate_window_bounds(client, "client")
         if (outer is None) == (client is None):

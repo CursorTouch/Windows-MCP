@@ -31,6 +31,11 @@ def _patch_window_api(
         lambda callback, context: callback(100, context),
     )
     monkeypatch.setattr(window_module.win32gui, "IsWindow", lambda handle: handle == 100)
+    monkeypatch.setattr(
+        window_module.win32gui,
+        "GetAncestor",
+        lambda handle, flag: handle,
+    )
     monkeypatch.setattr(window_module.win32gui, "GetWindowText", lambda handle: "Target App")
     monkeypatch.setattr(window_module.uia, "IsIconic", lambda handle: False)
     monkeypatch.setattr(window_module.uia, "IsZoomed", lambda handle: False)
@@ -168,6 +173,69 @@ def test_find_by_handle_does_not_depend_on_enumeration(
     result = controller.find_exact_windows(handle=100)
 
     assert result[0]["handle"] == 100
+
+
+def test_explicit_handle_must_be_top_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    desktop = FakeDesktop()
+    controller = ExactWindowController(desktop)
+    moves = _patch_window_api(monkeypatch)
+    roots = []
+    monkeypatch.setattr(window_module.win32gui, "IsWindow", lambda handle: handle in (100, 101))
+
+    def ancestor(handle: int, flag: int) -> int:
+        roots.append((handle, flag))
+        return 100
+
+    monkeypatch.setattr(window_module.win32gui, "GetAncestor", ancestor)
+
+    assert controller.find_exact_windows(handle=100)[0]["handle"] == 100
+    assert roots == [(100, window_module.win32con.GA_ROOT)]
+    with pytest.raises(ValueError, match="top-level window"):
+        controller.find_exact_windows(handle=101)
+    with pytest.raises(ValueError, match="top-level window"):
+        controller.activate_exact_window(handle=101)
+    with pytest.raises(ValueError, match="top-level window"):
+        controller.set_exact_window_bounds(handle=101, outer=[0, 0, 100, 100])
+    assert desktop.activations == []
+    assert moves == []
+
+
+@pytest.mark.parametrize(
+    ("module", "function"),
+    [
+        ("win32gui", "IsWindow"),
+        ("win32process", "GetWindowThreadProcessId"),
+        ("win32gui", "GetWindowText"),
+        ("win32gui", "GetWindowRect"),
+        ("win32gui", "GetClientRect"),
+    ],
+)
+def test_enumeration_skips_a_window_that_disappears_during_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+    module: str,
+    function: str,
+) -> None:
+    controller = ExactWindowController(FakeDesktop())
+    _patch_window_api(monkeypatch)
+    monkeypatch.setattr(
+        window_module.win32gui,
+        "EnumWindows",
+        lambda callback, context: (callback(100, context), callback(101, context)),
+    )
+    monkeypatch.setattr(window_module.win32gui, "IsWindow", lambda handle: handle in (100, 101))
+    target = getattr(window_module, module)
+    original = getattr(target, function)
+
+    def inspect(handle: int, *args: object) -> object:
+        if handle == 100:
+            raise window_module.pywintypes.error(1400, function, "Invalid window handle")
+        return original(handle, *args)
+
+    monkeypatch.setattr(target, function, inspect)
+
+    assert [window["handle"] for window in controller.find_exact_windows()] == [101]
+    with pytest.raises(ValueError, match="Could not inspect window handle 100"):
+        controller.find_exact_windows(handle=100)
 
 
 def test_activate_verifies_foreground_and_rereads_identity(

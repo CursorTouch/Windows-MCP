@@ -85,7 +85,7 @@
     },
     {
       "name": "App",
-      "description": "Launches applications and manages windows. Supports Start Menu or exact executable launch, convenient name-based resize and switch, and exact find_window, activate_window, and set_window_bounds modes using native window identity."
+      "description": "Launches applications and manages windows. Supports Start Menu or exact executable launch, convenient name-based resize and switch, and exact find_window, activate_window, and set_window_bounds modes using top-level native window identity."
     },
     {
       "name": "PowerShell",

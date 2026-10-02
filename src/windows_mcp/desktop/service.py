@@ -670,7 +670,21 @@ class Desktop:
         process_id: int | None = None,
         handle: int | None = None,
     ) -> list[dict[str, object]]:
-        """Find top-level windows using explicit identity filters."""
+        """Find top-level windows using native identity filters.
+
+        Args:
+            title: Optional expected window title.
+            title_match: Match the whole title or a substring.
+            process: Optional expected executable name.
+            process_id: Optional expected process ID.
+            handle: Optional top-level HWND to inspect directly.
+
+        Returns:
+            Matching windows with their native identity and bounds.
+
+        Raises:
+            ValueError: If an identity filter or explicit HWND is invalid.
+        """
         return self._exact_window.find_exact_windows(
             title=title,
             title_match=title_match,
@@ -687,7 +701,21 @@ class Desktop:
         title: str | None = None,
         title_match: Literal["exact", "contains"] = "contains",
     ) -> dict[str, object]:
-        """Activate an exact window and verify foreground readback."""
+        """Activate a top-level HWND and verify foreground readback.
+
+        Args:
+            handle: Top-level HWND to activate.
+            process_id: Optional expected process ID.
+            process: Optional expected executable name.
+            title: Optional expected window title.
+            title_match: Match the whole title or a substring.
+
+        Returns:
+            The window's refreshed native identity and bounds.
+
+        Raises:
+            ValueError: If the window is invalid or cannot reach foreground.
+        """
         return self._exact_window.activate_exact_window(
             handle,
             process_id,
@@ -706,7 +734,24 @@ class Desktop:
         title: str | None = None,
         title_match: Literal["exact", "contains"] = "contains",
     ) -> dict[str, object]:
-        """Set an exact window's outer or client bounds."""
+        """Set the outer or client bounds of a top-level HWND.
+
+        Args:
+            handle: Top-level HWND to resize or move.
+            outer: Requested outer [x, y, width, height], if any.
+            client: Requested client [x, y, width, height], if any.
+            process_id: Optional expected process ID.
+            process: Optional expected executable name.
+            title: Optional expected window title.
+            title_match: Match the whole title or a substring.
+
+        Returns:
+            The window's refreshed native identity and bounds.
+
+        Raises:
+            ValueError: If the window, identity, or bounds are invalid.
+            TimeoutError: If Windows does not apply the requested bounds.
+        """
         return self._exact_window.set_exact_window_bounds(
             handle,
             outer,
