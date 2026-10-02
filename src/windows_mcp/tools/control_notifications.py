@@ -176,6 +176,30 @@ class ControlToolGate(Middleware):
             )
         )
 
+    async def _begin_call(self, name: str) -> int:
+        """Wait for the visible lease off-loop, retaining ownership on cancel."""
+        worker = asyncio.create_task(asyncio.to_thread(self.controller.begin_call, name))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The worker cannot be stopped safely mid-ack. Keep the gate lock
+            # until it finishes, then balance a lease created after cancellation.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not worker.cancelled():
+                try:
+                    token = worker.result()
+                except Exception:
+                    pass  # A failed begin_call never created a usable lease.
+                else:
+                    self.controller.end_call(token)
+            raise
+
     async def on_call_tool(self, context: MiddlewareContext, call_next: Callable) -> Any:
         self.notifier.remember(context)
         name = context.message.name
@@ -206,7 +230,7 @@ class ControlToolGate(Middleware):
                 reject_user_state()
         try:
             try:
-                token = self.controller.begin_call(name)
+                token = await self._begin_call(name)
             except Exception as exc:
                 from windows_mcp.desktop.control import ControlBlocked
 
