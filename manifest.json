@@ -80,6 +80,10 @@
   },
   "tools": [
     {
+      "name": "ControlStatus",
+      "description": "Reports whether AI or the user currently controls the desktop and the remaining user-idle wait before AI control can resume. This read-only status remains available during user takeover."
+    },
+    {
       "name": "App",
       "description": "Manages Windows applications with three modes: 'launch' (opens the prescibed application), 'resize' (adjusts the size/position of a named window or the active window if name is omitted), 'switch' (brings specific window into focus)."
     },

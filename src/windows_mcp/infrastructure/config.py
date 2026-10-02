@@ -39,10 +39,18 @@ class ToolsConfig:
 
 
 @dataclass
+class ControlConfig:
+    # Raw relative device units and hook screen pixels are intentionally separate.
+    mouse_takeover_units: int = 120
+    mouse_takeover_pixels: int = 120
+
+
+@dataclass
 class WindowsMCPConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    control: ControlConfig = field(default_factory=ControlConfig)
     source_path: Path | None = None
 
 
@@ -104,6 +112,7 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     server = data.get("server", {})
     security = data.get("security", {})
     tools = data.get("tools", {})
+    control = data.get("control", {})
 
     _VALID_TRANSPORTS = {"stdio", "sse", "streamable-http"}
     if "transport" in server:
@@ -154,6 +163,13 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     if "exclude" in tools:
         cfg.tools.exclude = _list_of_strings(tools["exclude"], "tools.exclude")
 
+    for key in ("mouse_takeover_units", "mouse_takeover_pixels"):
+        if key in control:
+            value = _strict_int(control[key], f"control.{key}")
+            if not 40 <= value <= 2000:
+                raise ValueError(f"control.{key} must be between 40 and 2000")
+            setattr(cfg.control, key, value)
+
     cfg.source_path = path
     return cfg
 
@@ -201,5 +217,14 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     if cfg.tools.exclude:
         items = ", ".join(f'"{t}"' for t in cfg.tools.exclude)
         lines += ["[tools]", f"exclude = [{items}]", ""]
+
+    ctrl, default_ctrl = cfg.control, ControlConfig()
+    control_lines = [
+        f"{key} = {getattr(ctrl, key)}"
+        for key in ("mouse_takeover_units", "mouse_takeover_pixels")
+        if getattr(ctrl, key) != getattr(default_ctrl, key)
+    ]
+    if control_lines:
+        lines += ["[control]", *control_lines, ""]
 
     path.write_text("\n".join(lines), encoding="utf-8")

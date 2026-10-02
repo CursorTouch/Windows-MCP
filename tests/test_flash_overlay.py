@@ -7,6 +7,8 @@ when ``tkinter`` cannot be imported).
 
 import sys
 import threading
+import ctypes
+from ctypes import wintypes
 from unittest.mock import patch
 
 import pytest
@@ -19,12 +21,17 @@ def _reset_active_overlay():
     """Each test starts and ends with no overlay registered."""
     with flash_overlay._lock:
         flash_overlay._active_overlay = None
+        flash_overlay._all_overlays.clear()
     yield
     with flash_overlay._lock:
         ov = flash_overlay._active_overlay
         flash_overlay._active_overlay = None
+        all_overlays = tuple(flash_overlay._all_overlays)
+        flash_overlay._all_overlays.clear()
     if ov is not None:
         ov.stop_event.set()
+    for pending in all_overlays:
+        pending.stop_event.set()
 
 
 class TestFlashDisabled:
@@ -41,6 +48,15 @@ class TestFlashDisabled:
     def test_falsy_values_keep_enabled(self, monkeypatch, value):
         monkeypatch.setenv("WINDOWS_MCP_DISABLE_FLASH", value)
         assert flash_overlay._flash_disabled() is False
+
+
+def test_window_api_signatures_preserve_x64_handles():
+    """Without argtypes ctypes narrows Python integers to 32-bit c_int."""
+    assert ctypes.sizeof(flash_overlay._kernel32.GetModuleHandleW.restype) == ctypes.sizeof(
+        ctypes.c_void_p
+    )
+    assert flash_overlay._user32.CreateWindowExW.argtypes[10] is wintypes.HINSTANCE
+    assert flash_overlay._user32.UnregisterClassW.argtypes[1] is wintypes.HINSTANCE
 
 
 class _FakeRect:
@@ -209,6 +225,22 @@ class TestCancelActiveFlash:
 
         assert overlay.stop_event.is_set()
         assert flash_overlay._active_overlay is None
+
+    def test_rejects_capture_when_replaced_flash_has_not_closed(self):
+        old = flash_overlay._Overlay()
+        latest = flash_overlay._Overlay()
+        latest.closed_event.set()
+        with flash_overlay._lock:
+            flash_overlay._all_overlays.update((old, latest))
+            flash_overlay._active_overlay = latest
+
+        assert flash_overlay.cancel_active_flash(timeout=0) is False
+        assert old.stop_event.is_set()
+        assert latest.stop_event.is_set()
+        assert flash_overlay._active_overlay is None
+
+        old.closed_event.set()
+        assert flash_overlay.cancel_active_flash(timeout=0) is True
 
 
 class TestIntensityCurve:

@@ -1,6 +1,8 @@
 import pytest
+from unittest.mock import Mock
 
 from windows_mcp.desktop import service
+from windows_mcp.desktop.control_ledger import InputLedger
 from windows_mcp.desktop.service import Desktop
 
 
@@ -10,20 +12,27 @@ def _desktop() -> Desktop:
     return desktop
 
 
+def _stub_control(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give drag tests an isolated AI-input ledger without real mouse injection."""
+    owner = Mock()
+    owner.input_ledger = InputLedger()
+    owner.physical_mouse_down.return_value = False
+    monkeypatch.setattr(service, "get_controller", lambda: owner)
+
+
 def test_desktop_drag_uses_explicit_start_and_duration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[int, int, int, int, int, float | None]] = []
+    calls: list[tuple[str, tuple[int, ...]]] = []
     desktop = _desktop()
 
+    _stub_control(monkeypatch)
     monkeypatch.setattr(service, "sleep", lambda seconds: None)
     monkeypatch.setattr(
-        service.uia,
-        "DragDrop",
-        lambda x1, y1, x2, y2, moveSpeed=1, duration=None: calls.append(
-            (x1, y1, x2, y2, moveSpeed, duration)
-        ),
+        service.uia, "PressMouse", lambda x, y, **kw: calls.append(("down", (x, y)))
     )
+    monkeypatch.setattr(service.uia, "SetCursorPos", lambda x, y: calls.append(("move", (x, y))))
+    monkeypatch.setattr(service.uia, "ReleaseMouse", lambda **kw: calls.append(("up", ())))
 
     result = desktop.drag(
         [100, 200],
@@ -31,27 +40,31 @@ def test_desktop_drag_uses_explicit_start_and_duration(
         duration="0.25",
     )
 
-    assert calls == [(10, 20, 100, 200, 1, 0.25)]
+    assert calls[0] == ("down", (10, 20))
+    assert calls[-2:] == [("move", (100, 200)), ("up", ())]
+    assert len([call for call in calls if call[0] == "move"]) == 25
     assert result["start"] == [10, 20]
     assert result["end"] == [100, 200]
     assert result["duration"] == 0.25
 
 
 def test_desktop_drag_legacy_start_uses_current_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[int, int, int, int]] = []
+    calls: list[tuple[str, tuple[int, ...]]] = []
     desktop = _desktop()
 
+    _stub_control(monkeypatch)
     monkeypatch.setattr(service, "sleep", lambda seconds: None)
     monkeypatch.setattr(service.uia, "GetCursorPos", lambda: (7, 8))
     monkeypatch.setattr(
-        service.uia,
-        "DragDrop",
-        lambda x1, y1, x2, y2, **kwargs: calls.append((x1, y1, x2, y2)),
+        service.uia, "PressMouse", lambda x, y, **kw: calls.append(("down", (x, y)))
     )
+    monkeypatch.setattr(service.uia, "SetCursorPos", lambda x, y: calls.append(("move", (x, y))))
+    monkeypatch.setattr(service.uia, "ReleaseMouse", lambda **kw: calls.append(("up", ())))
 
     result = desktop.drag((30, 40))
 
-    assert calls == [(7, 8, 30, 40)]
+    assert calls[0] == ("down", (7, 8))
+    assert calls[-2:] == [("move", (30, 40)), ("up", ())]
     assert result["start"] == [7, 8]
     assert result["duration"] is None
 

@@ -47,6 +47,7 @@ EXPECTED_TOOLS = {
     "App",
     "Click",
     "Clipboard",
+    "ControlStatus",
     "DisplayInventory",
     "FileSystem",
     "Move",
@@ -101,12 +102,14 @@ async def test_handshake_completes_and_lists_tools() -> None:
 async def test_tool_call_round_trips_over_stdio() -> None:
     """A tool call survives the full client -> pipe -> server -> pipe path.
 
-    Uses Wait, the only state-changing-free tool with a deterministic result.
+    Uses ControlStatus, which remains available during user takeover and
+    when the test host cannot show the required desktop indicator.
     """
     async with Client(_transport()) as client:
-        result = await asyncio.wait_for(client.call_tool("Wait", {"duration": 1}), STARTUP_TIMEOUT)
+        result = await asyncio.wait_for(client.call_tool("ControlStatus", {}), STARTUP_TIMEOUT)
 
     assert result.is_error is False
+    assert result.data["state"] in {"user", "ready", "ai", "unavailable"}
 
 
 async def test_request_before_initialize_is_rejected() -> None:
