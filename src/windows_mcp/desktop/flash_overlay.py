@@ -402,7 +402,10 @@ def _create_layered_window(class_name: str, x: int, y: int, w: int, h: int):
     return hwnd, h_instance
 
 
-def _push_bitmap(hwnd, x: int, y: int, w: int, h: int, bgra: bytes) -> None:
+def _push_bitmap(
+    hwnd, x: int, y: int, w: int, h: int, bgra: bytes, *, opacity: int = 255
+) -> None:
+    """Upload premultiplied pixels with optional whole-window opacity."""
     screen_dc = _user32.GetDC(None)
     if not screen_dc:
         raise OSError("GetDC failed")
@@ -437,7 +440,7 @@ def _push_bitmap(hwnd, x: int, y: int, w: int, h: int, bgra: bytes) -> None:
                     pos = _POINT(x, y)
                     size = _SIZE(w, h)
                     src_pos = _POINT(0, 0)
-                    blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
+                    blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, opacity, _AC_SRC_ALPHA)
                     ok = _user32.UpdateLayeredWindow(
                         hwnd,
                         screen_dc,

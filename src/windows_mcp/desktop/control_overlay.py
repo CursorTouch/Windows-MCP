@@ -11,16 +11,21 @@ import threading
 import time
 from ctypes import wintypes
 
-from PIL import Image, ImageDraw, ImageFilter
-
 from windows_mcp.desktop import flash_overlay
-from windows_mcp.desktop.overlay_bitmap import premultiplied_bgra
+from windows_mcp.desktop.control_overlay_art import (
+    _BORDER,
+    _CURSOR_SIZE,
+    _NOTICE_GLOW_PAD,
+    _breath_opacity,
+    _cursor_bitmap,
+    _edge_bitmap,
+    _notice_bitmap,
+    _notice_glow_bitmap,
+)
 from windows_mcp import uia
 
 logger = logging.getLogger(__name__)
 
-_BORDER = 28
-_CURSOR_SIZE = 88
 _REFRESH_SECONDS = 0.05
 _SW_HIDE = 0
 _WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -36,42 +41,18 @@ _user32.IsWindowVisible.argtypes = [wintypes.HWND]
 _user32.IsWindowVisible.restype = wintypes.BOOL
 
 
-def _edge_bitmap(width: int, height: int, side: str, color: tuple[int, int, int]) -> bytes:
-    """Pre-render one inward gradient strip; cost scales with perimeter."""
-    image = Image.new("RGBA", (width, height))
-    draw = ImageDraw.Draw(image)
-    for depth in range(min(_BORDER, height if side in ("top", "bottom") else width)):
-        alpha = int(190 * (1 - depth / _BORDER) ** 2)
-        if side == "top":
-            draw.line((0, depth, width - 1, depth), fill=(*color, alpha))
-        elif side == "bottom":
-            y = height - 1 - depth
-            draw.line((0, y, width - 1, y), fill=(*color, alpha))
-        elif side == "left":
-            draw.line((depth, 0, depth, height - 1), fill=(*color, alpha))
-        else:
-            x = width - 1 - depth
-            draw.line((x, 0, x, height - 1), fill=(*color, alpha))
-    return premultiplied_bgra(image, 1.0)
-
-
-def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
-    image = Image.new("RGBA", (_CURSOR_SIZE, _CURSOR_SIZE))
-    draw = ImageDraw.Draw(image)
-    inset = 17
-    box = (inset, inset, _CURSOR_SIZE - inset - 1, _CURSOR_SIZE - inset - 1)
-    draw.ellipse(box, outline=(*color, 210), width=5)
-    glow = image.filter(ImageFilter.GaussianBlur(9))
-    return premultiplied_bgra(Image.alpha_composite(glow, image), 1.0)
-
-
 class _Layer:
-    def __init__(self, x: int, y: int, width: int, height: int, bgra: bytes, name: str):
+    def __init__(
+        self, x: int, y: int, width: int, height: int, bgra: bytes, name: str, *, breathes: bool = True
+    ):
         self.x, self.y, self.width, self.height = x, y, width, height
+        self.breathes = breathes
         self.class_name = f"WindowsMCPControl_{name}_{id(self):x}"
         self.hwnd, self.instance = flash_overlay._create_layered_window(
             self.class_name, x, y, width, height
         )
+        self.bgra = bgra
+        self.opacity: int | None = None
         try:
             flash_overlay._push_bitmap(self.hwnd, x, y, width, height, bgra)
             if not _user32.SetWindowDisplayAffinity(self.hwnd, _WDA_EXCLUDEFROMCAPTURE):
@@ -81,6 +62,17 @@ class _Layer:
         except BaseException:
             self.close()
             raise
+
+    def set_opacity(self, opacity: int) -> None:
+        """Modulate an existing bitmap without rebuilding its per-pixel glow."""
+        if self.opacity == opacity:
+            return
+        # Use the bitmap API for every frame. SetLayeredWindowAttributes can
+        # report success here while replacing the visible per-pixel bitmap.
+        flash_overlay._push_bitmap(
+            self.hwnd, self.x, self.y, self.width, self.height, self.bgra, opacity=opacity
+        )
+        self.opacity = opacity
 
     def show(self) -> None:
         _user32.ShowWindow(self.hwnd, flash_overlay._SW_SHOWNA)
@@ -129,9 +121,7 @@ def _monitor_rects() -> tuple[tuple[int, int, int, int], ...]:
     return tuple((r.left, r.top, r.right, r.bottom) for r in uia.GetMonitorsRect())
 
 
-def _build_layers(
-    rects: tuple[tuple[int, int, int, int], ...], pending: bool
-) -> tuple[list[_Layer], _Layer]:
+def _build_layers(rects: tuple[tuple[int, int, int, int], ...], pending: bool) -> tuple[list[_Layer], _Layer]:
     if not rects:
         raise RuntimeError("no display available for AI control indicator")
     color = _AMBER if pending else _BLUE
@@ -147,14 +137,40 @@ def _build_layers(
             strips = (
                 (left, top, width, border, "top"),
                 (left, bottom - border, width, border, "bottom"),
+                # The horizontal bitmaps include corner glow, leaving these
+                # vertical strips separate so corners are not blended twice.
                 (left, top + border, border, height - 2 * border, "left"),
                 (right - border, top + border, border, height - 2 * border, "right"),
             )
             for x, y, w, h, side in strips:
                 if w and h:
-                    layers.append(
-                        _Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}")
-                    )
+                    layers.append(_Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}"))
+            notice = _notice_bitmap(width)
+            if notice is not None:
+                notice_width, notice_height, bitmap = notice
+                # Narrow monitors retain the aura without letting its window spill onto a neighbor.
+                glow_pad = min(_NOTICE_GLOW_PAD, (width - notice_width) // 2)
+                if height <= border + notice_height + 2 * glow_pad:
+                    continue
+                notice_x = left + (width - notice_width) // 2
+                notice_y = top + border + glow_pad
+                layers.append(_Layer(
+                    notice_x - glow_pad,
+                    notice_y - glow_pad,
+                    notice_width + 2 * glow_pad,
+                    notice_height + 2 * glow_pad,
+                    _notice_glow_bitmap(notice_width, notice_height, color, glow_pad),
+                    f"{index}_notice_glow",
+                ))
+                layers.append(_Layer(
+                    notice_x,
+                    notice_y,
+                    notice_width,
+                    notice_height,
+                    bitmap,
+                    f"{index}_notice",
+                    breathes=False,
+                ))
         point = flash_overlay._POINT()
         if not _user32.GetCursorPos(ctypes.byref(point)):
             raise RuntimeError("cannot locate cursor for AI control indicator")
@@ -265,6 +281,8 @@ class _Indicator:
         rects: tuple[tuple[int, int, int, int], ...] = ()
         mode: bool | None = None
         visible = False
+        was_active = False
+        breath_started = 0.0
         try:
             self.heartbeat = time.monotonic()
             self.started.set()
@@ -276,6 +294,8 @@ class _Indicator:
                     active, pending = self.active, self.pending
                     suspended, version = self.suspended, self.version
                 if active:
+                    if not was_active:
+                        breath_started = time.monotonic()
                     current_rects = _monitor_rects()
                     if ring is None or current_rects != rects or mode != pending:
                         for layer in reversed(layers):
@@ -294,10 +314,17 @@ class _Indicator:
                             ring.hide()
                             visible = False
                     else:
+                        opacity = _breath_opacity(time.monotonic() - breath_started)
+                        for layer in layers:
+                            if layer.breathes:
+                                layer.set_opacity(opacity)
+                        if not pending:
+                            ring.set_opacity(opacity)
                         if not visible:
                             for layer in layers:
                                 layer.show()
-                            ring.show()
+                            if not pending:
+                                ring.show()
                             visible = True
                         if not pending:
                             point = flash_overlay._POINT()
@@ -311,6 +338,7 @@ class _Indicator:
                     if ring:
                         ring.hide()
                     visible = False
+                was_active = active
                 # Pump messages on the owning thread, including display events.
                 for layer in layers:
                     flash_overlay._pump_messages(layer.hwnd)

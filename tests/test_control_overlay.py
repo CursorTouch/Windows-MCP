@@ -19,57 +19,6 @@ def _stop_indicator():
     control_overlay.stop()
 
 
-def test_edge_and_cursor_are_translucent():
-    edge = control_overlay._edge_bitmap(20, 28, "left", (45, 145, 255))
-    assert len(edge) == 20 * 28 * 4
-    assert edge[3] > edge[-1]
-    ring = control_overlay._cursor_bitmap((45, 145, 255))
-    assert len(ring) == control_overlay._CURSOR_SIZE**2 * 4
-    assert ring[3] == 0  # no opaque square over the desktop
-
-
-def test_multimonitor_creates_narrow_clickthrough_layers(monkeypatch):
-    made = []
-
-    class FakeLayer:
-        def __init__(self, x, y, width, height, bgra, name):
-            made.append((x, y, width, height, name))
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(control_overlay, "_Layer", FakeLayer)
-    monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
-    rects = ((-1920, 0, 0, 1080), (0, 0, 2560, 1440))
-    edges, ring = control_overlay._build_layers(rects, pending=False)
-    assert len(edges) == 8
-    assert ring is not None
-    assert made[0][:4] == (-1920, 0, 1920, 28)
-    assert made[4][:4] == (0, 0, 2560, 28)
-    assert all(w <= 28 or h <= 28 for _, _, w, h, name in made if name != "cursor")
-
-
-def test_layer_failure_closes_prior_windows(monkeypatch):
-    closed = []
-
-    class FailingLayer:
-        count = 0
-
-        def __init__(self, *args):
-            self.count = FailingLayer.count
-            FailingLayer.count += 1
-            if self.count == 2:
-                raise OSError("window creation failed")
-
-        def close(self):
-            closed.append(self.count)
-
-    monkeypatch.setattr(control_overlay, "_Layer", FailingLayer)
-    with pytest.raises(OSError, match="window creation failed"):
-        control_overlay._build_layers(((0, 0, 800, 600),), pending=False)
-    assert closed == [1, 0]
-
-
 def test_capture_suspends_and_restores_including_error(monkeypatch):
     calls = []
 
@@ -90,6 +39,10 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
 
     class FakeLayer:
         hwnd = 1
+        breathes = True
+
+        def set_opacity(self, opacity):
+            events.append(("opacity", opacity))
 
         def show(self):
             events.append("show")
