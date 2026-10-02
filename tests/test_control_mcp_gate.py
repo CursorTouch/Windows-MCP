@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import socket
 import threading
 import time
@@ -14,6 +15,13 @@ from fastmcp import Client, FastMCP
 from windows_mcp.desktop.control import ControlBlocked, ControlCoordinator, current_token
 from windows_mcp.desktop.control_ledger import InputLedger
 from windows_mcp.tools.control_notifications import ControlNotifier, ControlToolGate
+
+
+def _legacy_notification_client(transport, **kwargs):
+    """Use the sessionful era required for unsolicited logs on FastMCP 4."""
+    if "mode" in inspect.signature(Client).parameters:
+        kwargs["mode"] = "legacy"
+    return Client(transport, **kwargs)
 
 
 class FakeController:
@@ -518,7 +526,7 @@ async def test_live_mcp_client_receives_unsolicited_state_log():
 
     notifier.start()
     try:
-        async with Client(mcp, log_handler=on_log) as client:
+        async with _legacy_notification_client(mcp, log_handler=on_log) as client:
             await client.call_tool("ControlStatus")  # Registers the live session.
             controller.emit("ai")
             controller.emit("user")
@@ -562,7 +570,9 @@ async def test_stateful_http_client_receives_unsolicited_state_log():
             await asyncio.sleep(0.01)
         assert server.started
         notifier.start()
-        async with Client(f"http://127.0.0.1:{port}/mcp", log_handler=on_log) as client:
+        async with _legacy_notification_client(
+            f"http://127.0.0.1:{port}/mcp", log_handler=on_log
+        ) as client:
             await client.call_tool("ControlStatus")
             controller.emit("ai")
             controller.emit("user")
