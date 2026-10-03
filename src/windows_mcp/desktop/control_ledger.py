@@ -15,7 +15,10 @@ class InputUnavailable(ToolError):
 class InputLedger:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._holds: dict[str, tuple[Callable[[], None], Callable[[], bool]]] = {}
+        # The optional receipt binds a cross-call hold to one exact gesture.
+        self._holds: dict[
+            str, tuple[Callable[[], None], Callable[[], bool], str | None, object | None]
+        ] = {}
         self._blocked = False
 
     def block_new(self) -> None:
@@ -33,36 +36,70 @@ class InputLedger:
         send_down: Callable[[], None],
         send_up: Callable[[], None],
         physical_down_delivered: Callable[[], bool],
+        *,
+        owner: str | None = None,
+        receipt: object | None = None,
     ) -> None:
         """Record before injection: a send routine may inject and then raise."""
+        if (owner is None) != (receipt is None):
+            raise ValueError("owner and receipt must be provided together")
         with self._lock:
             if self._blocked:
                 raise InputUnavailable("AI input is unavailable")
             if name in self._holds:
                 raise RuntimeError(f"AI input already held: {name}")
-            self._holds[name] = (send_up, physical_down_delivered)
+            self._holds[name] = (send_up, physical_down_delivered, owner, receipt)
             try:
                 # Keep the lock through injection so a watchdog cannot send
                 # up before the matching down has actually reached Windows.
                 send_down()
             except BaseException:
                 try:
-                    self.release(name)
+                    self.release(name, owner=owner, receipt=receipt)
                 except Exception:
                     pass  # Keep the entry for shutdown's second attempt.
                 raise
 
-    def release(self, name: str) -> None:
+    def release(
+        self, name: str, *, owner: str | None = None, receipt: object | None = None
+    ) -> bool:
+        """Release this hold only if an optional gesture receipt still matches."""
+        if (owner is None) != (receipt is None):
+            raise ValueError("owner and receipt must be provided together")
         with self._lock:
             entry = self._holds.get(name)
             if entry is None:
-                return
-            send_up, physical_down_delivered = entry
+                return False
+            send_up, physical_down_delivered, held_owner, held_receipt = entry
+            if owner is not None and (held_owner != owner or held_receipt is not receipt):
+                return False
             # If a physical down reached the app after takeover, its own up
             # will clear the state. Injecting another up would steal the key.
             if not physical_down_delivered():
                 send_up()
             self._holds.pop(name, None)
+            return True
+
+    def owns(self, name: str, owner: str, receipt: object) -> bool:
+        """Check whether an exact gesture still owns its injected down."""
+        with self._lock:
+            entry = self._holds.get(name)
+            return entry is not None and entry[2] == owner and entry[3] is receipt
+
+    def pending_entries(self) -> tuple[tuple[str, str | None], ...]:
+        """Return a compact ownership snapshot for the desktop control gate."""
+        with self._lock:
+            return tuple((name, entry[2]) for name, entry in self._holds.items())
+
+    def pointer_hold_state(self) -> bool | None:
+        """None: no hold; True: one Pointer mouse hold; False: unsafe hold."""
+        with self._lock:
+            if not self._holds:
+                return None
+            if len(self._holds) != 1:
+                return False
+            name, entry = next(iter(self._holds.items()))
+            return name in {"mouse:left", "mouse:right", "mouse:middle"} and entry[2] == "Pointer"
 
     def release_all(self) -> None:
         with self._lock:

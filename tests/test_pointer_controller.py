@@ -3,6 +3,7 @@ from collections.abc import Callable
 import pytest
 
 from windows_mcp.desktop import pointer
+from windows_mcp.desktop.control import ControlCoordinator
 from windows_mcp.desktop.pointer import PointerController
 from windows_mcp.desktop.service import Desktop
 
@@ -40,6 +41,13 @@ class FailingTimerFactory:
         raise RuntimeError("timer setup failed")
 
 
+@pytest.fixture(autouse=True)
+def isolated_input_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A held gesture in one test must never leak into another test's ledger."""
+    owner = ControlCoordinator()
+    monkeypatch.setattr(pointer, "get_controller", lambda: owner)
+
+
 def _mouse_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, ...]]:
     calls: list[tuple[object, ...]] = []
 
@@ -52,8 +60,8 @@ def _mouse_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, ...]]:
     monkeypatch.setattr(pointer.uia, "ReleaseMouse", record("release-left"))
     monkeypatch.setattr(pointer.uia, "RightReleaseMouse", record("release-right"))
     monkeypatch.setattr(pointer.uia, "MiddleReleaseMouse", record("release-middle"))
-    monkeypatch.setattr(pointer.uia, "MoveTo", record("move"))
-    monkeypatch.setattr(pointer.uia, "MoveToDuration", record("move-duration"))
+    monkeypatch.setattr(pointer.uia, "GetCursorPos", lambda: (1, 2))
+    monkeypatch.setattr(pointer.uia, "SetCursorPos", record("set-pos"))
     return calls
 
 
@@ -102,7 +110,7 @@ def test_pointer_move_supports_immediate_and_duration_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _mouse_calls(monkeypatch)
-    controller = PointerController(timer_factory=TimerFactory())
+    controller = PointerController(timer_factory=TimerFactory(), sleeper=lambda _: None)
     controller.down([1, 2])
 
     immediate = controller.move([3, 4])
@@ -110,7 +118,8 @@ def test_pointer_move_supports_immediate_and_duration_paths(
 
     assert immediate["duration"] is None
     assert bounded["duration"] == 0.25
-    assert [call[0] for call in calls] == ["press-left", "move", "move-duration"]
+    assert [call[0] for call in calls] == ["press-left"] + ["set-pos"] * 14
+    assert calls[-1][1:3] == (5, 6)
     assert controller.held_button == "left"
 
 
@@ -197,7 +206,9 @@ def test_pointer_move_failure_releases_tracked_button(
     controller = PointerController(timer_factory=TimerFactory())
     controller.down([1, 2])
     monkeypatch.setattr(
-        pointer.uia, "MoveTo", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("move failed"))
+        pointer.uia,
+        "SetCursorPos",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("move failed")),
     )
 
     with pytest.raises(OSError, match="move failed"):
@@ -329,10 +340,11 @@ def test_pointer_press_and_compensation_failure_retains_retriable_ownership(
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("release failed")),
     )
 
-    with pytest.raises(OSError, match="release failed") as error:
+    with pytest.raises(OSError, match="press failed"):
         controller.down([1, 2])
 
-    assert str(error.value.__cause__) == "press failed"
+    # The ledger reports the original press error and retains the failed
+    # compensation for the timer/watchdog to retry.
     assert controller.held_button == "left"
     assert timers.timers[0].started is True
     assert timers.timers[0].cancelled is False

@@ -340,26 +340,27 @@ def _build_mcp() -> FastMCP:
             logger.debug("Server started, entering main loop")
             yield
         finally:
-            await notifier.close()
             try:
-                # Release the stateful Pointer hold before stopping the
-                # controller, whose input ledger provides a final retry.
-                if desktop:
-                    try:
-                        desktop.close()
-                    except Exception:
-                        logger.exception("Failed to release desktop input during shutdown")
-                controller.stop()
+                await notifier.close()
             finally:
                 try:
-                    control_overlay.stop()
+                    # Release Pointer before the controller's ledger retry.
+                    if desktop:
+                        try:
+                            desktop.close()
+                        except Exception:
+                            logger.exception("Failed to release desktop input during shutdown")
+                    controller.stop()
                 finally:
-                    logger.debug("Shutting down: stopping watchdog and analytics")
-                    if watchdog:
-                        watchdog.stop()
-                    if analytics:
-                        await analytics.close()
-                    control_loop = None
+                    try:
+                        control_overlay.stop()
+                    finally:
+                        logger.debug("Shutting down: stopping watchdog and analytics")
+                        if watchdog:
+                            watchdog.stop()
+                        if analytics:
+                            await analytics.close()
+                        control_loop = None
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
     _mcp.add_middleware(ControlToolGate(controller, notifier))

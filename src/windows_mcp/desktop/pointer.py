@@ -4,9 +4,11 @@ from collections.abc import Callable
 import logging
 import math
 from threading import RLock, Timer
+from time import sleep
 from typing import Literal
 
 import windows_mcp.uia as uia
+from windows_mcp.desktop.control import get_controller
 
 
 MouseButton = Literal["left", "right", "middle"]
@@ -80,18 +82,41 @@ class PointerController:
     def __init__(
         self,
         timer_factory: Callable[[float, Callable[[], None]], Timer] = Timer,
+        *,
+        control=None,
+        sleeper: Callable[[float], None] = sleep,
     ) -> None:
         self._lock = RLock()
         self._button: MouseButton | None = None
+        self._receipt: object | None = None
         self._timer: Timer | None = None
         self._generation = 0
         self._timer_factory = timer_factory
+        self._control = control if control is not None else get_controller()
+        self._sleep = sleeper
 
     @property
     def held_button(self) -> MouseButton | None:
         """Return the button currently held by this controller."""
         with self._lock:
+            self._owns_locked()
             return self._button
+
+    def _owns_locked(self) -> bool:
+        """Discard a gesture already released by takeover or the watchdog."""
+        if self._button is None:
+            return False
+        receipt = self._receipt
+        if receipt is not None and self._control.input_ledger.owns(
+            f"mouse:{self._button}", "Pointer", receipt
+        ):
+            return True
+        self._clear_locked(cancel_timer=True)
+        return False
+
+    def _owns_receipt_locked(self, button: MouseButton, receipt: object) -> bool:
+        """A delayed move must never attach itself to a newer gesture."""
+        return self._button == button and self._receipt is receipt and self._owns_locked()
 
     @staticmethod
     def _press(button: MouseButton, x: int, y: int) -> None:
@@ -115,6 +140,7 @@ class PointerController:
         timer = self._timer
         self._timer = None
         self._button = None
+        self._receipt = None
         self._generation += 1
         if cancel_timer and timer is not None:
             timer.cancel()
@@ -122,10 +148,11 @@ class PointerController:
     def _release_owned_locked(self) -> None:
         """Release only this controller's button, not unrelated physical input."""
         button = self._button
-        if button is not None:
+        receipt = self._receipt
+        if button is not None and receipt is not None:
             # A failed Win32 release may leave the button down. Keep ownership
             # and the timer so cancel or a later timeout can retry safely.
-            self._release(button)
+            self._control.input_ledger.release(f"mouse:{button}", owner="Pointer", receipt=receipt)
         self._clear_locked(cancel_timer=True)
 
     def _timeout_release(self, generation: int, attempt: int = 1) -> None:
@@ -137,7 +164,9 @@ class PointerController:
             except Exception:
                 logger.exception("Automatic pointer release failed")
                 if attempt >= MAX_RELEASE_ATTEMPTS:
-                    # Keep ownership visible for an explicit cancel retry.
+                    # Keep the ledger entry for the watchdog and stop physical
+                    # interception rather than holding the desktop forever.
+                    self._control._fail_open()
                     return
                 try:
                     timer = self._timer_factory(
@@ -149,6 +178,9 @@ class PointerController:
                     timer.start()
                 except Exception:
                     logger.exception("Failed to schedule pointer release retry")
+                    # A missing retry timer cannot justify keeping physical
+                    # input intercepted while this AI hold remains unresolved.
+                    self._control._fail_open()
 
     def down(
         self,
@@ -162,11 +194,15 @@ class PointerController:
         normalized_timeout = normalize_pointer_timeout(timeout)
 
         with self._lock:
+            self._control.checkpoint_current()
+            self._owns_locked()
             if self._button is not None:
                 raise RuntimeError(
                     f"Cannot press {normalized_button}; {self._button} mouse button is already held"
                 )
             self._button = normalized_button
+            receipt = object()
+            self._receipt = receipt
             self._generation += 1
             generation = self._generation
             try:
@@ -184,14 +220,19 @@ class PointerController:
                 raise
 
             try:
-                self._press(normalized_button, x, y)
-            except BaseException as press_error:
-                try:
-                    self._release(normalized_button)
-                except BaseException as release_error:
-                    # Keep the tracked state and timer for a later retry.
-                    raise release_error from press_error
-                self._clear_locked(cancel_timer=True)
+                self._control.input_ledger.press(
+                    f"mouse:{normalized_button}",
+                    lambda: self._press(normalized_button, x, y),
+                    lambda: self._release(normalized_button),
+                    lambda: self._control.physical_mouse_down(normalized_button),
+                    owner="Pointer",
+                    receipt=receipt,
+                )
+            except BaseException:
+                if not self._control.input_ledger.owns(
+                    f"mouse:{normalized_button}", "Pointer", receipt
+                ):
+                    self._clear_locked(cancel_timer=True)
                 raise
 
             return {
@@ -211,48 +252,73 @@ class PointerController:
         normalized_duration = normalize_pointer_duration(duration)
 
         with self._lock:
-            if self._button is None:
+            if not self._owns_locked():
                 raise RuntimeError("Cannot move pointer because no mouse button is held")
-            button = self._button
-            try:
-                if normalized_duration is None:
-                    uia.MoveTo(x, y, moveSpeed=10, waitTime=0.05)
-                else:
-                    uia.MoveToDuration(x, y, normalized_duration, waitTime=0.05)
-            except BaseException as move_error:
-                try:
-                    self._release(button)
-                except BaseException as release_error:
-                    raise release_error from move_error
-                else:
-                    self._clear_locked(cancel_timer=True)
-                raise
+            button, receipt = self._button, self._receipt
+            assert button is not None and receipt is not None
+        try:
+            if normalized_duration is None:
+                with self._lock:
+                    self._control.checkpoint_current()
+                    if not self._owns_receipt_locked(button, receipt):
+                        raise RuntimeError("Pointer gesture was released")
+                    # An unsmoothed move is one bounded input step.
+                    uia.SetCursorPos(x, y)
+                    self._control.record_step_current()
+            else:
+                start_x, start_y = uia.GetCursorPos()
+                steps = max(1, math.ceil(normalized_duration / 0.02))
+                for step in range(1, steps + 1):
+                    with self._lock:
+                        self._control.checkpoint_current()
+                        if not self._owns_receipt_locked(button, receipt):
+                            raise RuntimeError("Pointer gesture was released")
+                    # Do not hold the Pointer lock during sleep: its timer must
+                    # be able to release the button at the configured deadline.
+                    self._sleep(normalized_duration / steps)
+                    with self._lock:
+                        self._control.checkpoint_current()
+                        if not self._owns_receipt_locked(button, receipt):
+                            raise RuntimeError("Pointer gesture was released")
+                        uia.SetCursorPos(
+                            start_x + (x - start_x) * step // steps,
+                            start_y + (y - start_y) * step // steps,
+                        )
+                        self._control.record_step_current()
+        except BaseException as move_error:
+            with self._lock:
+                if self._receipt is receipt:
+                    try:
+                        self._release_owned_locked()
+                    except BaseException as release_error:
+                        raise release_error from move_error
+            raise
 
-            return {
-                "action": "move",
-                "button": button,
-                "loc": [x, y],
-                "duration": normalized_duration,
-            }
+        return {
+            "action": "move",
+            "button": button,
+            "loc": [x, y],
+            "duration": normalized_duration,
+        }
 
     def up(self, button: MouseButton | None = None) -> dict[str, object]:
         """Release the tracked mouse button, optionally asserting its identity."""
         normalized_button = normalize_pointer_button(button, allow_none=True)
         with self._lock:
-            if self._button is None:
+            if not self._owns_locked():
                 raise RuntimeError("Cannot release pointer because no mouse button is held")
             if normalized_button is not None and normalized_button != self._button:
                 raise RuntimeError(
                     f"Cannot release {normalized_button}; {self._button} mouse button is held"
                 )
             held_button = self._button
-            self._release(held_button)
-            self._clear_locked(cancel_timer=True)
+            self._release_owned_locked()
             return {"action": "up", "button": held_button}
 
     def cancel(self) -> dict[str, object]:
         """Release the tracked button and clear state without touching other buttons."""
         with self._lock:
+            self._owns_locked()
             held_button = self._button
             self._release_owned_locked()
             return {"action": "cancel", "button": held_button}
@@ -260,6 +326,7 @@ class PointerController:
     def close(self) -> None:
         """Release tracked input during a normal server shutdown."""
         with self._lock:
+            self._owns_locked()
             if self._button is None:
                 self._clear_locked(cancel_timer=True)
                 return
