@@ -277,7 +277,12 @@ def test_exact_helper_stops_after_foreground_change_and_detaches(monkeypatch):
 
     assert exc.value.code == "CONTROL_PREEMPTED"
     assert actions == [
-        "allow", ("attach", 2), ("attach", 3), "foreground", ("detach", 3), ("detach", 2)
+        "allow",
+        ("attach", 2),
+        ("attach", 3),
+        "foreground",
+        ("detach", 3),
+        ("detach", 2),
     ]
 
 
