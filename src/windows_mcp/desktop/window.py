@@ -291,7 +291,9 @@ class ExactWindowController:
         owner = get_controller()
         owner.checkpoint_current()
         if win32gui.GetForegroundWindow() != handle:
-            self._desktop.bring_window_to_top(handle)
+            # Foreground inspection itself can outlive a lease; recheck before the helper.
+            owner.checkpoint_current()
+            self._desktop.bring_window_to_top(handle, checkpoint=owner.checkpoint_current)
             owner.record_step_current()
         # Foreground activation can complete asynchronously. Match App's
         # convenience switch behavior by giving Windows a bounded interval.

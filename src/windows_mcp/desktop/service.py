@@ -14,14 +14,14 @@ from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState, Sema
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree
 from windows_mcp.desktop import screenshot as screenshot_capture
-from windows_mcp.desktop.control import get_controller
+from windows_mcp.desktop.control import ControlBlocked, get_controller
 from windows_mcp.desktop import flash_overlay
 from windows_mcp.desktop.window import ExactWindowController
 from windows_mcp.infrastructure import safe_get
 from windows_mcp.desktop import control_overlay
 from urllib.parse import urljoin
 from locale import getpreferredencoding
-from typing import Literal
+from typing import Callable, Literal
 from markdownify import markdownify
 from fuzzywuzzy import process
 from time import sleep, time, perf_counter
@@ -585,12 +585,17 @@ class Desktop:
         except Exception as e:
             return (f"Error switching app: {str(e)}", 1)
 
-    def bring_window_to_top(self, target_handle: int):
+    def bring_window_to_top(
+        self, target_handle: int, *, checkpoint: Callable[[], None] | None = None
+    ):
+        """Bring a window forward; exact mode may recheck ownership before each action."""
         if not win32gui.IsWindow(target_handle):
             raise ValueError("Invalid window handle")
 
         try:
             if win32gui.IsIconic(target_handle):
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.ShowWindow(target_handle, win32con.SW_RESTORE)
 
             foreground_handle = win32gui.GetForegroundWindow()
@@ -598,7 +603,11 @@ class Desktop:
             # Validate both handles before proceeding
             if not win32gui.IsWindow(foreground_handle):
                 # No valid foreground window, just try to set target as foreground
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.SetForegroundWindow(target_handle)
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.BringWindowToTop(target_handle)
                 return
 
@@ -620,16 +629,24 @@ class Desktop:
             current_tid = ctypes.windll.kernel32.GetCurrentThreadId()
 
             if not foreground_thread or not target_thread or foreground_thread == target_thread:
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.SetForegroundWindow(target_handle)
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.BringWindowToTop(target_handle)
                 return
 
+            if checkpoint is not None:
+                checkpoint()
             ctypes.windll.user32.AllowSetForegroundWindow(-1)
 
             attached_threads = []
             try:
                 for thread in (foreground_thread, target_thread):
                     if thread and thread != current_tid:
+                        if checkpoint is not None:
+                            checkpoint()
                         try:
                             win32process.AttachThreadInput(current_tid, thread, True)
                             attached_threads.append(thread)
@@ -642,9 +659,15 @@ class Desktop:
                                 f"(likely elevated process), skipping: {e}"
                             )
 
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.SetForegroundWindow(target_handle)
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.BringWindowToTop(target_handle)
 
+                if checkpoint is not None:
+                    checkpoint()
                 win32gui.SetWindowPos(
                     target_handle,
                     win32con.HWND_TOP,
@@ -659,6 +682,9 @@ class Desktop:
                 for tid in reversed(attached_threads):
                     win32process.AttachThreadInput(current_tid, tid, False)
 
+        except ControlBlocked:
+            # The MCP gate must see a takeover; the legacy path never supplies a checkpoint.
+            raise
         except Exception as e:
             logger.exception(f"Failed to bring window to top: {e}")
 

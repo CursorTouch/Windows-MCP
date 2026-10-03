@@ -13,7 +13,7 @@ class FakeDesktop:
     def __init__(self) -> None:
         self.activations: list[int] = []
 
-    def bring_window_to_top(self, handle: int) -> None:
+    def bring_window_to_top(self, handle: int, *, checkpoint: object = None) -> None:
         self.activations.append(handle)
 
 
@@ -326,7 +326,7 @@ def test_activate_stops_waiting_after_takeover(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(window_module, "get_controller", lambda: owner)
     _patch_window_api(monkeypatch, foreground=999)
 
-    def activate_then_take_over(handle: int) -> None:
+    def activate_then_take_over(handle: int, *, checkpoint: object = None) -> None:
         desktop.activations.append(handle)
         owner.state = "user"
 
