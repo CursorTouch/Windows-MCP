@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from windows_mcp.desktop import window as window_module
+from windows_mcp.desktop.control import ControlBlocked
 from windows_mcp.desktop.service import Desktop
 from windows_mcp.desktop.window import ExactWindowController
 
@@ -14,6 +15,23 @@ class FakeDesktop:
 
     def bring_window_to_top(self, handle: int) -> None:
         self.activations.append(handle)
+
+
+class FakeControlOwner:
+    """Model a lease revoked between two synchronous Win32 steps."""
+
+    def __init__(self) -> None:
+        self.state = "ai"
+        self.checkpoints = 0
+        self.steps = 0
+
+    def checkpoint_current(self) -> None:
+        self.checkpoints += 1
+        if self.state != "ai":
+            raise ControlBlocked("CONTROL_PREEMPTED", {"state": self.state})
+
+    def record_step_current(self) -> None:
+        self.steps += 1
 
 
 def _patch_window_api(
@@ -281,6 +299,8 @@ def test_activate_already_foreground_skips_redundant_switch(
 def test_activate_waits_for_delayed_foreground(monkeypatch: pytest.MonkeyPatch) -> None:
     desktop = FakeDesktop()
     controller = ExactWindowController(desktop)
+    owner = FakeControlOwner()
+    monkeypatch.setattr(window_module, "get_controller", lambda: owner)
     _patch_window_api(monkeypatch, foreground=999)
     foreground_reads = iter([999, 999, 100])
     monkeypatch.setattr(window_module.win32gui, "GetForegroundWindow", foreground_reads.__next__)
@@ -295,6 +315,29 @@ def test_activate_waits_for_delayed_foreground(monkeypatch: pytest.MonkeyPatch) 
     assert result["handle"] == 100
     assert desktop.activations == [100]
     assert elapsed[0] == 0.05
+    assert owner.checkpoints >= 3
+    assert owner.steps == 1
+
+
+def test_activate_stops_waiting_after_takeover(monkeypatch: pytest.MonkeyPatch) -> None:
+    desktop = FakeDesktop()
+    controller = ExactWindowController(desktop)
+    owner = FakeControlOwner()
+    monkeypatch.setattr(window_module, "get_controller", lambda: owner)
+    _patch_window_api(monkeypatch, foreground=999)
+
+    def activate_then_take_over(handle: int) -> None:
+        desktop.activations.append(handle)
+        owner.state = "user"
+
+    monkeypatch.setattr(desktop, "bring_window_to_top", activate_then_take_over)
+    monkeypatch.setattr(window_module, "sleep", lambda seconds: pytest.fail("must not wait"))
+
+    with pytest.raises(ControlBlocked, match="CONTROL_PREEMPTED"):
+        controller.activate_exact_window(handle=100, process_id=200)
+
+    assert desktop.activations == [100]
+    assert owner.steps == 1
 
 
 def test_activate_fails_when_readback_differs(
@@ -346,8 +389,9 @@ def test_set_client_bounds_converts_and_verifies_actual_bounds(
 def test_set_client_bounds_corrects_native_frame_prediction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    desktop = FakeDesktop()
-    controller = ExactWindowController(desktop)
+    controller = ExactWindowController(FakeDesktop())
+    owner = FakeControlOwner()
+    monkeypatch.setattr(window_module, "get_controller", lambda: owner)
     moves = _patch_window_api(monkeypatch)
     monkeypatch.setattr(
         controller,
@@ -368,6 +412,50 @@ def test_set_client_bounds_corrects_native_frame_prediction(
     assert result["client"]["top"] == 70
     assert result["client"]["width"] == 300
     assert result["client"]["height"] == 200
+    assert owner.steps == 2
+
+
+def test_set_bounds_stops_before_correction_after_takeover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = ExactWindowController(FakeDesktop())
+    owner = FakeControlOwner()
+    monkeypatch.setattr(window_module, "get_controller", lambda: owner)
+    moves = _patch_window_api(monkeypatch)
+    original_move = window_module.win32gui.MoveWindow
+    monkeypatch.setattr(
+        controller,
+        "_outer_bounds_for_client",
+        lambda handle, client: (23, 48, 316, 220),
+    )
+
+    def move_then_take_over(*args: object) -> None:
+        original_move(*args)
+        owner.state = "user"
+
+    monkeypatch.setattr(window_module.win32gui, "MoveWindow", move_then_take_over)
+
+    with pytest.raises(ControlBlocked, match="CONTROL_PREEMPTED"):
+        controller.set_exact_window_bounds(handle=100, client=[30, 70, 300, 200])
+
+    assert moves == [(100, 23, 48, 316, 220, True)]
+    assert owner.steps == 1
+
+
+def test_set_bounds_preempted_before_first_move_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = ExactWindowController(FakeDesktop())
+    owner = FakeControlOwner()
+    owner.state = "user"
+    monkeypatch.setattr(window_module, "get_controller", lambda: owner)
+    moves = _patch_window_api(monkeypatch)
+
+    with pytest.raises(ControlBlocked, match="CONTROL_PREEMPTED"):
+        controller.set_exact_window_bounds(handle=100, outer=[30, 40, 300, 200])
+
+    assert moves == []
+    assert owner.steps == 0
 
 
 def test_set_bounds_reports_actual_geometry_on_timeout(

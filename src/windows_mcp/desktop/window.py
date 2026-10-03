@@ -14,6 +14,7 @@ import win32gui
 import win32process
 
 import windows_mcp.uia as uia
+from windows_mcp.desktop.control import get_controller
 from windows_mcp.desktop.views import Status
 
 
@@ -287,12 +288,16 @@ class ExactWindowController:
             ValueError: If the window is invalid, changed, or cannot be activated.
         """
         self._require_exact_window(handle, process_id, process, title, title_match)
+        owner = get_controller()
+        owner.checkpoint_current()
         if win32gui.GetForegroundWindow() != handle:
             self._desktop.bring_window_to_top(handle)
+            owner.record_step_current()
         # Foreground activation can complete asynchronously. Match App's
         # convenience switch behavior by giving Windows a bounded interval.
         deadline = perf_counter() + 1.0
         while True:
+            owner.checkpoint_current()
             foreground_handle = win32gui.GetForegroundWindow()
             if foreground_handle == handle:
                 break
@@ -342,7 +347,11 @@ class ExactWindowController:
         else:
             x, y, width, height = self._outer_bounds_for_client(handle, client)
 
+        # The MCP gate checks only at call entry; recheck after identity work.
+        owner = get_controller()
+        owner.checkpoint_current()
         win32gui.MoveWindow(handle, x, y, width, height, True)
+        owner.record_step_current()
         return self._wait_for_exact_window_bounds(
             handle=handle,
             process_id=process_id,
@@ -411,9 +420,12 @@ class ExactWindowController:
         client: list[int] | None,
         timeout: float = 2.0,
     ) -> dict[str, object]:
+        owner = get_controller()
+        owner.checkpoint_current()
         deadline = perf_counter() + timeout
         last_identity = self._require_exact_window(handle, process_id, process, title, title_match)
         while True:
+            owner.checkpoint_current()
             target = outer or client
             bounds_type = "outer" if outer is not None else "client"
             if self._bounds_match_with_tolerance(last_identity[bounds_type], target):
@@ -426,6 +438,8 @@ class ExactWindowController:
             if client is not None:
                 actual_client = last_identity["client"]
                 actual_outer = last_identity["outer"]
+                # A user takeover during readback must prevent a correction.
+                owner.checkpoint_current()
                 win32gui.MoveWindow(
                     handle,
                     actual_outer["left"] + client[0] - actual_client["left"],
@@ -434,6 +448,7 @@ class ExactWindowController:
                     actual_outer["height"] + client[3] - actual_client["height"],
                     True,
                 )
+                owner.record_step_current()
             sleep(0.05)
             last_identity = self._require_exact_window(
                 handle,
