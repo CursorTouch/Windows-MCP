@@ -33,7 +33,12 @@ _BLUE = (45, 145, 255)
 _AMBER = (255, 170, 55)
 
 _user32 = ctypes.windll.user32
-_user32.GetCursorPos.argtypes = [ctypes.POINTER(flash_overlay._POINT)]
+# wintypes.POINT, not flash_overlay._POINT: ctypes.windll caches one user32 object per
+# process, so this argtypes is process-global. Declaring a private struct here broke
+# every other GetCursorPos caller in the process (uia.core passes wintypes.POINT),
+# which broke Screenshot/Snapshot cursor tracking with
+# "expected LP__POINT instance instead of pointer to POINT".
+_user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 _user32.GetCursorPos.restype = wintypes.BOOL
 _user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 _user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
@@ -187,7 +192,7 @@ def _build_layers(
                         breathes=False,
                     )
                 )
-        point = flash_overlay._POINT()
+        point = wintypes.POINT()
         if not _user32.GetCursorPos(ctypes.byref(point)):
             raise RuntimeError("cannot locate cursor for AI control indicator")
         ring = _Layer(
@@ -343,7 +348,7 @@ class _Indicator:
                                 ring.show()
                             visible = True
                         if not pending:
-                            point = flash_overlay._POINT()
+                            point = wintypes.POINT()
                             if _user32.GetCursorPos(ctypes.byref(point)):
                                 ring.move(point.x - _CURSOR_SIZE // 2, point.y - _CURSOR_SIZE // 2)
                         else:
