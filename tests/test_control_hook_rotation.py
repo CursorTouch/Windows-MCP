@@ -9,7 +9,7 @@ from windows_mcp.desktop import control, control_win32
 from windows_mcp.desktop.control_ledger import InputUnavailable
 
 
-def _fake_user32(handles, events):
+def _fake_user32(handles, events, on_idle=None):
     hooks = deque(handles)
 
     def install(kind, callback, instance, thread_id):
@@ -25,6 +25,11 @@ def _fake_user32(handles, events):
         events.append(("raw", count))
         return 1
 
+    def wait_for_input(count, handle, timeout, wake_mask, flags):
+        if on_idle is not None:
+            on_idle(timeout, wake_mask, flags)
+        return 0
+
     return SimpleNamespace(
         SetWindowsHookExW=install,
         UnhookWindowsHookEx=unhook,
@@ -37,17 +42,26 @@ def _fake_user32(handles, events):
         DefWindowProcW=lambda *args: 0,
         DestroyWindow=lambda hwnd: events.append(("destroy", hwnd)),
         UnregisterClassW=lambda *args: events.append(("unregister",)),
+        MsgWaitForMultipleObjectsEx=wait_for_input,
     )
 
 
 def _run_monitor(monkeypatch, handles, *, active=False):
     events = []
-    user32 = _fake_user32(handles, events)
+    waits = []
+    clock = [100.0]
+    owner = control.ControlCoordinator()
+
+    def advance(timeout, wake_mask, flags):
+        waits.append((timeout, wake_mask, flags))
+        clock[0] += 5.01
+        if len(waits) == 2:
+            owner._stop.set()
+
+    user32 = _fake_user32(handles, events, on_idle=advance)
     monkeypatch.setattr(control, "_user32", user32)
     monkeypatch.setattr(control_win32, "_user32", user32)
-    clock = [100.0]
     monkeypatch.setattr(control_win32.time, "monotonic", lambda: clock[0])
-    owner = control.ControlCoordinator()
     releases = []
     if active:
         with owner._lock:
@@ -59,17 +73,12 @@ def _run_monitor(monkeypatch, handles, *, active=False):
             lambda: releases.append("up"),
             lambda: False,
         )
-    sleeps = []
-
-    def advance(seconds):
-        sleeps.append(seconds)
-        clock[0] += 5.01
-        if len(sleeps) == 2:
-            owner._stop.set()
-
-    monkeypatch.setattr(control_win32.time, "sleep", advance)
+    # The idle path must block on Win32 input, never on a fixed sleep.
+    polling = []
+    monkeypatch.setattr(control_win32.time, "sleep", lambda seconds: polling.append(seconds))
     control_win32.run_input_monitor(owner)
-    return owner, events, sleeps, releases
+    assert polling == []
+    return owner, events, waits, releases
 
 
 def test_hook_rotation_replaces_only_after_both_installations(monkeypatch):
@@ -91,9 +100,10 @@ def test_hook_rotation_replaces_only_after_both_installations(monkeypatch):
 
 
 def test_input_monitor_rotates_after_interval_and_cleans_hooks(monkeypatch):
-    owner, events, sleeps, _ = _run_monitor(monkeypatch, [11, 12, 21, 22])
+    owner, events, waits, _ = _run_monitor(monkeypatch, [11, 12, 21, 22])
     assert owner._startup_error is None
-    assert len(sleeps) == 2
+    # The pump parks on the full input queue so queued input is never missed.
+    assert waits == [(10, 0x04FF, 0x0006), (10, 0x04FF, 0x0006)]
     assert events.index(("install", 14, 21)) < events.index(("unhook", 11))
     assert events.index(("install", 13, 22)) < events.index(("unhook", 12))
     assert events[-5:] == [

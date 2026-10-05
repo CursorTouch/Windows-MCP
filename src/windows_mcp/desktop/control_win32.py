@@ -133,6 +133,14 @@ _user32.GetRawInputData.argtypes = [
 _user32.GetRawInputData.restype = wintypes.UINT
 _user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 _user32.DefWindowProcW.restype = _LRESULT
+_user32.MsgWaitForMultipleObjectsEx.argtypes = [
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.DWORD,
+]
+_user32.MsgWaitForMultipleObjectsEx.restype = wintypes.DWORD
 _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 _kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
 _wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
@@ -147,6 +155,14 @@ _wts.WTSQuerySessionInformationW.restype = wintypes.BOOL
 _wts.WTSFreeMemory.argtypes = [ctypes.c_void_p]
 
 _CHORD = {0x10, 0x11, 0x12, 0x08}
+
+# The hook pump must block instead of polling: low-level hooks are delivered on
+# the thread that installed them, so every millisecond spent idling there is
+# charged in full to the next SendInput caller (and to physical input).
+_QS_ALLINPUT = 0x04FF  # Keyboard, mouse, raw input, posted messages and timers.
+_MWMO_INPUTAVAILABLE = 0x0004  # Wake on input already queued, not just new input.
+_MWMO_ALERTABLE = 0x0002  # Same alertability GetMessage gives a normal UI pump.
+_IDLE_WAIT_MS = 10  # Upper bound on how long the pump may stay idle between ticks.
 
 
 def _key(vk: int) -> int:
@@ -294,7 +310,13 @@ def run_input_monitor(owner: Any) -> None:
                     owner._recover_after_rehook()
                 finally:
                     owner._rotating = False
-            time.sleep(0.01)
+            # Block until there is something to pump instead of sleeping past it.
+            # A low-level hook is delivered on this thread, so an unconditional
+            # sleep here is a fixed tax on the latency of every injected and
+            # physical event: it wakes only when input actually arrives.
+            _user32.MsgWaitForMultipleObjectsEx(
+                0, None, _IDLE_WAIT_MS, _QS_ALLINPUT, _MWMO_INPUTAVAILABLE | _MWMO_ALERTABLE
+            )
     except Exception as exc:
         owner._startup_error = exc
         owner._fail_open()
