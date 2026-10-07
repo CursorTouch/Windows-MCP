@@ -26,7 +26,7 @@ def register(mcp, *, get_desktop, get_analytics):
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "Multi-Select-Tool")
+    @with_analytics(get_analytics(), "Multi-Select-Tool", run_sync_in_thread=False)
     def multi_select_tool(
         locs: list[list[int]] | str | None = None,
         labels: list[int] | str | None = None,
@@ -66,7 +66,7 @@ def register(mcp, *, get_desktop, get_analytics):
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "Multi-Edit-Tool")
+    @with_analytics(get_analytics(), "Multi-Edit-Tool", run_sync_in_thread=False)
     def multi_edit_tool(
         locs: list[list] | str | None = None,
         labels: list[list] | str | None = None,

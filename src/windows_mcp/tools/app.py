@@ -85,7 +85,7 @@ def register(mcp, *, get_desktop, get_analytics):
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "App-Tool")
+    @with_analytics(get_analytics(), "App-Tool", run_sync_in_thread=False)
     def app_tool(
         mode: Literal["launch", "launch_executable", "resize", "switch"] = "launch",
         name: str | None = None,

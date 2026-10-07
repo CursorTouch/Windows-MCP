@@ -144,9 +144,25 @@ class PostHogAnalytics:
             logger.debug("Closed analytics")
 
 
-def with_analytics(analytics_instance: Analytics | None, tool_name: str):
+def with_analytics(
+    analytics_instance: Analytics | None,
+    tool_name: str,
+    *,
+    run_sync_in_thread: bool = True,
+):
     """
     Decorator to wrap tool functions with analytics tracking.
+
+    Args:
+        analytics_instance: Analytics client, or None to skip tracking entirely.
+        tool_name: Tool name recorded with each analytics event.
+        run_sync_in_thread: For a synchronous ``func``, dispatch the call to a worker
+            thread so it cannot block the event loop (the default). Set to False to
+            call ``func`` inline on the event-loop thread, which is required for
+            thread-affine libraries: the shared ``Desktop`` holds UIAutomation /
+            comtypes state constructed on the event loop during the MCP lifespan, so
+            using it from a worker thread silently observes an empty desktop. Ignored
+            for async ``func``.
     """
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
@@ -179,9 +195,13 @@ def with_analytics(analytics_instance: Analytics | None, tool_name: str):
             try:
                 if inspect.iscoroutinefunction(func):
                     result = await func(*args, **kwargs)
-                else:
+                elif run_sync_in_thread:
                     # Run sync function in thread to avoid blocking loop
                     result = await asyncio.to_thread(func, *args, **kwargs)
+                else:
+                    # Thread-affinity mode: keep synchronous UIAutomation/comtypes work
+                    # on the event-loop thread that constructed the shared Desktop.
+                    result = func(*args, **kwargs)
 
                 duration_ms = int((time.time() - start) * 1000)
 

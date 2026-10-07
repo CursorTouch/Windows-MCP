@@ -234,7 +234,7 @@ def register(
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "Click-Tool")
+    @with_analytics(get_analytics(), "Click-Tool", run_sync_in_thread=False)
     def click_tool(
         loc: list[int] | str | None = None,
         label: int | None = None,
@@ -266,7 +266,7 @@ def register(
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "Type-Tool")
+    @with_analytics(get_analytics(), "Type-Tool", run_sync_in_thread=False)
     def type_tool(
         text: str,
         loc: list[int] | str | None = None,
@@ -307,7 +307,7 @@ def register(
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "Scroll-Tool")
+    @with_analytics(get_analytics(), "Scroll-Tool", run_sync_in_thread=False)
     def scroll_tool(
         loc: list[int] | str | None = None,
         label: int | None = None,
@@ -350,7 +350,7 @@ def register(
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "Move-Tool")
+    @with_analytics(get_analytics(), "Move-Tool", run_sync_in_thread=False)
     def move_tool(
         loc: list[int] | str | None = None,
         label: int | None = None,
@@ -451,7 +451,7 @@ def register(
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "WaitFor-Tool")
+    @with_analytics(get_analytics(), "WaitFor-Tool", run_sync_in_thread=False)
     def wait_for_tool(
         condition: str,
         text: str | None = None,

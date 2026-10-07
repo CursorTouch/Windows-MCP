@@ -33,7 +33,7 @@ def register(mcp, *, get_desktop, get_analytics):
             openWorldHint=False,
         ),
     )
-    @with_analytics(get_analytics(), "State-Tool")
+    @with_analytics(get_analytics(), "State-Tool", run_sync_in_thread=False)
     def _state_tool(
         use_vision: bool | str = False,
         use_dom: bool | str = False,
