@@ -13,8 +13,10 @@ from windows_mcp.tree import ia2 as ia2_traversal
 from typing import TYPE_CHECKING,Optional,Any
 from time import sleep,perf_counter
 from _ctypes import COMError
+from psutil import Process
 import logging
 import weakref
+import win32process
 import os
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,43 @@ _COMTYPES_AUTOMATION_PATH_FRAGMENT = "comtypes/automation.py"
 def _snapshot_profile_enabled() -> bool:
     value = os.getenv("WINDOWS_MCP_PROFILE_SNAPSHOT", "")
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _excluded_process_names(env: "os._Environ[str] | dict[str, str] | None" = None) -> set[str]:
+    """Read the UI Automation traversal exclusion list from the environment.
+
+    Args:
+        env: Mapping to read from. Defaults to ``os.environ``.
+
+    Returns:
+        Case-folded process basenames listed in
+        ``WINDOWS_MCP_EXCLUDE_PROCESSES``, or an empty set when the variable is
+        unset or holds no non-blank entry.
+    """
+    source = os.environ if env is None else env
+    raw = source.get("WINDOWS_MCP_EXCLUDE_PROCESSES", "")
+    return {part.strip().casefold() for part in raw.split(",") if part.strip()}
+
+
+def _window_process_name(handle: int) -> Optional[str]:
+    """Return the executable basename that owns `handle`.
+
+    Resolves HWND -> PID -> process name using Win32 and psutil only, never UI
+    Automation: an excluded window's accessibility provider must not be entered
+    just to decide whether to skip it.
+
+    Returns:
+        The process name, or None when no owning process can be resolved. A None
+        result is treated as "not excluded" so traversal falls back to its
+        previous behaviour.
+    """
+    try:
+        _, pid = win32process.GetWindowThreadProcessId(handle)
+        if not pid:
+            return None
+        return Process(pid).name()
+    except Exception:
+        return None
 
 
 def _is_comtypes_variant_ord_typeerror(error: TypeError) -> bool:
@@ -192,13 +231,28 @@ class Tree:
         causing cross-apartment marshaling deadlocks when the main thread also does
         COM operations (ControlFromHandle, is_window_browser). Sequential processing
         keeps all UIA COM calls in the main thread's STA.
+
+        Windows whose owning process is listed in ``WINDOWS_MCP_EXCLUDE_PROCESSES``
+        are skipped before any UIA call, so their accessibility providers are never
+        entered. Skipped windows are neither traversed nor reported as failures.
         """
         interactive_nodes, scrollable_nodes, dom_informative_nodes = [], [], []
         failed_handles = []
         window_sem_nodes: list[SemanticNode] = []
 
+        excluded_processes = _excluded_process_names()
         task_inputs = []
         for handle in windows_handles:
+            if excluded_processes:
+                # Resolve the owning process before any UIA call: entering an
+                # excluded provider is the very thing this skip exists to avoid.
+                process_name = _window_process_name(handle)
+                if process_name and process_name.casefold() in excluded_processes:
+                    logger.debug(
+                        "[Tree] Skipping UIA traversal for excluded process %s",
+                        process_name,
+                    )
+                    continue
             is_browser = False
             try:
                 temp_node = ControlFromHandle(handle)
