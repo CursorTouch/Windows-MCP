@@ -7,6 +7,11 @@ from windows_mcp.infrastructure.security import (
     safe_get,
     validate_url,
 )
+from windows_mcp.infrastructure.thread_affinity import (
+    is_uia_thread,
+    run_uia_affine,
+    uia_thread_id,
+)
 from windows_mcp.infrastructure.analytics import Analytics, PostHogAnalytics, with_analytics
 from windows_mcp.infrastructure.config import (
     WindowsMCPConfig,
@@ -30,6 +35,9 @@ __all__ = [
     "parse_ip_allowlist",
     "safe_get",
     "validate_url",
+    "is_uia_thread",
+    "run_uia_affine",
+    "uia_thread_id",
     "Analytics",
     "PostHogAnalytics",
     "with_analytics",

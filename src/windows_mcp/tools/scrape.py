@@ -1,7 +1,7 @@
 """Scrape tool — fetch/scrape web page content."""
 
 from mcp.types import ToolAnnotations
-from windows_mcp.infrastructure import with_analytics
+from windows_mcp.infrastructure import run_uia_affine, with_analytics
 from fastmcp import Context
 
 
@@ -17,7 +17,7 @@ def register(mcp, *, get_desktop, get_analytics):
             openWorldHint=True,
         ),
     )
-    @with_analytics(get_analytics(), "Scrape-Tool", run_sync_in_thread=False)
+    @with_analytics(get_analytics(), "Scrape-Tool")
     async def scrape_tool(
         url: str,
         query: str | None = None,
@@ -27,12 +27,20 @@ def register(mcp, *, get_desktop, get_analytics):
     ) -> str:
         desktop = get_desktop()
         use_dom = use_dom is True or (isinstance(use_dom, str) and use_dom.lower() == "true")
-        use_sampling = use_sampling is True or (isinstance(use_sampling, str) and use_sampling.lower() == "true")
+        use_sampling = use_sampling is True or (
+            isinstance(use_sampling, str) and use_sampling.lower() == "true"
+        )
 
         if not use_dom:
             content = desktop.scrape(url)
         else:
-            desktop_state = desktop.get_state(use_vision=False, use_dom=True)
+            # Scrape is async, so with_analytics cannot move the whole body to the
+            # synchronous UIA lane.  Hop only the DOM/UIAutomation capture itself.
+            desktop_state = await run_uia_affine(
+                desktop.get_state,
+                use_vision=False,
+                use_dom=True,
+            )
             tree_state = desktop_state.tree_state
             if not tree_state.dom_node:
                 return f"No DOM information found. Please open {url} in browser first."

@@ -1,5 +1,6 @@
 from typing import Dict, Any, TypeVar, Callable, Protocol, Awaitable
 from windows_mcp.infrastructure.config import CONFIG_DIR
+from windows_mcp.infrastructure.thread_affinity import run_uia_affine
 from uuid_extensions import uuid7str
 from fastmcp import Context
 from functools import wraps
@@ -28,7 +29,7 @@ class Analytics(Protocol):
         ...
 
     async def track_error(self, error: Exception, context: Dict[str, Any]) -> None:
-        """Tracks an error that occurred during the execution of a tool."""
+        """Tracks an error."""
         ...
 
     async def is_feature_enabled(self, feature: str) -> bool:
@@ -156,13 +157,12 @@ def with_analytics(
     Args:
         analytics_instance: Analytics client, or None to skip tracking entirely.
         tool_name: Tool name recorded with each analytics event.
-        run_sync_in_thread: For a synchronous ``func``, dispatch the call to a worker
-            thread so it cannot block the event loop (the default). Set to False to
-            call ``func`` inline on the event-loop thread, which is required for
-            thread-affine libraries: the shared ``Desktop`` holds UIAutomation /
-            comtypes state constructed on the event loop during the MCP lifespan, so
-            using it from a worker thread silently observes an empty desktop. Ignored
-            for async ``func``.
+        run_sync_in_thread: For a synchronous ``func``, dispatch the call to a generic
+            worker thread so it cannot block the event loop (the default). Set to False
+            for UIAutomation/comtypes-affine tools: they run on the single dedicated UIA
+            worker instead, preserving COM apartment affinity without blocking the MCP
+            event loop. Ignored for async ``func``; async tools that need UIA must call
+            ``run_uia_affine`` around the UIA operation itself.
     """
 
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
@@ -196,12 +196,13 @@ def with_analytics(
                 if inspect.iscoroutinefunction(func):
                     result = await func(*args, **kwargs)
                 elif run_sync_in_thread:
-                    # Run sync function in thread to avoid blocking loop
+                    # Generic synchronous work stays off the MCP event loop.
                     result = await asyncio.to_thread(func, *args, **kwargs)
                 else:
-                    # Thread-affinity mode: keep synchronous UIAutomation/comtypes work
-                    # on the event-loop thread that constructed the shared Desktop.
-                    result = func(*args, **kwargs)
+                    # UIA-affine synchronous work is serialized on one dedicated
+                    # apartment thread, so WaitFor and slow providers cannot freeze
+                    # cancellation, pings, or unrelated MCP tool calls.
+                    result = await run_uia_affine(func, *args, **kwargs)
 
                 duration_ms = int((time.time() - start) * 1000)
 

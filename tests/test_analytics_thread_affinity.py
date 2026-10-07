@@ -1,37 +1,24 @@
 """Thread-dispatch behaviour of ``with_analytics``.
 
-``with_analytics`` wraps every tool in an async function and, for a synchronous
-body, executes it with ``asyncio.to_thread``. That is the right default for
-non-blocking behaviour, but it is wrong for thread-affine work: the shared
-``Desktop`` holds UIAutomation/comtypes state constructed on the event-loop
-thread during the MCP lifespan, so a body that touches it from a worker thread
-silently observes an empty desktop.
+Synchronous tool bodies normally use ``asyncio.to_thread`` so they cannot block
+the MCP event loop.  UIAutomation/comtypes work additionally needs stable COM
+apartment affinity, so ``run_sync_in_thread=False`` uses one dedicated UIA
+worker instead of running inline on the event loop.
 
-These tests pin the ``run_sync_in_thread`` opt-out that keeps such a body on the
-event-loop thread. Windows UIAutomation is not required: affinity is simulated
-with a plain object that refuses cross-thread access, so this runs anywhere.
+These tests do not require a live desktop.  They pin the dispatch semantics,
+including the regression that a long WaitFor-style synchronous body must not
+stall unrelated async work.
 """
 
 import asyncio
 import inspect
 import threading
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 
-from windows_mcp.infrastructure import with_analytics
-
-
-class ApartmentBound:
-    """Stand-in for a COM/UIAutomation object: usable only from its creating thread."""
-
-    def __init__(self) -> None:
-        self._owner_thread = threading.get_ident()
-
-    def call(self) -> str:
-        if threading.get_ident() != self._owner_thread:
-            raise RuntimeError("cross-apartment call from a non-owning thread")
-        return "ok"
+from windows_mcp.infrastructure import uia_thread_id, with_analytics
 
 
 class TestThreadDispatch:
@@ -43,13 +30,22 @@ class TestThreadDispatch:
         caller = threading.get_ident()
         assert await my_tool() != caller
 
-    async def test_opt_out_sync_body_runs_inline(self):
+    async def test_affine_sync_body_runs_on_dedicated_worker(self):
         @with_analytics(None, "sync_tool", run_sync_in_thread=False)
         def my_tool():
             return threading.get_ident()
 
         caller = threading.get_ident()
-        assert await my_tool() == caller
+        owner = await my_tool()
+        assert owner == uia_thread_id()
+        assert owner != caller
+
+    async def test_affine_sync_body_reuses_same_worker(self):
+        @with_analytics(None, "sync_tool", run_sync_in_thread=False)
+        def my_tool():
+            return threading.get_ident()
+
+        assert await my_tool() == await my_tool() == uia_thread_id()
 
     async def test_async_body_is_awaited_on_the_calling_thread(self):
         @with_analytics(None, "async_tool")
@@ -60,8 +56,8 @@ class TestThreadDispatch:
         caller = threading.get_ident()
         assert await my_tool() == caller
 
-    async def test_opt_out_does_not_affect_async_bodies(self):
-        """The flag only governs synchronous bodies."""
+    async def test_affinity_flag_does_not_move_async_body(self):
+        """Async tools must explicitly hop only their UIA operation."""
 
         @with_analytics(None, "async_tool", run_sync_in_thread=False)
         async def my_tool():
@@ -72,14 +68,14 @@ class TestThreadDispatch:
 
 
 class TestBehaviourPreserved:
-    async def test_return_value_preserved_for_sync_body(self):
+    async def test_return_value_preserved_for_affine_sync_body(self):
         @with_analytics(None, "sync_tool", run_sync_in_thread=False)
         def my_tool():
             return {"key": "value", "count": 42}
 
         assert await my_tool() == {"key": "value", "count": 42}
 
-    async def test_exception_propagates_for_sync_body(self):
+    async def test_exception_propagates_for_affine_sync_body(self):
         @with_analytics(None, "sync_tool", run_sync_in_thread=False)
         def my_tool():
             raise ValueError("something broke")
@@ -87,7 +83,7 @@ class TestBehaviourPreserved:
         with pytest.raises(ValueError, match="something broke"):
             await my_tool()
 
-    async def test_analytics_tracks_sync_body_success(self):
+    async def test_analytics_tracks_affine_sync_body_success(self):
         mock_analytics = AsyncMock()
 
         @with_analytics(mock_analytics, "sync_tool", run_sync_in_thread=False)
@@ -101,7 +97,7 @@ class TestBehaviourPreserved:
         assert call_args[0][1]["success"] is True
         assert "duration_ms" in call_args[0][1]
 
-    async def test_analytics_tracks_sync_body_error(self):
+    async def test_analytics_tracks_affine_sync_body_error(self):
         mock_analytics = AsyncMock()
 
         @with_analytics(mock_analytics, "sync_tool", run_sync_in_thread=False)
@@ -116,28 +112,27 @@ class TestBehaviourPreserved:
         assert call_args[0][1]["tool_name"] == "sync_tool"
         assert "duration_ms" in call_args[0][1]
 
-    def test_default_keeps_worker_thread_dispatch(self):
-        """The new parameter must stay optional so existing call sites are unaffected."""
+    def test_default_keeps_generic_worker_dispatch(self):
         parameter = inspect.signature(with_analytics).parameters["run_sync_in_thread"]
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
         assert parameter.default is True
 
 
-class TestThreadAffinityRationale:
-    async def test_thread_affine_object_needs_the_opt_out(self):
-        """Why the opt-out exists: default dispatch breaks apartment affinity."""
-        # Built on the event-loop thread, mirroring Desktop() in the MCP lifespan.
-        bound = ApartmentBound()
+class TestEventLoopResponsiveness:
+    async def test_long_affine_sync_body_does_not_stall_event_loop(self):
+        """A WaitFor-style blocking body must not freeze unrelated async work."""
 
-        @with_analytics(None, "affine_tool")
-        def default_tool():
-            return bound.call()
+        @with_analytics(None, "wait_for", run_sync_in_thread=False)
+        def blocking_tool():
+            time.sleep(0.15)
+            return "done"
 
-        @with_analytics(None, "affine_tool", run_sync_in_thread=False)
-        def opted_in_tool():
-            return bound.call()
+        tool_task = asyncio.create_task(blocking_tool())
 
-        with pytest.raises(RuntimeError, match="cross-apartment"):
-            await default_tool()
+        async def ticker():
+            await asyncio.sleep(0.02)
+            return "tick"
 
-        assert await opted_in_tool() == "ok"
+        assert await ticker() == "tick"
+        assert not tool_task.done()
+        assert await tool_task == "done"
