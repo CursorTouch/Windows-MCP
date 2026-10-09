@@ -54,6 +54,7 @@ EXPECTED_TOOLS = {
     "MultiEdit",
     "MultiSelect",
     "Notification",
+    "Pointer",
     "PowerShell",
     "Process",
     "Registry",

@@ -223,6 +223,14 @@ class ControlCoordinator:
                 "ai" if self._active_calls or now < self._lease_until else "ready"
             )
         if self._state == "ai" and not self._active_calls and now >= self._lease_until:
+            pointer_hold = self.input_ledger.pointer_hold_state()
+            if pointer_hold is not None:
+                if pointer_hold:
+                    # Pointer's bounded timer or physical takeover ends this
+                    # cross-call hold; the ordinary 15-second lease does not.
+                    return False
+                self._fail_open()
+                return self._set_locked("unavailable")
             if now - self._last_physical_event < 10.0:
                 self._last_user = self._last_physical_event
                 return self._set_locked("user")
@@ -250,12 +258,25 @@ class ControlCoordinator:
                     status["state"], "CONTROL_UNAVAILABLE"
                 )
                 raise ControlBlocked(code, status)
-            try:
-                self.input_ledger.enable()  # Any failed release keeps the lease closed.
-            except RuntimeError:
-                self._fail_open()
-                self._set_locked("unavailable")
-                raise ControlBlocked("CONTROL_UNAVAILABLE", self._snapshot_locked(now)) from None
+            pointer_hold = self.input_ledger.pointer_hold_state()
+            if pointer_hold is not None:
+                if self._state != "ai" or not pointer_hold:
+                    self._fail_open()
+                    self._set_locked("unavailable")
+                    raise ControlBlocked("CONTROL_UNAVAILABLE", self._snapshot_locked(now))
+                if name != "Pointer":
+                    raise ControlBlocked("AI_INPUT_HELD", self._snapshot_locked(now))
+                # The existing AI lease already enabled the ledger. Do not
+                # call enable(), which correctly rejects an outstanding hold.
+            else:
+                try:
+                    self.input_ledger.enable()  # Failed releases keep the lease closed.
+                except RuntimeError:
+                    self._fail_open()
+                    self._set_locked("unavailable")
+                    raise ControlBlocked(
+                        "CONTROL_UNAVAILABLE", self._snapshot_locked(now)
+                    ) from None
             changed = self._set_locked("ai") or changed
             self._active_calls += 1
             token = self._generation
