@@ -4,6 +4,7 @@ import os
 from typing import Literal
 
 from mcp.types import ToolAnnotations
+from windows_mcp.desktop.utils import as_bool as _as_bool
 from windows_mcp.infrastructure import with_analytics
 from windows_mcp import filesystem
 from fastmcp import Context
@@ -45,10 +46,10 @@ def register(mcp, *, get_desktop, get_analytics):
             if destination and not os.path.isabs(destination):
                 destination = os.path.join(default_dir, destination)
 
-            recursive = recursive is True or (isinstance(recursive, str) and recursive.lower() == 'true')
-            append = append is True or (isinstance(append, str) and append.lower() == 'true')
-            overwrite = overwrite is True or (isinstance(overwrite, str) and overwrite.lower() == 'true')
-            show_hidden = show_hidden is True or (isinstance(show_hidden, str) and show_hidden.lower() == 'true')
+            recursive = _as_bool(recursive, 'recursive')
+            append = _as_bool(append, 'append')
+            overwrite = _as_bool(overwrite, 'overwrite')
+            show_hidden = _as_bool(show_hidden, 'show_hidden')
 
             match mode:
                 case 'read':
