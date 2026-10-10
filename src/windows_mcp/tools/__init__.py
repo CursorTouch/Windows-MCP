@@ -14,6 +14,7 @@ from windows_mcp.tools import (
     scrape,
     shell,
     snapshot,
+    text_cursor,
 )
 
 _MODULES = [
@@ -30,6 +31,7 @@ _MODULES = [
     process,
     notification,
     registry,
+    text_cursor,
 ]
 
 
