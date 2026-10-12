@@ -599,6 +599,40 @@ openssl req -x509 -newkey rsa:4096 \
   -days 365 -nodes
 ```
 
+### Desktop control
+
+Desktop control is enabled by default. To run background tasks while using the
+computer yourself, disable it in `~/.windows-mcp/config.toml`:
+
+```toml
+[control]
+enabled = false
+idle_timeout_seconds = 10.0
+```
+
+Or override it for one MCP server launch:
+
+```shell
+windows-mcp serve --no-control
+windows-mcp serve --control --control-idle-timeout 3
+```
+
+In your MCP client's launch arguments, put these options after `serve`.
+The priority is CLI > environment variable > TOML > default. `--control` can
+explicitly override `enabled = false`. The timeout accepts finite positive seconds
+(including fractions); zero does not disable control. The default remains 10 seconds.
+
+Restart the Windows-MCP server process after changing these settings. There is no
+hot reload or AI configuration tool. `ControlStatus` reports the effective `enabled`
+and `idle_timeout_seconds` values, with state `disabled` when control is off.
+
+Disabling control turns off ownership gating, physical input protection, takeover
+monitoring, and the control indicator. Tools remain available and serialized, with
+injected key/button cleanup retained. AI desktop actions can then interfere with your
+own input; PowerShell scripts can also operate the UI. The separate screenshot flash
+setting is unchanged. When control is enabled, the idle timer restarts with physical
+input, so shortening it does not allow background calls while you keep using the computer.
+
 ### `auth` Helper
 
 Generate an auth key and save a working config to `~/.windows-mcp/config.toml`:
@@ -652,6 +686,13 @@ Process names are comma-separated executable basenames. They are matched case-in
 A window is excluded *before* any UI Automation call is made against it, so its accessibility provider is never entered. Excluded applications may still appear in the window list, but Windows-MCP will not traverse their accessibility trees, and they are not reported as failed captures. If the owning process of a window cannot be resolved, the window is traversed as usual.
 
 This is an exclusion mechanism — a mitigation, not a complete fix for every form of [#383](https://github.com/CursorTouch/Windows-MCP/issues/383). It only skips the processes you name; a pathological window you have not listed can still stall a capture.
+
+### Desktop control settings
+
+| Variable | Default | Description |
+|---|---|---|
+| `WINDOWS_MCP_CONTROL` | `true` | Enable desktop control coordination. Set to `false` to disable. Equivalent to `--control/--no-control`; restart required. |
+| `WINDOWS_MCP_CONTROL_IDLE_TIMEOUT` | `10.0` | Finite positive idle wait in seconds. Equivalent to `--control-idle-timeout`; restart required. |
 
 ### Security
 

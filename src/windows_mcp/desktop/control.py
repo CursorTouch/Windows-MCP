@@ -36,6 +36,9 @@ class ControlCoordinator:
     def __init__(self, mouse_takeover_units: int = 120, mouse_takeover_pixels: int = 120):
         self.mouse_takeover_units = mouse_takeover_units
         self.mouse_takeover_pixels = mouse_takeover_pixels
+        # Set once by the server lifespan before any tools or hooks start.
+        self.enabled = True
+        self.idle_timeout_seconds = 10.0
         self._lock = threading.Lock()
         self._state = "unavailable"
         self._generation = 0
@@ -141,20 +144,28 @@ class ControlCoordinator:
 
     def _snapshot_locked(self, now: float) -> dict:
         state = (
-            "user"
+            "disabled"
+            if not self.enabled
+            else "user"
             if self._fast_takeover
             else "takeover_pending"
             if self._fast_pending and self._state == "ai"
             else self._state
         )
-        wait = (
-            max(0.0, max(self._last_user, self._last_physical_event) + 10.0 - now)
-            if state == "user"
-            else 0.0
-        )
-        return {"state": state, "generation": self._generation, "wait_seconds": wait}
+        last_input = max(self._last_user, self._last_physical_event)
+        wait = max(0.0, last_input + self.idle_timeout_seconds - now) if state == "user" else 0.0
+        return {
+            "state": state,
+            "generation": self._generation,
+            "wait_seconds": wait,
+            "enabled": self.enabled,
+            "idle_timeout_seconds": self.idle_timeout_seconds,
+        }
 
     def status(self) -> dict:
+        if not self.enabled:
+            # A read must not tick ownership or release holds between MCP calls.
+            return self._snapshot_locked(time.monotonic())
         if self._emergency:
             self._mark_unavailable()
         now = time.monotonic()
@@ -204,14 +215,17 @@ class ControlCoordinator:
         return True
 
     def _tick_locked(self, now: float) -> bool:
-        if self._state == "ready" and now - self._last_physical_event < 10.0:
+        # Zero means no input has been observed, even with a timeout longer than uptime.
+        stamp = self._last_physical_event
+        recent = stamp > 0 and now - stamp < self.idle_timeout_seconds
+        if self._state == "ready" and recent:
             self._last_user = self._last_physical_event
             return self._set_locked("user")
         if (
             self._state == "user"
             and not self._pressed
             and not self._mouse_down
-            and now - max(self._last_user, self._last_physical_event) >= 10.0
+            and now - max(self._last_user, self._last_physical_event) >= self.idle_timeout_seconds
         ):
             return self._set_locked("ready")
         if (
@@ -223,7 +237,7 @@ class ControlCoordinator:
                 "ai" if self._active_calls or now < self._lease_until else "ready"
             )
         if self._state == "ai" and not self._active_calls and now >= self._lease_until:
-            if now - self._last_physical_event < 10.0:
+            if recent:
                 self._last_user = self._last_physical_event
                 return self._set_locked("user")
             return self._set_locked("ready")
@@ -317,6 +331,9 @@ class ControlCoordinator:
                 self._lease_until = time.monotonic() + 15.0
 
     def start(self) -> None:
+        if not self.enabled:
+            self.input_ledger.enable()
+            return  # No physical input monitor, watchdog, or ownership notifications.
         if self._thread and self._thread.is_alive():
             if self._stop.is_set():
                 raise RuntimeError("Previous physical input monitor has not stopped")
@@ -345,7 +362,8 @@ class ControlCoordinator:
         with self._lock:
             now = time.monotonic()
             # A new server must not impose a cooldown without physical input.
-            recent_input = self._last_physical_event > 0 and now - self._last_physical_event < 10.0
+            elapsed = now - self._last_physical_event
+            recent_input = self._last_physical_event > 0 and elapsed < self.idle_timeout_seconds
             if recent_input:
                 self._last_user = self._last_physical_event
             self._set_locked("user" if recent_input else "ready")
@@ -353,6 +371,10 @@ class ControlCoordinator:
         self._notify(result)
 
     def stop(self) -> None:
+        if not self.enabled:
+            self.input_ledger.block_new()
+            self.input_ledger.release_all()
+            return
         self._suppress = False
         self._deadline = 0.0
         self.input_ledger.block_new()

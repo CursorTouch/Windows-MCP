@@ -25,6 +25,8 @@ def _legacy_notification_client(transport, **kwargs):
 
 
 class FakeController:
+    enabled = True
+
     def __init__(self):
         self.state = "ready"
         self.generation = 1

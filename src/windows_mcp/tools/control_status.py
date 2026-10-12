@@ -8,7 +8,7 @@ from windows_mcp.desktop.control import get_controller
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="ControlStatus",
-        description="Get desktop control owner and remaining user idle wait in seconds.",
+        description="Get desktop control owner, enabled state, configured idle timeout and remaining user idle wait in seconds. Settings are read-only and changes require a server restart.",
         annotations=ToolAnnotations(
             title="ControlStatus",
             readOnlyHint=True,

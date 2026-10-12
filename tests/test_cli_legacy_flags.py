@@ -12,6 +12,9 @@ from windows_mcp import __main__ as wm
         (["--transport", "sse"], "windows-mcp serve --transport sse"),
         (["--debug"], "windows-mcp serve --debug"),
         (["--port", "8000"], "windows-mcp serve --port 8000"),
+        (["--no-control"], "windows-mcp serve --no-control"),
+        (["--control"], "windows-mcp serve --control"),
+        (["--control-idle-timeout", "3"], "windows-mcp serve --control-idle-timeout 3"),
     ],
 )
 def test_legacy_serve_flags_at_group_level_get_migration_hint(args, suggestion):
@@ -39,6 +42,12 @@ def test_install_options_are_not_blocked_by_legacy_filter(monkeypatch, tmp_path)
     monkeypatch.setattr(wm, "_START_SCRIPT_PATH", tmp_path / "start-server.cmd")
     monkeypatch.setattr(wm, "_resolve_program", lambda: ["windows-mcp"])
     monkeypatch.setattr(wm, "_schtasks", fake_schtasks)
+    # Installation also uses PowerShell; never register a real task in this test.
+    monkeypatch.setattr(
+        wm,
+        "_register_task_powershell",
+        lambda *args: subprocess.CompletedProcess([], 0, "", ""),
+    )
 
     result = CliRunner().invoke(wm.main, ["install", "--transport", "sse"])
 

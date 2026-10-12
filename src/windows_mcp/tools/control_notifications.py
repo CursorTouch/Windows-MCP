@@ -205,6 +205,11 @@ class ControlToolGate(Middleware):
         name = context.message.name
         if name == "ControlStatus":
             return await call_next(context)
+        if not self.controller.enabled:
+            # Explicit opt-out only: a failed enabled controller still fails closed.
+            # Keep shared desktop operations serialized, without creating a lease.
+            async with self._call_lock:
+                return await call_next(context)
         # Waiting behind an already running external command must not hide a
         # user takeover. Poll ownership while waiting, then recheck under lock.
         from windows_mcp.desktop.control import ControlBlocked

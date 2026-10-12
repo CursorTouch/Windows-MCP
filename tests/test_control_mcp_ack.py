@@ -11,6 +11,8 @@ from windows_mcp.tools.control_notifications import ControlNotifier, ControlTool
 
 
 class FakeController:
+    enabled = True
+
     def __init__(self):
         self.state = "ready"
         self.generation = 1
