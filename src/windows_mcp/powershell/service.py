@@ -170,6 +170,40 @@ def _prepare_env() -> dict[str, str]:
     return env
 
 
+_WINDOWS_POWERSHELL = os.path.join("System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
+def _resolve_shell(shell: str | None, env: dict[str, str]) -> str:
+    """Resolve the PowerShell executable to launch against the child's PATH.
+
+    Windows looks a bare program name up on the *server's* PATH, not on the
+    environment handed to the child, so the PATH repaired by ``_prepare_env()``
+    does not decide which executable is found. ``System32\\WindowsPowerShell\\v1.0``
+    is not on the default search list either, so when the MCP host strips the
+    server's PATH a bare ``powershell`` fails with WinError 2 (#411).
+
+    Args:
+        shell: The shell the caller asked for, or ``None`` to prefer ``pwsh`` and
+            fall back to Windows PowerShell.
+        env: The environment the child will run with.
+
+    Returns:
+        An absolute path when the shell can be found; otherwise Windows
+        PowerShell's well-known location for a PowerShell request, or the name
+        unchanged for any other shell so the launch error names it.
+    """
+    search_path = env.get("PATH")
+    for name in (shell,) if shell else ("pwsh", "powershell"):
+        found = shutil.which(name, path=search_path)
+        if found:
+            return found
+
+    if shell and os.path.basename(shell).lower().removesuffix(".exe") != "powershell":
+        return shell
+    system_root = env.get("SystemRoot") or os.environ.get("SystemRoot") or r"C:\Windows"
+    return os.path.join(system_root, _WINDOWS_POWERSHELL)
+
+
 class PowerShellExecutor:
     """Static utility class for executing PowerShell commands."""
 
@@ -194,7 +228,7 @@ class PowerShellExecutor:
             # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_ansi_terminals#disabling-ansi-output
             env["NO_COLOR"] = "1"
 
-            shell = shell or ("pwsh" if shutil.which("pwsh") else "powershell")
+            shell = _resolve_shell(shell, env)
 
             args = [shell, "-NoProfile"]
             # Only older Windows PowerShell (5.1) uses -OutputFormat Text successfully here
@@ -229,4 +263,6 @@ class PowerShellExecutor:
         except subprocess.TimeoutExpired:
             return "Command execution timed out", 1
         except Exception as e:
-            return f"Command execution failed: {type(e).__name__}: {e}", 1
+            # WinError 2 does not say which file was missing, so name the shell.
+            logger.warning("PowerShell command failed to run (shell=%s)", shell, exc_info=True)
+            return f"Command execution failed: {type(e).__name__}: {e} (shell: {shell})", 1
