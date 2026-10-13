@@ -99,6 +99,30 @@ def test_hook_rotation_replaces_only_after_both_installations(monkeypatch):
     assert (owner._mouse_hook, owner._key_hook) == (21, 22)
 
 
+def test_monitor_recovers_stale_hold_before_normal_tick(monkeypatch):
+    owner = control.ControlCoordinator()
+    owner._state = "user"
+    owner._last_user = owner._last_physical_event = 90.0
+    owner._pressed.add(0xA4)
+    clock, states, queries = [100.0], [], []
+
+    def advance(*args):
+        states.append(owner.status()["state"])
+        clock[0] += 0.101
+        if len(states) == 5:
+            owner._stop.set()
+
+    user32 = _fake_user32([11, 12], [], on_idle=advance)
+    user32.GetAsyncKeyState = lambda vk: queries.append(vk) or 0
+    monkeypatch.setattr(control, "_user32", user32)
+    monkeypatch.setattr(control_win32, "_user32", user32)
+    monkeypatch.setattr(control_win32.time, "monotonic", lambda: clock[0])
+    control_win32.run_input_monitor(owner)
+    assert owner._startup_error is None
+    assert states == ["user"] * 4 + ["ready"]
+    assert queries == [0xA4] * 5
+
+
 def test_input_monitor_rotates_after_interval_and_cleans_hooks(monkeypatch):
     owner, events, waits, _ = _run_monitor(monkeypatch, [11, 12, 21, 22])
     assert owner._startup_error is None
@@ -133,3 +157,44 @@ def test_input_monitor_rotation_failure_releases_physical_input(monkeypatch):
     assert releases == ["down", "up"]
     with pytest.raises(InputUnavailable):
         owner.input_ledger.press("key:shift", lambda: None, lambda: None, lambda: False)
+
+
+def test_pump_keeps_running_with_coordinator_locked(monkeypatch):
+    owner = control.ControlCoordinator()
+    owner._rotate = True
+    owner._state = "user"
+    owner._pressed.add(0xA0)
+    user32 = _fake_user32([11, 12, 21, 22], [], on_idle=lambda *args: owner._stop.set())
+    monkeypatch.setattr(control, "_user32", user32)
+    monkeypatch.setattr(control_win32, "_user32", user32)
+    monkeypatch.setattr(owner, "_handle", lambda event: pytest.fail("Coordination on hook pump"))
+    monkeypatch.setattr(
+        owner, "_recover_after_rehook", lambda: pytest.fail("Recovery on hook pump")
+    )
+    with owner._lock:
+        control_win32.run_input_monitor(owner)
+    assert owner._startup_error is None
+    assert owner._rehook_completed is owner._fault_token
+
+
+def test_new_fault_during_install_is_not_cleared_by_old_completion(monkeypatch):
+    owner = control.ControlCoordinator()
+    owner._fail_open()
+    old_fault = owner._fault_token
+    user32 = _fake_user32([11, 12, 21, 22], [], on_idle=lambda *args: owner._stop.set())
+    install = user32.SetWindowsHookExW
+
+    def fail_during_replacement(*args):
+        handle = install(*args)
+        if handle == 21:
+            owner._fail_open()
+        return handle
+
+    user32.SetWindowsHookExW = fail_during_replacement
+    monkeypatch.setattr(control, "_user32", user32)
+    monkeypatch.setattr(control_win32, "_user32", user32)
+    control_win32.run_input_monitor(owner)
+    assert owner._startup_error is None
+    assert owner._rotate and owner._emergency
+    assert owner._rehook_completed is old_fault
+    assert owner._rehook_completed is not owner._fault_token

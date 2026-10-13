@@ -43,12 +43,14 @@ def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
             owner._fail_open()
     except Exception:
         owner._fail_open()
+    result = _user32.CallNextHookEx(owner._mouse_hook, code, wparam, lparam)
     if valid and button:
         if button[1]:
-            owner._delivered_mouse.add(button[0])
+            if not result:  # A downstream hook can still swallow this down.
+                owner._delivered_mouse.add(button[0])
         else:
             owner._delivered_mouse.discard(button[0])
-    return _user32.CallNextHookEx(owner._mouse_hook, code, wparam, lparam)
+    return result
 
 
 def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
@@ -95,11 +97,13 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
             owner._fail_open()
     except Exception:
         owner._fail_open()
+    result = _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
     if vk is not None and down:
-        owner._delivered_keys.add(vk)
+        if not result:  # Forwarding alone is not proof of delivery.
+            owner._delivered_keys.add(vk)
     elif vk is not None:
         owner._delivered_keys.discard(vk)
-    return _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
+    return result
 
 
 def raw_input(owner: Any, lparam: int) -> None:

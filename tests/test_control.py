@@ -103,6 +103,8 @@ def test_stale_capture_generation_never_rearms_after_takeover():
 
 
 def test_watchdog_does_not_rearm_hidden_indicator(monkeypatch):
+    from windows_mcp.desktop.control_worker import refresh_deadline
+
     owner = ready_controller()
     owner.set_health_probe(lambda: True)
     owner.subscribe(
@@ -113,10 +115,7 @@ def test_watchdog_does_not_rearm_hidden_indicator(monkeypatch):
     owner._thread = Mock()
     owner._thread.is_alive.return_value = True
     owner._thread_beat = control.time.monotonic()
-    owner._stop.is_set = Mock(side_effect=[False, True])
-    owner._release_requested.wait = Mock()
-    monkeypatch.setattr(control, "_interactive_desktop", lambda: True)
-    owner._watch()
+    refresh_deadline(owner, control.time.monotonic())
     assert not owner._suppress
 
 
@@ -366,9 +365,11 @@ def test_swallowed_physical_down_does_not_skip_ai_release(monkeypatch):
     assert owner._physical_mouse(0, 0x201, ctypes.addressof(data)) == 1
     assert not owner.physical_mouse_down("left")
     owner._handle(("hotkey",))
-    assert owner._physical_mouse(0, 0x201, ctypes.addressof(data)) == 7
+    # Zero means downstream hooks allowed the event to reach the application.
+    monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 0)
+    assert owner._physical_mouse(0, 0x201, ctypes.addressof(data)) == 0
     assert owner.physical_mouse_down("left")
-    assert owner._physical_mouse(0, 0x202, ctypes.addressof(data)) == 7
+    assert owner._physical_mouse(0, 0x202, ctypes.addressof(data)) == 0
     assert not owner.physical_mouse_down("left")
 
 
@@ -394,6 +395,8 @@ def test_stop_rejects_still_running_hook_thread():
 
 
 def test_watchdog_cannot_refresh_if_coordinator_lock_is_held(monkeypatch):
+    from windows_mcp.desktop.control_worker import refresh_deadline
+
     owner = ready_controller()
     owner.begin_call("Type")
     owner._thread = Mock()
@@ -401,9 +404,7 @@ def test_watchdog_cannot_refresh_if_coordinator_lock_is_held(monkeypatch):
     owner._thread_beat = control.time.monotonic()
     owner._lock.acquire()
     try:
-        owner._stop.is_set = Mock(side_effect=[False, True])
-        owner._release_requested.wait = Mock()
-        owner._watch()
+        refresh_deadline(owner, control.time.monotonic())
     finally:
         owner._lock.release()
     assert owner._emergency and not owner._suppress

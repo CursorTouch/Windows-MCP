@@ -1,11 +1,12 @@
 """Win32 structures, API bindings and desktop health for input ownership."""
 
 import ctypes
-import queue
 import threading
 import time
 from ctypes import wintypes
 from typing import Any
+
+from windows_mcp.desktop.control_recovery import StaleInputRecovery
 
 _LRESULT = ctypes.c_ssize_t
 _HOOKPROC = ctypes.WINFUNCTYPE(_LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
@@ -82,6 +83,8 @@ class _RawMouse(ctypes.Structure):
 
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
+_user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+_user32.GetAsyncKeyState.restype = ctypes.c_short
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
 _user32.SetWindowsHookExW.restype = wintypes.HHOOK
@@ -252,6 +255,7 @@ def _interactive_desktop() -> bool:
 
 def run_input_monitor(owner: Any) -> None:
     """Pump the Win32 hooks and raw input for one control coordinator."""
+    recovery = StaleInputRecovery()  # Never carry confirmations across a restart.
     name = f"WindowsMCPControl{threading.get_ident()}"
     instance = _kernel32.GetModuleHandleW(None)
     owner._mouse_callback = _HOOKPROC(owner._physical_mouse)
@@ -294,20 +298,19 @@ def run_input_monitor(owner: Any) -> None:
             while _user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 _user32.TranslateMessage(ctypes.byref(msg))
                 _user32.DispatchMessageW(ctypes.byref(msg))
-            for _ in range(128):
-                try:
-                    event = owner._events.get_nowait()
-                except queue.Empty:
-                    break
-                owner._handle(event)
-            owner._handle(("tick",))
+            # Only this thread mutates physical sets. Never wait for business
+            # locks here: a sender may hold them while Windows calls our hooks.
+            recovery.sample(owner, time.monotonic(), lambda vk: _user32.GetAsyncKeyState(vk))
             if owner._rotate or time.monotonic() - last_rotate >= 5.0:
                 owner._rotating = True  # Pause AI without letting physical down leak.
                 try:
-                    owner._install_hooks(instance)
+                    # Clear before installation so a new fault can request another.
                     owner._rotate = False
+                    fault = owner._fault_token
+                    owner._install_hooks(instance)
                     last_rotate = time.monotonic()
-                    owner._recover_after_rehook()
+                    owner._rehook_completed = fault
+                    owner._release_requested.set()
                 finally:
                     owner._rotating = False
             # Block until there is something to pump instead of sleeping past it.

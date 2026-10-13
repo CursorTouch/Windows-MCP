@@ -18,6 +18,130 @@ def ready_controller() -> control.ControlCoordinator:
     return owner
 
 
+@pytest.mark.parametrize("kind", ["key", "mouse"])
+@pytest.mark.parametrize("blocked", [False, True])
+def test_down_swallowed_by_next_hook_does_not_cancel_ai_cleanup(monkeypatch, kind, blocked):
+    owner = ready_controller()
+    owner.input_ledger.enable()
+    events = []
+    delivered = (
+        (lambda: owner.physical_key_down(0x41))
+        if kind == "key"
+        else (lambda: owner.physical_mouse_down("left"))
+    )
+    owner.input_ledger.press(
+        "test", lambda: events.append("down"), lambda: events.append("up"), delivered
+    )
+    monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: int(blocked))
+    data = control._KeyHookData() if kind == "key" else control._MouseHookData()
+    if kind == "key":
+        data.vkCode = 0x41
+    callback = owner._physical_key if kind == "key" else owner._physical_mouse
+    assert callback(0, 0x100 if kind == "key" else 0x201, ctypes.addressof(data)) == int(blocked)
+    assert delivered() is (not blocked)
+    owner.input_ledger.release_all()
+    assert events == (["down", "up"] if blocked else ["down"])
+    assert not owner.input_ledger.pending()
+
+
+def test_stop_rejects_late_call_during_thread_join():
+    owner = ready_controller()
+
+    def late_call(*args, **kwargs):
+        assert owner._stop.is_set()
+        with pytest.raises(control.ControlBlocked):
+            owner.begin_call("QueuedBeforeStop")
+        assert not owner._suppress
+
+    owner._thread = Mock()
+    owner._thread.join.side_effect = late_call
+    owner._thread.is_alive.return_value = False
+    owner.stop()
+
+
+def test_stop_blocks_late_visual_ack_and_existing_checkpoint():
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    token = owner.begin_call("Probe")
+    owner._stop.set()  # Stop requested, before the join/state cleanup completes.
+    owner.arm_visible(token)
+    assert not owner._suppress
+    with pytest.raises(control.ControlBlocked):
+        owner.checkpoint(token)
+
+
+def test_stop_during_ledger_enable_rejects_call(monkeypatch):
+    owner = ready_controller()
+    enable = owner.input_ledger.enable
+
+    def stop_then_enable():
+        owner._stop.set()
+        owner.input_ledger.block_new()
+        enable()
+
+    monkeypatch.setattr(owner.input_ledger, "enable", stop_then_enable)
+    with pytest.raises(control.ControlBlocked):
+        owner.begin_call("LateProbe")
+    with pytest.raises(InputUnavailable):
+        owner.input_ledger.press(
+            "test", lambda: pytest.fail("late down"), lambda: None, lambda: False
+        )
+
+
+def test_stop_during_visual_ack_enable_cannot_rearm(monkeypatch):
+    owner = ready_controller()
+    owner.set_health_probe(lambda: True)
+    token = owner.begin_call("Probe")
+    enable = owner.input_ledger.enable
+
+    def late_enable():
+        owner._stop.set()
+        enable()
+
+    monkeypatch.setattr(owner.input_ledger, "enable", late_enable)
+    owner.arm_visible(token)
+    assert not owner._suppress and not owner._visual_armed
+    with pytest.raises(InputUnavailable):
+        owner.input_ledger.press(
+            "test", lambda: pytest.fail("late down"), lambda: None, lambda: False
+        )
+
+
+@pytest.mark.parametrize("stop_at", ["probe", "enable"])
+def test_stop_during_rehook_recovery_cannot_enable_ledger(monkeypatch, stop_at):
+    owner = ready_controller()
+    owner._fail_open()
+    enable = owner.input_ledger.enable
+
+    def probe():
+        if stop_at == "probe":
+            owner._stop.set()
+        return True
+
+    def late_enable():
+        owner._stop.set()
+        enable()
+
+    monkeypatch.setattr(control, "_interactive_desktop", probe)
+    if stop_at == "enable":
+        monkeypatch.setattr(owner.input_ledger, "enable", late_enable)
+    owner._recover_after_rehook()
+    assert owner._emergency and not owner._suppress
+    assert owner.status()["state"] == "unavailable"
+    with pytest.raises(InputUnavailable):
+        owner.input_ledger.press(
+            "test", lambda: pytest.fail("late down"), lambda: None, lambda: False
+        )
+
+
+def test_fault_status_is_not_hidden_by_pending_takeover():
+    owner = ready_controller()
+    owner._fast_takeover = True
+    assert owner.status()["state"] == "user"
+    owner._fail_open()
+    assert owner.status()["state"] == "unavailable"
+
+
 def test_type_stops_before_next_character_after_preemption(monkeypatch):
     owner = Mock()
     checks = [None, None, control.ControlBlocked("CONTROL_PREEMPTED", {"state": "user"})]

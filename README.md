@@ -689,6 +689,13 @@ This is an exclusion mechanism — a mitigation, not a complete fix for every fo
 
 ### Desktop control settings
 
+If a physical key/button release event is missed, the input monitor checks residual
+holds after the configured idle wait. Five consecutive all-released samples, at
+least 100 ms apart, clear the stale records. New physical input or a reported held
+key/button resets confirmation. This is best-effort: a zero `GetAsyncKeyState`
+result counts as released even when Windows cannot provide the state; repeated
+sampling filters transient readings but cannot distinguish persistent query failure.
+
 | Variable | Default | Description |
 |---|---|---|
 | `WINDOWS_MCP_CONTROL` | `true` | Enable desktop control coordination. Set to `false` to disable. Equivalent to `--control/--no-control`; restart required. |
