@@ -8,7 +8,12 @@ import queue
 import threading
 import time
 from typing import Callable
-from windows_mcp.desktop.control_context import current_token, current_steps, get_step_count
+from windows_mcp.desktop.control_context import (
+    current_token,
+    current_steps,
+    current_request_closed,
+    get_step_count,
+)
 from windows_mcp.desktop.control_ledger import InputLedger
 from windows_mcp.desktop import control_hooks
 from windows_mcp.desktop.control_worker import run_control_worker
@@ -296,8 +301,10 @@ class ControlCoordinator:
 
     def checkpoint(self, token: int) -> None:
         with self._lock:
+            request_closed = current_request_closed.get()
             if (
-                self._stop.is_set()
+                (request_closed is not None and request_closed.is_set())
+                or self._stop.is_set()
                 or self._state != "ai"
                 or self._generation != token
                 or self._fast_takeover

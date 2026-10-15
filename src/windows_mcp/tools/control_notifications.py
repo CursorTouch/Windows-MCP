@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -253,12 +254,17 @@ class ControlToolGate(Middleware):
             from windows_mcp.desktop.control_context import (
                 current_token,
                 current_steps,
+                current_request_closed,
                 StepCounter,
                 get_step_count,
             )
 
             context_token = current_token.set(token)
             steps_token = current_steps.set(StepCounter())
+            # A worker may outlive this await. Revoke only this request, not the
+            # shared ownership generation used by subsequent calls.
+            request_closed = threading.Event()
+            request_marker = current_request_closed.set(request_closed)
             try:
                 # A synchronous indicator failure can invalidate the lease
                 # during begin_call's state notification.
@@ -281,6 +287,8 @@ class ControlToolGate(Middleware):
                     raise self._blocked(ControlBlocked(code, status)) from exc
                 raise
             finally:
+                request_closed.set()
+                current_request_closed.reset(request_marker)
                 current_steps.reset(steps_token)
                 current_token.reset(context_token)
                 self.controller.end_call(token)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import threading
 from dataclasses import dataclass
 
 
@@ -18,6 +19,11 @@ current_token: contextvars.ContextVar[int | None] = contextvars.ContextVar(
 )
 current_steps: contextvars.ContextVar[StepCounter | None] = contextvars.ContextVar(
     "windows_mcp_control_steps", default=None
+)
+# Copied contexts share this event: cancelling the await cannot stop a running
+# worker, but closing its request must prevent its next desktop input step.
+current_request_closed: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
+    "windows_mcp_control_request_closed", default=None
 )
 
 
