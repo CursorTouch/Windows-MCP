@@ -12,7 +12,7 @@ from windows_mcp import notifications
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="Notification",
-        description="Sends a Windows toast notification with a title and message.",
+        description="Sends a Windows toast notification with a title and message. Avoid unnecessary notifications that interrupt the user; relaxed control policy does not gate this tool.",
         annotations=ToolAnnotations(
             title="Notification",
             readOnlyHint=False,

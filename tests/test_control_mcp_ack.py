@@ -12,6 +12,7 @@ from windows_mcp.tools.control_notifications import ControlNotifier, ControlTool
 
 class FakeController:
     enabled = True
+    policy = "strict"  # These regressions exercise the original all-tools gate.
 
     def __init__(self):
         self.state = "ready"

@@ -10,7 +10,7 @@ from fastmcp import Context
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="Clipboard",
-        description='Copy/paste clipboard operations. Keywords: copy, paste, cut, clipboard, text transfer. Use mode="get" to read current clipboard content, mode="set" to set clipboard text.',
+        description='Copy/paste clipboard operations. Keywords: copy, paste, cut, clipboard, text transfer. Use mode="get" to read current clipboard content, mode="set" to set clipboard text. This is the real Windows clipboard; set overwrites shared contents. Avoid using it merely to pass data between tools and coordinate known interference with the user.',
         annotations=ToolAnnotations(
             title="Clipboard",
             readOnlyHint=False,
@@ -21,7 +21,9 @@ def register(mcp, *, get_desktop, get_analytics):
     )
     @with_analytics(get_analytics(), "Clipboard-Tool")
     def clipboard_tool(
-        mode: Literal["get", "set"], text: str | None = None, ctx: Context = None,
+        mode: Literal["get", "set"],
+        text: str | None = None,
+        ctx: Context = None,
     ) -> str:
         try:
             import win32clipboard

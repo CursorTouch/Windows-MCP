@@ -10,7 +10,7 @@ from windows_mcp.infrastructure.config import ControlConfig
 @pytest.fixture
 def invoke(monkeypatch, tmp_path):
     path = tmp_path / "config.toml"
-    original = "[control]\nenabled = false\nidle_timeout_seconds = 4.5\n"
+    original = '[control]\nenabled = false\nidle_timeout_seconds = 4.5\npolicy = "balanced"\n'
     path.write_text(original, encoding="utf-8")
     captured = []
     monkeypatch.setattr(cli, "_control_config", ControlConfig())
@@ -24,6 +24,7 @@ def invoke(monkeypatch, tmp_path):
             ["serve", "--config", str(path), *args],
             env={
                 "WINDOWS_MCP_CONTROL": None,
+                "WINDOWS_MCP_CONTROL_POLICY": None,
                 "WINDOWS_MCP_CONTROL_IDLE_TIMEOUT": None,
                 **(env or {}),
             },
@@ -78,3 +79,27 @@ def test_help_explains_restart_and_defaults():
     assert "--control / --no-control" in result.output
     assert "--control-idle-timeout" in result.output
     assert "Restart required" in result.output
+
+
+@pytest.mark.parametrize(
+    "args,env,expected",
+    [
+        ([], {}, "balanced"),
+        ([], {"WINDOWS_MCP_CONTROL_POLICY": "relaxed"}, "relaxed"),
+        (["--control-policy", "strict"], {"WINDOWS_MCP_CONTROL_POLICY": "balanced"}, "strict"),
+    ],
+)
+def test_policy_startup_precedence(invoke, args, env, expected):
+    result, captured = invoke(args, env)
+    assert result.exit_code == 0, result.output
+    assert captured[0].policy == expected
+
+
+@pytest.mark.parametrize("source", ["cli", "env"])
+def test_invalid_policy_never_starts(invoke, source):
+    result, captured = invoke(
+        ["--control-policy", "unknown"] if source == "cli" else [],
+        {"WINDOWS_MCP_CONTROL_POLICY": "unknown"} if source == "env" else {},
+    )
+    assert result.exit_code != 0
+    assert not captured

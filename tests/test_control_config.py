@@ -12,6 +12,7 @@ from windows_mcp.infrastructure.config import (
 
 def test_default_control_thresholds():
     assert load_config(None).control == ControlConfig(120, 120)
+    assert load_config(None).control.policy == "relaxed"
 
 
 def test_control_thresholds_round_trip(tmp_path: Path):
@@ -54,3 +55,20 @@ def test_control_defaults_omitted_on_write(tmp_path):
     path = tmp_path / "config.toml"
     write_config(WindowsMCPConfig(), path)
     assert "[control]" not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("policy", ["relaxed", "balanced", "strict"])
+def test_policy_round_trip(tmp_path, policy):
+    cfg = WindowsMCPConfig()
+    cfg.control.policy = policy
+    path = tmp_path / "policy.toml"
+    write_config(cfg, path)
+    assert load_config(path).control.policy == policy
+
+
+@pytest.mark.parametrize("value", ['"unknown"', '"A"', "true", "3", "[]", "{}"])
+def test_invalid_policy(tmp_path, value):
+    path = tmp_path / "policy.toml"
+    path.write_text("[control]\npolicy = " + value, encoding="utf-8")
+    with pytest.raises(ValueError, match="control.policy"):
+        load_config(path)

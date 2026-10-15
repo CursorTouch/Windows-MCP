@@ -11,7 +11,7 @@ from windows_mcp import process
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="Process",
-        description='List and kill running processes. Keywords: task manager, running tasks, kill, terminate, stop process, PID, CPU, memory usage. Use mode="list" to list running processes with filtering and sorting options. Use mode="kill" to terminate processes by PID or name.',
+        description='List and kill running processes. Keywords: task manager, running tasks, kill, terminate, stop process, PID, CPU, memory usage. Use mode="list" to list running processes with filtering and sorting options. Use mode="kill" to terminate processes by PID or name. Prefer an exact PID. If the target is known to belong to the user or termination is known to disrupt their work, obtain permission first, reusing existing authorization. Unknown ownership alone does not require refusal. Ownership and approval are not enforced by this tool.',
         annotations=ToolAnnotations(
             title="Process",
             readOnlyHint=False,

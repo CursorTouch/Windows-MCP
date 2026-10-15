@@ -89,6 +89,7 @@ def test_disabled_start_status_and_cleanup(monkeypatch):
     assert owner.status() == {
         "state": "disabled",
         "enabled": False,
+        "policy": "relaxed",
         "idle_timeout_seconds": 2.5,
         "generation": 0,
         "wait_seconds": 0,

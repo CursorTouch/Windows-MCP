@@ -14,6 +14,7 @@ from windows_mcp import __main__ as wm
         (["--port", "8000"], "windows-mcp serve --port 8000"),
         (["--no-control"], "windows-mcp serve --no-control"),
         (["--control"], "windows-mcp serve --control"),
+        (["--control-policy", "strict"], "windows-mcp serve --control-policy strict"),
         (["--control-idle-timeout", "3"], "windows-mcp serve --control-idle-timeout 3"),
     ],
 )

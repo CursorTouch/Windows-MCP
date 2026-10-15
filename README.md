@@ -601,12 +601,14 @@ openssl req -x509 -newkey rsa:4096 \
 
 ### Desktop control
 
-Desktop control is enabled by default. To run background tasks while using the
-computer yourself, disable it in `~/.windows-mcp/config.toml`:
+Desktop control is enabled by default with the **relaxed** policy: direct desktop
+actions are gated, while background tools can run as you use the computer.
+Configure it in `~/.windows-mcp/config.toml` (or disable it entirely with `enabled = false`):
 
 ```toml
 [control]
-enabled = false
+enabled = true
+policy = "relaxed"
 idle_timeout_seconds = 10.0
 ```
 
@@ -615,6 +617,7 @@ Or override it for one MCP server launch:
 ```shell
 windows-mcp serve --no-control
 windows-mcp serve --control --control-idle-timeout 3
+windows-mcp serve --control-policy strict
 ```
 
 In your MCP client's launch arguments, put these options after `serve`.
@@ -624,14 +627,44 @@ explicitly override `enabled = false`. The timeout accepts finite positive secon
 
 Restart the Windows-MCP server process after changing these settings. There is no
 hot reload or AI configuration tool. `ControlStatus` reports the effective `enabled`
-and `idle_timeout_seconds` values, with state `disabled` when control is off.
+`policy`, and `idle_timeout_seconds` values, with state `disabled` when control is off.
 
 Disabling control turns off ownership gating, physical input protection, takeover
 monitoring, and the control indicator. Tools remain available and serialized, with
 injected key/button cleanup retained. AI desktop actions can then interfere with your
 own input; PowerShell scripts can also operate the UI. The separate screenshot flash
 setting is unchanged. When control is enabled, the idle timer restarts with physical
-input, so shortening it does not allow background calls while you keep using the computer.
+input, so shortening it does not allow gated calls while you keep using the computer.
+
+### Desktop gate policies
+
+| Policy | Operations that require desktop ownership |
+|---|---|
+| `relaxed` (A, default) | Direct input: Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit; App `switch` and `resize`. |
+| `balanced` (B) | Everything in A, plus PowerShell, Notification, App `launch`/`launch_executable`, Process `kill`, and Clipboard `set`. |
+| `strict` (C) | All tools except ControlStatus, matching the previous gate behavior. |
+
+FileSystem, Registry, Snapshot, Screenshot, Scrape, Wait, WaitFor, DisplayInventory,
+Process `list`, and Clipboard `get` bypass ownership in A and B. This classification
+concerns desktop interference, not permissions or data safety. PowerShell can still
+operate the UI, and file/registry operations can have other side effects.
+
+Ungated calls do not acquire or extend the desktop lease, activate its indicator,
+or wait for its tool lock. Existing resource constraints still apply: UI Automation
+operations share a dedicated worker, so a long WaitFor can delay other UIA work.
+The separate screenshot flash is unchanged. `--no-control` retains its existing
+all-tools serialization and overrides the policy's ownership checks.
+
+In relaxed mode, agents should prefer background work and coordinate known desktop
+interference with the user. Obtain permission before knowingly disrupting a user's
+process or taking focus, reusing existing authorization. These are tool-use guidelines,
+not server-enforced approval or process ownership tracking. Clipboard continues to
+use the real Windows clipboard; no virtual clipboard is introduced.
+
+For contributors: tool categories and the few mode-specific exceptions live in
+`src/windows_mcp/tools/control_policy.py`. Update that table when adding tools or modes;
+registration coverage tests detect omissions. Unknown extensions conservatively
+use the gate. Keep policy decisions out of individual tool implementations.
 
 ### `auth` Helper
 
@@ -699,6 +732,7 @@ sampling filters transient readings but cannot distinguish persistent query fail
 | Variable | Default | Description |
 |---|---|---|
 | `WINDOWS_MCP_CONTROL` | `true` | Enable desktop control coordination. Set to `false` to disable. Equivalent to `--control/--no-control`; restart required. |
+| `WINDOWS_MCP_CONTROL_POLICY` | `relaxed` | Gate policy: `relaxed`, `balanced`, or `strict`. Equivalent to `--control-policy`; restart required. |
 | `WINDOWS_MCP_CONTROL_IDLE_TIMEOUT` | `10.0` | Finite positive idle wait in seconds. Equivalent to `--control-idle-timeout`; restart required. |
 
 ### Security

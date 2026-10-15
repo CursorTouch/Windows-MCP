@@ -160,7 +160,7 @@ class ControlNotifier:
 
 
 class ControlToolGate(Middleware):
-    """All present and future MCP tools use the same ownership decision."""
+    """Apply one configured ownership policy at the MCP boundary."""
 
     def __init__(self, controller: Any, notifier: ControlNotifier) -> None:
         self.controller = controller
@@ -210,6 +210,14 @@ class ControlToolGate(Middleware):
             # Keep shared desktop operations serialized, without creating a lease.
             async with self._call_lock:
                 return await call_next(context)
+        from windows_mcp.tools.control_policy import requires_control
+
+        if not requires_control(
+            self.controller.policy, name, getattr(context.message, "arguments", None)
+        ):
+            # Background work neither waits for the desktop lock nor creates a lease.
+            # Resource-specific serialization (such as the UIA worker) still applies.
+            return await call_next(context)
         # Waiting behind an already running external command must not hide a
         # user takeover. Poll ownership while waiting, then recheck under lock.
         from windows_mcp.desktop.control import ControlBlocked

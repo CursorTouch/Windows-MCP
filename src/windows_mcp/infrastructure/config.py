@@ -46,6 +46,7 @@ class ControlConfig:
     mouse_takeover_pixels: int = 120
     enabled: bool = True
     idle_timeout_seconds: float = 10.0
+    policy: str = "relaxed"
 
 
 @dataclass
@@ -179,6 +180,11 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     if "exclude" in tools:
         cfg.tools.exclude = _list_of_strings(tools["exclude"], "tools.exclude")
 
+    if "policy" in control:
+        if control["policy"] not in ("relaxed", "balanced", "strict"):
+            raise ValueError("control.policy must be relaxed, balanced, or strict")
+        cfg.control.policy = control["policy"]
+
     if "enabled" in control:
         cfg.control.enabled = _strict_bool(control["enabled"], "control.enabled")
     if "idle_timeout_seconds" in control:
@@ -245,6 +251,8 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
         for key in ("mouse_takeover_units", "mouse_takeover_pixels")
         if getattr(ctrl, key) != getattr(default_ctrl, key)
     ]
+    if ctrl.policy != default_ctrl.policy:
+        control_lines.append(f'policy = "{ctrl.policy}"')
     if ctrl.enabled != default_ctrl.enabled:
         control_lines.append(f"enabled = {str(ctrl.enabled).lower()}")
     if ctrl.idle_timeout_seconds != default_ctrl.idle_timeout_seconds:

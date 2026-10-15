@@ -36,6 +36,7 @@ class ControlCoordinator:
         # Set once by the server lifespan before any tools or hooks start.
         self.enabled = True
         self.idle_timeout_seconds = 10.0
+        self.policy = "relaxed"
         self._lock = threading.Lock()
         self._state = "unavailable"
         self._generation = 0
@@ -161,6 +162,7 @@ class ControlCoordinator:
             "generation": self._generation,
             "wait_seconds": wait,
             "enabled": self.enabled,
+            "policy": self.policy,
             "idle_timeout_seconds": self.idle_timeout_seconds,
         }
 

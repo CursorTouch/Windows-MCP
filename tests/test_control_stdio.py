@@ -15,7 +15,8 @@ from fastmcp.client.transports import StdioTransport
 
 
 @pytest.mark.asyncio
-async def test_disabled_stdio_background_command_and_status(tmp_path):
+@pytest.mark.parametrize("policy", ["relaxed", "balanced", "strict"])
+async def test_disabled_stdio_background_command_and_status(tmp_path, policy):
     root = Path(__file__).resolve().parents[1]
     config = tmp_path / "config.toml"
     config.write_text("[control]\nenabled = true\nidle_timeout_seconds = 25\n", encoding="utf-8")
@@ -29,6 +30,8 @@ async def test_disabled_stdio_background_command_and_status(tmp_path):
             "--config",
             str(config),
             "--no-control",
+            "--control-policy",
+            policy,
             "--control-idle-timeout",
             "2.5",
             "--tools",
@@ -52,6 +55,7 @@ async def test_disabled_stdio_background_command_and_status(tmp_path):
         status = await client.call_tool("ControlStatus")
         assert status.data["state"] == "disabled"
         assert status.data["enabled"] is False
+        assert status.data["policy"] == policy
         assert status.data["idle_timeout_seconds"] == 2.5
         for _ in range(2):
             result = await client.call_tool(
