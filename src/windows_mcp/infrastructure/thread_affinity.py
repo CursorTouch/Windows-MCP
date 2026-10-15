@@ -15,6 +15,7 @@ tool body.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import threading
@@ -58,4 +59,8 @@ async def run_uia_affine(func: Callable[..., T], *args, **kwargs) -> T:
         return func(*args, **kwargs)
 
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, partial(func, *args, **kwargs))
+    # Unlike to_thread, run_in_executor does not propagate request context.
+    # Carry control tokens/step counters into this job without leaking bindings
+    # into the long-lived worker or a later request.
+    context = contextvars.copy_context()
+    return await loop.run_in_executor(_executor, partial(context.run, func, *args, **kwargs))
