@@ -40,8 +40,8 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 Before you begin, ensure you have:
 
-- **Windows OS**: Windows 7, 8, 8.1, 10, or 11
-- **Python 3.13+**: [Download Python](https://www.python.org/downloads/)
+- **Windows OS**: Windows 10 or 11
+- **Python 3.14+**: [Download Python](https://www.python.org/downloads/)
 - **UV Package Manager**: Install with `pip install uv` or see [UV documentation](https://github.com/astral-sh/uv)
 - **Git**: [Download Git](https://git-scm.com/downloads)
 - **A GitHub account**: [Sign up here](https://github.com/join)
@@ -68,13 +68,13 @@ Before you begin, ensure you have:
 4. **Install Dependencies**
    
    ```bash
-   uv sync
+   uv sync --extra dev
    ```
 
 5. **Verify Installation**
    
    ```bash
-   uv run main.py --help
+   uv run windows-mcp --help
    ```
 
 ## Development Workflow
@@ -174,13 +174,13 @@ def click_tool(
 **Format Code:**
 
 ```bash
-ruff format .
+uv run --extra dev ruff format .
 ```
 
 **Run Linter:**
 
 ```bash
-ruff check .
+uv run --extra dev ruff check .
 ```
 
 ## Testing
@@ -190,19 +190,19 @@ ruff check .
 If the project has tests (check the `tests/` directory):
 
 ```bash
-pytest
+uv run --extra dev pytest
 ```
 
 Run specific test files:
 
 ```bash
-pytest tests/test_desktop.py
+uv run --extra dev pytest tests/test_desktop_views.py
 ```
 
 Run with coverage:
 
 ```bash
-pytest --cov=src tests/
+uv run --extra dev --with pytest-cov pytest --cov=src tests/
 ```
 
 ### Adding Tests
@@ -300,7 +300,7 @@ Update relevant documentation files:
 
 When adding or modifying tools:
 
-1. Update the tool's `description` parameter in `main.py`
+1. Update the tool's `description` parameter in its module under `src/windows_mcp/tools/`
 2. Add appropriate `ToolAnnotations`
 3. Update the tools list in `README.md`
 4. Update `manifest.json` if needed

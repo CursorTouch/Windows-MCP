@@ -4,30 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Windows-MCP is a Python MCP (Model Context Protocol) server that bridges AI LLM agents with the Windows OS, enabling direct desktop automation. It exposes 20 tools via FastMCP:
+Windows-MCP is a Python MCP (Model Context Protocol) server that bridges AI LLM agents with the Windows OS, enabling direct desktop automation. It exposes 21 tools via FastMCP:
 
 | Group | Tools |
 |---|---|
 | Capture | `Screenshot`, `Snapshot`, `Scrape`, `DisplayInventory` |
 | Input | `Click`, `Type`, `Scroll`, `Move` (also drag-and-drop via `drag=True`), `Shortcut`, `MultiSelect`, `MultiEdit` |
 | Timing | `Wait`, `WaitFor` |
-| System | `App`, `PowerShell`, `FileSystem`, `Registry`, `Process`, `Clipboard`, `Notification` |
+| System | `App`, `PowerShell`, `FileSystem`, `Registry`, `Process`, `Clipboard`, `Notification`, `ControlStatus` |
 
-Tool names are defined by the `name=` argument of each `@mcp.tool(...)` in `src/windows_mcp/tools/`; that directory is the source of truth. Note the shell tool is registered as `PowerShell`, not `Shell`. Any subset can be removed at startup with `--disable-tools` (e.g. `--disable-tools PowerShell,Registry`).
+Tool names are defined by the `name=` argument of each `@mcp.tool(...)` in `src/windows_mcp/tools/`; that directory is the source of truth. Note the shell tool is registered as `PowerShell`, not `Shell`. Any subset can be removed at startup with `serve --exclude-tools` (e.g. `windows-mcp serve --exclude-tools PowerShell,Registry`).
 
 ## Build & Development Commands
 
 ```bash
-uv sync                    # Install dependencies
-uv run windows-mcp         # Run the MCP server
-ruff format .              # Format code
-ruff check .               # Lint code
-ruff check --fix .         # Lint and auto-fix
-pytest                     # Run all tests
-pytest tests/test_foo.py   # Run a single test file
+uv sync --extra dev        # Install runtime and development dependencies
+uv run windows-mcp serve   # Run the MCP server
+uv run --extra dev ruff format .  # Format code
+uv run --extra dev ruff check .   # Lint code
+uv run --extra dev ruff check --fix .  # Lint and auto-fix
+uv run --extra dev pytest         # Run all tests
+uv run --extra dev pytest tests/test_desktop_views.py  # Run a single test file
 ```
 
-**Package manager**: UV (not pip). **Python**: 3.13+. **Build backend**: Hatchling.
+**Package manager**: UV (not pip). **Python**: 3.14+. **Build backend**: setuptools.
 
 ## Architecture
 
@@ -85,4 +85,4 @@ The codebase follows a layered service architecture under `src/windows_mcp/`:
 
 ## Security Context
 
-This server has **full system access** with no sandboxing. `PowerShell`, `FileSystem`, `Registry`, `Process`, and `App` can all perform irreversible operations, and there is no audit log or rollback. The recommended deployment target is a VM or Windows Sandbox. Use `--disable-tools` to drop the tools a given deployment does not need.
+This server has **full system access** with no sandboxing. `PowerShell`, `FileSystem`, `Registry`, `Process`, and `App` can all perform irreversible operations, and there is no audit log or rollback. The recommended deployment target is a VM or Windows Sandbox. Use `serve --exclude-tools` to drop the tools a given deployment does not need.

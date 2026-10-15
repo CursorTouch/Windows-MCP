@@ -1,11 +1,11 @@
 <div align="center">
   <h1>🪟 Windows-MCP</h1>
 
-  <a href="https://github.com/CursorTouch/Windows-MCP/blob/main/LICENSE">
+  <a href="https://github.com/CursorTouch/Windows-MCP/blob/main/LICENSE.md">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </a>
-  <img src="https://img.shields.io/badge/python-3.13%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/platform-Windows%207–11-blue" alt="Platform: Windows 7 to 11">
+  <img src="https://img.shields.io/badge/python-3.14%2B-blue" alt="Python">
+  <img src="https://img.shields.io/badge/platform-Windows%2010–11-blue" alt="Platform: Windows 10 and 11">
   <img src="https://img.shields.io/github/last-commit/CursorTouch/Windows-MCP" alt="Last Commit">
   <a href="https://pepy.tech/projects/windows-mcp">
     <img src="https://static.pepy.tech/personalized-badge/windows-mcp?period=total&amp;units=INTERNATIONAL_SYSTEM&amp;left_color=BLACK&amp;right_color=GREEN&amp;left_text=downloads" alt="PyPI Downloads">
@@ -34,10 +34,10 @@ mcp-name: io.github.CursorTouch/Windows-MCP
 
 ### Supported Operating Systems
 
-- Windows 7
-- Windows 8, 8.1
 - Windows 10
-- Windows 11  
+- Windows 11
+
+The current package requires Python 3.14+, which [supports Windows 10 and newer](https://docs.python.org/3.14/using/windows.html#supported-versions). Earlier Windows versions are not supported by the current installation.
 
 ## 🎥 Demos
 
@@ -74,9 +74,9 @@ mcp-name: io.github.CursorTouch/Windows-MCP
 
 ### Prerequisites
 
-- Python 3.13+
+- Python 3.14+
 - UV (Package Manager) from Astra, install with `pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- `English` as the default language in Windows preferred else disable the `App-Tool` in the MCP Server for Windows with other languages.
+- The `App` tool resolves localized Start Menu display names as well as internal app names; an English Windows display language is not required.
 
 ### Run at Login
 
@@ -823,7 +823,7 @@ Thanks to all the amazing people who have contributed to Windows-MCP! 🎉
   <img src="https://contrib.rocks/image?repo=CursorTouch/Windows-MCP" />
 </a>
 
-We appreciate every contribution, whether it's code, documentation, bug reports, or feature suggestions. Want to contribute? Check out our [Contributing Guidelines](CONTRIBUTING)!
+We appreciate every contribution, whether it's code, documentation, bug reports, or feature suggestions. Want to contribute? Check out our [Contributing Guidelines](CONTRIBUTING.md)!
 
 ## 🔒 Security
 
@@ -872,7 +872,7 @@ For detailed information on what data is collected and how it is handled, please
 
 ## 🪪 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
 
 ## 🙏 Acknowledgements
 
@@ -884,7 +884,7 @@ Huge thanks to the maintainers and contributors of these libraries for their out
 
 ## 🤝Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING](CONTRIBUTING) for setup instructions and development guidelines.
+Contributions are welcome! Please see [CONTRIBUTING](CONTRIBUTING.md) for setup instructions and development guidelines.
 
 Made with ❤️ by [CursorTouch](https://github.com/CursorTouch)
 
