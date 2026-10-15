@@ -35,9 +35,9 @@ class ControlBlocked(RuntimeError):
 
 
 class ControlCoordinator:
-    def __init__(self, mouse_takeover_units: int = 120, mouse_takeover_pixels: int = 120):
+    def __init__(self, mouse_takeover_units: int = 500, mouse_takeover_pixels: int = 500):
         self.mouse_takeover_units = mouse_takeover_units
-        self.mouse_takeover_pixels = mouse_takeover_pixels
+        self.mouse_takeover_pixels = mouse_takeover_pixels  # Legacy config; no pixel fallback.
         # Set once by the server lifespan before any tools or hooks start.
         self.enabled = True
         self.idle_timeout_seconds = 10.0
@@ -50,8 +50,8 @@ class ControlCoordinator:
         self._last_user = 0.0
         self._last_physical_event = 0.0  # Written before hook events enter the queue.
         self._last_move = 0.0
-        self._point_origin: tuple[int, int] | None = None
-        self._raw_origin: dict[int, tuple[int, int]] = {}
+        self._motion_since = 0.0
+        self._raw_distance = 0.0
         self._raw_device: int | None = None
         self._listeners: list[Callable[[dict], None]] = []
         self.input_ledger = InputLedger()
@@ -214,9 +214,10 @@ class ControlCoordinator:
         self._visual_armed = state == "ai" and self._health_probe is None
         self._visual_paused = False
         self._visual_event_stamp = self._last_physical_event
-        self._point_origin = None
-        self._raw_origin.clear()
+        self._raw_distance = 0.0
         self._raw_device = None
+        if state == "ai":
+            self._motion_since = time.monotonic()
         if state != "takeover_pending":
             self._fast_pending = False
         self._suppress = self._visual_armed and not self._emergency
@@ -240,14 +241,6 @@ class ControlCoordinator:
             and now - max(self._last_user, self._last_physical_event) >= self.idle_timeout_seconds
         ):
             return self._set_locked("ready")
-        if (
-            self._state == "takeover_pending"
-            and not self._mouse_down
-            and now - self._last_move >= 0.3
-        ):
-            return self._set_locked(
-                "ai" if self._active_calls or now < self._lease_until else "ready"
-            )
         if self._state == "ai" and not self._active_calls and now >= self._lease_until:
             if recent:
                 self._last_user = self._last_physical_event
@@ -546,38 +539,24 @@ class ControlCoordinator:
                 elif kind in ("key", "point", "raw") and self._state in ("ready", "user"):
                     self._last_user = now
                     changed = self._set_locked("user") or changed
-                elif kind == "point" and self._state in ("ai", "takeover_pending"):
-                    if event[3] == 0x200:  # WM_MOUSEMOVE
-                        changed = self._candidate_locked(now) or changed
-                        if self._point_origin is None:
-                            self._point_origin = (event[1], event[2])
-                        ox, oy = self._point_origin
-                        if math.hypot(event[1] - ox, event[2] - oy) >= self.mouse_takeover_pixels:
+                elif kind == "raw" and self._state == "ai":
+                    device, dx, dy = event[1:4]
+                    stamp = event[4] if len(event) > 4 else now
+                    if (dx or dy) and stamp >= self._motion_since:
+                        if device != self._raw_device or stamp - self._last_move >= 0.5:
+                            self._raw_distance = 0.0
+                        self._raw_device = device
+                        self._last_move = stamp
+                        # Sum path length, not signed displacement. Keep motion
+                        # in native device units; hook coordinates include AI
+                        # cursor movement and must not contribute a second time.
+                        self._raw_distance += math.hypot(dx, dy)
+                        if self._raw_distance >= self.mouse_takeover_units:
                             self._last_user = now
                             changed = self._set_locked("user") or changed
-                elif kind == "raw" and self._state in ("ai", "takeover_pending"):
-                    changed = self._candidate_locked(now) or changed
-                    device, dx, dy = event[1:]
-                    if self._raw_device is not None and device != self._raw_device:
-                        self._raw_origin.clear()  # A new device starts a new segment.
-                    self._raw_device = device
-                    x, y = self._raw_origin.get(device, (0, 0))
-                    x, y = x + dx, y + dy
-                    self._raw_origin[device] = (x, y)
-                    if math.hypot(x, y) >= self.mouse_takeover_units:
-                        self._last_user = now
-                        changed = self._set_locked("user") or changed
             result = self._snapshot_locked(now)
         if changed:
             self._notify(result)
-
-    def _candidate_locked(self, now: float) -> bool:
-        if self._state == "ai":
-            changed = self._set_locked("takeover_pending")
-        else:
-            changed = False
-        self._last_move = now
-        return changed
 
     def _install_hooks(self, instance) -> None:
         mouse = _user32.SetWindowsHookExW(14, self._mouse_callback, instance, 0)

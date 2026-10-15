@@ -265,19 +265,19 @@ def test_missed_alt_tab_release_after_ai_lease_recovers(case):
     owner.end_call(owner.begin_call("RecoveredProbe"))
 
 
-def test_missed_mouse_release_after_pending_lease_recovers(case):
+def test_missed_mouse_release_after_confirmed_takeover_recovers(case):
     owner, _, clock = case
     owner._pressed.clear()
     owner._state = "ready"
     token = owner.begin_call("FirstProbe")
-    owner._handle(("point", 0, 0, 0x200))
-    assert owner._state == "takeover_pending"
+    owner._handle(("raw", 1, 500, 0))
+    assert owner._state == "user"
     owner._mouse_down.add(1)  # A physical mouse down whose up never arrives.
     owner._last_physical_event = clock[0]
     owner.end_call(token)
     clock[0] += 20
     owner._handle(("tick",))
-    assert owner._state == "takeover_pending"
+    assert owner._state == "user"
     samples(case, lambda vk: 0x8000, 5)
     assert owner._mouse_down == {1}
     samples(case, lambda vk: 0, 4)

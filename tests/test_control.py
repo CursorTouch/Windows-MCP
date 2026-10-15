@@ -176,25 +176,22 @@ def test_start_preserves_cooldown_after_real_physical_input(monkeypatch):
         owner.stop()
 
 
-def test_physical_mouse_pixel_threshold_preempts_only_at_boundary():
+def test_screen_coordinates_never_trigger_mouse_takeover():
     owner = ready_controller()
     owner.begin_call("Click")
     owner._handle(("point", 100, 100, 0x200))
     owner._handle(("point", 219, 100, 0x200))
-    assert owner.status()["state"] == "takeover_pending"
-    owner._handle(("point", 220, 100, 0x200))
-    assert owner.status()["state"] == "user"
-    with pytest.raises(control.ControlBlocked) as exc:
-        owner.begin_call("Click")
-    assert exc.value.code == "USER_CONTROL"
+    owner._handle(("point", 20000, 100, 0x200))
+    assert owner.status()["state"] == "ai"
+    assert owner._suppress
 
 
 def test_raw_mouse_is_per_device_and_relative():
     owner = ready_controller()
     owner.begin_call("Move")
-    owner._handle(("raw", 1, 119, 0))
-    owner._handle(("raw", 2, 119, 0))
-    assert owner.status()["state"] == "takeover_pending"
+    owner._handle(("raw", 1, 499, 0))
+    owner._handle(("raw", 2, 499, 0))
+    assert owner.status()["state"] == "ai"
     owner._handle(("raw", 2, 1, 0))
     assert owner.status()["state"] == "user"
 
@@ -202,11 +199,11 @@ def test_raw_mouse_is_per_device_and_relative():
 def test_raw_device_switch_resets_previous_candidate():
     owner = ready_controller()
     owner.begin_call("Move")
+    owner._handle(("raw", 1, 400, 0))
+    owner._handle(("raw", 2, 400, 0))
+    owner._handle(("raw", 1, 400, 0))
+    assert owner.status()["state"] == "ai"
     owner._handle(("raw", 1, 100, 0))
-    owner._handle(("raw", 2, 100, 0))
-    owner._handle(("raw", 1, 100, 0))
-    assert owner.status()["state"] == "takeover_pending"
-    owner._handle(("raw", 1, 20, 0))
     assert owner.status()["state"] == "user"
 
 
@@ -260,7 +257,7 @@ def test_user_idle_counts_physical_up_before_queue_consumption(monkeypatch):
     assert owner.status()["state"] == "ready"
 
 
-def test_pending_does_not_expire_while_mouse_button_is_held(monkeypatch):
+def test_small_movement_does_not_change_owner_while_button_held(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(control.time, "monotonic", lambda: clock[0])
     owner = ready_controller()
@@ -268,24 +265,22 @@ def test_pending_does_not_expire_while_mouse_button_is_held(monkeypatch):
     owner._handle(("point", 10, 10, 0x200))
     owner._mouse_down.add(1)
     clock[0] = 101.0
-    assert owner.status()["state"] == "takeover_pending"
+    assert owner.status()["state"] == "ai"
     owner._mouse_down.clear()
     assert owner.status()["state"] == "ai"
 
 
-def test_pending_cancels_without_replaying_stale_call(monkeypatch):
+def test_small_movement_preserves_current_call(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(control.time, "monotonic", lambda: clock[0])
     owner = ready_controller()
     token = owner.begin_call("Type")
     owner._handle(("point", 10, 10, 0x200))
-    with pytest.raises(control.ControlBlocked):
-        owner.checkpoint(token)
+    owner.checkpoint(token)
     owner.end_call(token)
-    clock[0] = 100.301
+    clock[0] = 100.501
     assert owner.status()["state"] == "ai"
-    with pytest.raises(control.ControlBlocked):
-        owner.checkpoint(token)
+    owner.checkpoint(token)
 
 
 @pytest.mark.parametrize("press_order", [(0x11, 0x12, 0x10, 0x08), (0x10, 0x12, 0x11, 0x08)])
@@ -344,17 +339,17 @@ def test_injected_key_passes_and_queue_full_fails_open(monkeypatch):
     assert owner._physical_key(-1, 0x100, ctypes.addressof(injected)) == 7
 
 
-def test_physical_move_pauses_ai_before_event_queue_is_processed(monkeypatch):
+def test_physical_move_does_not_pause_ai_before_or_after_queue_processing(monkeypatch):
     owner = ready_controller()
     token = owner.begin_call("Move")
     monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 7)
     data = control._MouseHookData()
     data.pt.x, data.pt.y = 10, 20
     assert owner._physical_mouse(0, 0x200, ctypes.addressof(data)) == 1
-    with pytest.raises(control.ControlBlocked):
-        owner.checkpoint(token)
+    owner.checkpoint(token)
     owner._handle(owner._events.get_nowait())
-    assert owner.status()["state"] == "takeover_pending"
+    assert owner.status()["state"] == "ai"
+    owner.checkpoint(token)
 
 
 def test_swallowed_physical_down_does_not_skip_ai_release(monkeypatch):

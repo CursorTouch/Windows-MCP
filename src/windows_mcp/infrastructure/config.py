@@ -42,8 +42,8 @@ class ToolsConfig:
 @dataclass
 class ControlConfig:
     # Raw relative device units and hook screen pixels are intentionally separate.
-    mouse_takeover_units: int = 120
-    mouse_takeover_pixels: int = 120
+    mouse_takeover_units: int = 500
+    mouse_takeover_pixels: int = 500  # Accepted for compatibility; pixel fallback is disabled.
     enabled: bool = True
     idle_timeout_seconds: float = 10.0
     policy: str = "relaxed"

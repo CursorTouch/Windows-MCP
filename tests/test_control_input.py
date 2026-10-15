@@ -279,20 +279,22 @@ def test_fail_open_releases_before_slow_health_probe(monkeypatch):
     assert not watcher.is_alive()
 
 
-def test_takeover_after_checkpoint_blocks_new_ai_down(monkeypatch):
+def test_confirmed_raw_takeover_blocks_new_ai_down(monkeypatch):
     owner = ready_controller()
     token = owner.begin_call("Drag")
     owner.checkpoint(token)
     monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 7)
     data = control._MouseHookData()
     assert owner._physical_mouse(0, 0x200, ctypes.addressof(data)) == 1
-    assert owner._fast_pending
+    assert not owner._fast_pending
+    owner.checkpoint(token)
+    owner._handle(owner._events.get_nowait())
+    owner._handle(("raw", 1, 500, 0))
     with pytest.raises(InputUnavailable, match="unavailable"):
         owner.input_ledger.press(
             "mouse:left", lambda: pytest.fail("late AI down"), lambda: None, lambda: False
         )
-    owner._handle(owner._events.get_nowait())
-    assert owner.status()["state"] == "takeover_pending"
+    assert owner.status()["state"] == "user"
     with pytest.raises(control.ControlBlocked):
         owner.checkpoint(token)
 
@@ -329,17 +331,13 @@ def test_takeover_between_checkpoint_and_press_injects_no_down(monkeypatch, acti
     assert owner.input_ledger.pending() == ()
 
 
-def test_new_lease_reenables_ledger_after_cancelled_mouse_candidate():
+def test_small_movement_keeps_existing_ledger_enabled():
     owner = ready_controller()
     token = owner.begin_call("Move")
-    owner.input_ledger.block_new()  # Physical move's immediate guard.
     owner._handle(("point", 0, 0, 0x200))
-    assert owner.status()["state"] == "takeover_pending"
-    owner._last_move -= 0.4
+    owner._handle(("raw", 1, 10, 0))
     assert owner.status()["state"] == "ai"
-    with pytest.raises(control.ControlBlocked):
-        owner.checkpoint(token)
-    owner.begin_call("Click")
+    owner.checkpoint(token)
     actions = []
     owner.input_ledger.press(
         "mouse:left", lambda: actions.append("down"), lambda: actions.append("up"), lambda: False

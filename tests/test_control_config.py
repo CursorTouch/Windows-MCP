@@ -11,7 +11,7 @@ from windows_mcp.infrastructure.config import (
 
 
 def test_default_control_thresholds():
-    assert load_config(None).control == ControlConfig(120, 120)
+    assert load_config(None).control == ControlConfig(500, 500)
     assert load_config(None).control.policy == "relaxed"
 
 

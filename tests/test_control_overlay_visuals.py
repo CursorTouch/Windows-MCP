@@ -17,12 +17,15 @@ def _alpha_at(bgra: bytes, width: int, x: int, y: int) -> int:
 
 def test_notice_uses_clear_english_and_transparent_corners():
     assert control_overlay_art._NOTICE_TITLE == "AI is controlling this computer"
-    assert control_overlay_art._NOTICE_HINT == "Press Ctrl + Alt + Shift + Backspace to take over"
+    assert control_overlay_art._NOTICE_MOUSE_HINT == "Move the mouse a significant distance"
+    assert (
+        control_overlay_art._NOTICE_HINT == "or press Ctrl + Alt + Shift + Backspace to take over"
+    )
     assert control_overlay_art._NOTICE_SHORTCUT == "Ctrl + Alt + Shift + Backspace"
     notice = control_overlay_art._notice_bitmap(1920)
     assert notice is not None
     width, height, bgra = notice
-    assert 540 <= width < 1920 and height < 120  # No third line remains.
+    assert 540 <= width < 1920 and height < 160  # Both takeover methods remain visible.
     assert len(bgra) == width * height * 4
     # A supersampled rounded mask gives each corner several partial-alpha pixels.
     for x_start in (0, width - 22):

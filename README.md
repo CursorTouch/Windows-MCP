@@ -636,6 +636,17 @@ own input; PowerShell scripts can also operate the UI. The separate screenshot f
 setting is unchanged. When control is enabled, the idle timer restarts with physical
 input, so shortening it does not allow gated calls while you keep using the computer.
 
+During AI control, small mouse movements remain blocked without pausing the current
+tool. Mouse takeover adds up the length of each relative raw-input movement,
+including back-and-forth movement, until it reaches 500 device units by default.
+A gap of 0.5 seconds without movement starts a new segment; switching devices or
+starting a new control period also clears the total. Set `control.mouse_takeover_units`
+in TOML to change the threshold (40–2000), then restart the server. These are device
+units, not screen pixels. Devices that do not provide identifiable relative raw
+input, including some touchpads and remote-input devices, must use
+`Ctrl+Alt+Shift+Backspace` to take over. The legacy `mouse_takeover_pixels` setting
+is still accepted for compatibility but no longer affects takeover.
+
 ### Desktop gate policies
 
 | Policy | Operations that require desktop ownership |
