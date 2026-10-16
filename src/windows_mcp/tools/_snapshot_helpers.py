@@ -19,6 +19,7 @@ from windows_mcp.desktop.utils import remove_private_use_chars, repair_surrogate
 logger = logging.getLogger(__name__)
 
 MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT = 1920, 1080
+WINDOW_METADATA_NOT_QUERIED = "Not queried (UI tree disabled)"
 
 
 def _screenshot_scale() -> float:
@@ -47,6 +48,20 @@ def _as_region(value: list | str | None) -> list | None:
     if value is None or isinstance(value, list):
         return value
     return json.loads(value)
+
+
+def _screenshot_origin(desktop_state) -> tuple[int, int]:
+    """Return the virtual-desktop origin represented by image pixel (0, 0)."""
+    if desktop_state.screenshot_region:
+        return desktop_state.screenshot_region.left, desktop_state.screenshot_region.top
+
+    displays = desktop_state.available_displays or []
+    if displays:
+        return (
+            min(display.bounding_box.left for display in displays),
+            min(display.bounding_box.top for display in displays),
+        )
+    return 0, 0
 
 
 def capture_desktop_state(
@@ -97,8 +112,12 @@ def capture_desktop_state(
     interactive_elements = desktop_state.tree_state.interactive_elements_to_string()
     scrollable_elements = desktop_state.tree_state.scrollable_elements_to_string()
     semantic_tree = desktop_state.tree_state.semantic_tree_to_string()
-    windows = desktop_state.windows_to_string()
-    active_window = desktop_state.active_window_to_string()
+    if use_ui_tree:
+        windows = desktop_state.windows_to_string()
+        active_window = desktop_state.active_window_to_string()
+    else:
+        windows = WINDOW_METADATA_NOT_QUERIED
+        active_window = WINDOW_METADATA_NOT_QUERIED
     active_desktop = desktop_state.active_desktop_to_string()
     all_desktops = desktop_state.desktops_to_string()
     if profile_enabled:
@@ -183,17 +202,22 @@ def build_snapshot_response(
         )
 
     metadata_text = f"Cursor Position: {desktop_state.cursor_position}\n"
+    returned_size = None
+    if desktop_state.screenshot is not None:
+        returned_size = Size(
+            width=desktop_state.screenshot.width,
+            height=desktop_state.screenshot.height,
+        )
+
     if desktop_state.screenshot_original_size:
         orig = desktop_state.screenshot_original_size
-        scale = desktop_state.screenshot_scale or 1.0
-        if scale < 1.0:
-            coord_scale = round(1.0 / scale, 6)
+        if returned_size and (returned_size.width, returned_size.height) != (
+            orig.width,
+            orig.height,
+        ):
             metadata_text += (
                 f"Screenshot Original Size: {orig.to_string()}\n"
-                f"Screenshot Coordinate Scale: {coord_scale} "
-                f"— image pixels are downscaled; multiply every image pixel coordinate by "
-                f"{coord_scale} before passing to Click, Move, Scroll, or any loc= argument "
-                f"(e.g. image pixel (200, 150) → screen coordinate ({round(200 * coord_scale)}, {round(150 * coord_scale)}))\n"
+                f"Screenshot Returned Size: {returned_size.to_string()}\n"
             )
         else:
             metadata_text += f"Screenshot Size: {orig.to_string()}\n"
@@ -204,10 +228,31 @@ def build_snapshot_response(
         )
         metadata_text += "\n"
     if desktop_state.screenshot_displays:
-        metadata_text += f"Selected Displays: {','.join(str(index) for index in desktop_state.screenshot_displays)}\n"
+        metadata_text += (
+            f"Selected Displays: {','.join(str(index) for index in desktop_state.screenshot_displays)}\n"
+        )
     if desktop_state.screenshot_region:
         metadata_text += f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
         metadata_text += "Coordinate Space: Virtual desktop coordinates\n"
+
+    if desktop_state.screenshot_original_size and returned_size:
+        orig = desktop_state.screenshot_original_size
+        origin_x, origin_y = _screenshot_origin(desktop_state)
+        transform_is_identity = (
+            origin_x == 0
+            and origin_y == 0
+            and orig.width == returned_size.width
+            and orig.height == returned_size.height
+        )
+        if not transform_is_identity:
+            metadata_text += (
+                "Screenshot Coordinate Mapping: "
+                f"screen_x = {origin_x} + image_x * {orig.width} / {returned_size.width}; "
+                f"screen_y = {origin_y} + image_y * {orig.height} / {returned_size.height}\n"
+                "Coordinate Note: this mapping applies only to screenshot image pixels; "
+                "UI-tree coordinates are already screen coordinates and must not be transformed.\n"
+            )
+
     if desktop_state.screenshot_backend:
         metadata_text += f"Screenshot Backend: {desktop_state.screenshot_backend}\n"
     if ui_detail_note:
