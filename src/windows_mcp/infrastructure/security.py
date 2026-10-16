@@ -16,6 +16,12 @@ from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.poolmanager import PoolManager
 
 
+_FAKE_IP_DNS_RANGES = (
+    ipaddress.ip_network("198.18.0.0/15"),
+    ipaddress.ip_network("2001:2::/48"),
+)
+
+
 def _is_private_target(ip: ipaddress._BaseAddress) -> bool:
     return any((
         ip.is_private,
@@ -25,6 +31,11 @@ def _is_private_target(ip: ipaddress._BaseAddress) -> bool:
         ip.is_reserved,
         ip.is_unspecified,
     ))
+
+
+def _is_fake_ip_dns_answer(ip: ipaddress._BaseAddress) -> bool:
+    """Whether an address is from a benchmarking range commonly used for Fake-IP DNS."""
+    return any(ip in network for network in _FAKE_IP_DNS_RANGES)
 
 
 def validate_url(url: str, *, allow_private: bool = False) -> str | None:
@@ -57,6 +68,13 @@ def validate_url(url: str, *, allow_private: bool = False) -> str | None:
         return None
 
     try:
+        ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        hostname_is_ip_literal = False
+    else:
+        hostname_is_ip_literal = True
+
+    try:
         addresses = [
             info[4][0]
             for info in socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
@@ -70,6 +88,14 @@ def validate_url(url: str, *, allow_private: bool = False) -> str | None:
         except ValueError:
             raise ValueError(f"Could not validate resolved address: {raw_addr}")
         if _is_private_target(ip):
+            if not hostname_is_ip_literal and _is_fake_ip_dns_answer(ip):
+                raise ValueError(
+                    f"Hostname '{parsed.hostname}' resolved to {ip}, which is in a "
+                    "benchmarking range commonly used by proxy or VPN Fake-IP DNS. "
+                    "The address remains blocked by SSRF protection. Configure the "
+                    "proxy/VPN to return the hostname's real public address or exclude "
+                    "this hostname from Fake-IP mode."
+                )
             raise ValueError(
                 f"Private, loopback, link-local, multicast, and reserved addresses are blocked: {ip}"
             )
