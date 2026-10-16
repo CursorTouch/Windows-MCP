@@ -49,7 +49,10 @@ class TestStrippedServerPath:
     def test_explicitly_named_shell_runs(self, stripped_server_path):
         # The notification service asks for Windows PowerShell by name.
         output, code = PowerShellExecutor.execute_command("Write-Output ok", shell="powershell")
-        assert (output.strip(), code) == ("ok", 0)
+        # First-use module progress can also write to stderr. It is now kept
+        # instead of being discarded when stdout is nonempty.
+        assert output.split("\n[stderr]\n", 1)[0].strip() == "ok"
+        assert code == 0
 
     def test_launches_an_absolute_existing_executable(self, stripped_server_path, popen_spy):
         PowerShellExecutor.execute_command("Write-Output ok")
