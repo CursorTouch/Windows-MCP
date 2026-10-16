@@ -40,7 +40,10 @@ def restore_system_sleep() -> None:
     except OSError:
         # Process/thread exit clears the request anyway. Do not turn a clean
         # server shutdown into a failure solely because explicit cleanup failed.
-        logger.warning("Could not explicitly restore the normal Windows sleep policy", exc_info=True)
+        logger.warning(
+            "Could not explicitly restore the normal Windows sleep policy",
+            exc_info=True,
+        )
     finally:
         _keep_awake_active = False
 
