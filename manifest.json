@@ -36,6 +36,7 @@
         "ANONYMIZED_TELEMETRY": "${user_config.anonymized_telemetry}",
         "WINDOWS_MCP_PROFILE_SNAPSHOT": "${user_config.profile_snapshot}",
         "WINDOWS_MCP_SCREENSHOT_BACKEND": "${user_config.screenshot_backend}",
+        "WINDOWS_MCP_KEEP_AWAKE": "${user_config.keep_awake}",
         "WINDOWS_MCP_DEBUG": "${user_config.debug}",
         "WINDOWS_MCP_WATCHDOG": "${user_config.watchdog}"
       }
@@ -62,6 +63,13 @@
       "description": "The engine used to capture screenshots. 'auto' automatically selects the fastest available backend (DXGI -> MSS -> Pillow). Use 'pillow' if you encounter capture issues.",
       "required": false,
       "default": "auto"
+    },
+    "keep_awake": {
+      "type": "boolean",
+      "title": "Keep System Awake",
+      "description": "Prevent Windows from entering idle system sleep while Windows-MCP is running. Display timeout is unchanged.",
+      "required": false,
+      "default": false
     },
     "debug": {
       "type": "boolean",
@@ -117,7 +125,7 @@
     },
     {
       "name": "Scroll",
-      "description": "Scrolls at coordinates [x, y], a UI element's label/id, or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls amount (1 wheel \u2248 3-5 lines). Use for navigating long content, lists, and web pages."
+      "description": "Scrolls at coordinates [x, y], a UI element's label/id, or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls amount (1 wheel ≈ 3-5 lines). Use for navigating long content, lists, and web pages."
     },
     {
       "name": "Move",
