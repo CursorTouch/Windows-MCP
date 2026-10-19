@@ -1047,6 +1047,12 @@ class Desktop:
             raise ConnectionError(f"Failed to connect to {current_url}: {e}") from e
         except requests.exceptions.Timeout as e:
             raise TimeoutError(f"Request timed out for {current_url}: {e}") from e
+        has_charset = "charset" in response.headers.get("content-type", "").lower()
+        if not has_charset and response.encoding == "ISO-8859-1":
+            # requests assumes ISO-8859-1 for ``text/*`` without a charset
+            # (RFC 2616) and ignores the in-document ``<meta charset>``, so
+            # non-ASCII pages come back as mojibake. Sniff the body instead.
+            response.encoding = response.apparent_encoding or "utf-8"
         html = response.text
         content = markdownify(html=html)
         return content
