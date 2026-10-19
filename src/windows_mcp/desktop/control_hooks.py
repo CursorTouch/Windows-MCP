@@ -58,6 +58,7 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
         return _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
     vk = None
     down = False
+    mode_switch = False
     try:
         data = ctypes.cast(lparam, ctypes.POINTER(_KeyHookData)).contents
         if data.flags & 0x10:  # LLKHF_INJECTED: AI SendInput stays usable.
@@ -65,11 +66,16 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
         owner._last_physical_event = time.monotonic()
         vk = int(data.vkCode)
         down = wparam in (0x100, 0x104)
+        # Japanese Hankaku/Zenkaku emits VK_DBE_SBCSCHAR / VK_DBE_DBCSCHAR
+        # as persistent mode state, not physical holds. Keep activity and
+        # suppression handling, but do not record these as held/delivered keys.
+        mode_switch = vk in (0xF3, 0xF4) and data.scanCode == 0x29 and not data.flags & 0x01
         was_down = vk in owner._pressed
-        if down:
-            owner._pressed.add(vk)
-        else:
-            owner._pressed.discard(vk)
+        if not mode_switch:
+            if down:
+                owner._pressed.add(vk)
+            else:
+                owner._pressed.discard(vk)
         if vk in owner._quarantine:
             if not down:
                 owner._quarantine.discard(vk)
@@ -97,11 +103,12 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
     except Exception:
         owner._fail_open()
     result = _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
-    if vk is not None and down:
-        if not result:  # Forwarding alone is not proof of delivery.
-            owner._delivered_keys.add(vk)
-    elif vk is not None:
-        owner._delivered_keys.discard(vk)
+    if vk is not None and not mode_switch:
+        if down:
+            if not result:  # Forwarding alone is not proof of delivery.
+                owner._delivered_keys.add(vk)
+        else:
+            owner._delivered_keys.discard(vk)
     return result
 
 
