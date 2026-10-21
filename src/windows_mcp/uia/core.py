@@ -1496,6 +1496,8 @@ def SendKeys(
     waitTime: float.
     charMode: bool, if False, the text typed is depend on the input method if a input method is on.
     debug: bool, if True, print the keys.
+    Unknown braced key names raise ValueError before any input is sent.
+    If sending is interrupted, release virtual keys pressed by this call.
     Examples:
     {Ctrl}, {Delete} ... are special keys' name in SpecialKeyNames.
     SendKeys('{Ctrl}a{Delete}{Ctrl}v{Ctrl}s{Ctrl}{Shift}s{Win}e{PageDown}') #press Ctrl+a, Delete, Ctrl+v, Ctrl+s, Ctrl+Shift+s, Win+e, PageDown
@@ -1554,6 +1556,8 @@ def SendKeys(
             if (len(key) == 2 and not key[1].isdigit()) or len(key) > 2:
                 raise ValueError('"{}" is not valid'.format(text[i : rindex + 1]))
             upperKey = key[0].upper()
+            if upperKey not in SpecialKeyNames and len(key[0]) != 1:
+                raise ValueError(f"Unknown key name: {key[0]!r}")
             count = 1
             if len(key) > 1:
                 count = int(key[1])
@@ -1700,47 +1704,55 @@ def SendKeys(
         if i >= length:
             break
     hotkeyInterval = 0.01
-    for i, key in enumerate(keys):
-        if key[1] == "UnicodeChar":
-            SendUnicodeChar(key[0], charMode)
-            time.sleep(interval)
-            if debug:
-                pass
-        else:
-            scanCode = _VKtoSC(key[0])
-            keybd_event(key[0], scanCode, key[1], 0)
-            if debug:
-                pass
-            if i + 1 == len(keys):
+    pressedKeys: dict[int, tuple[int, int]] = {}
+    try:
+        for i, key in enumerate(keys):
+            if key[1] == "UnicodeChar":
+                SendUnicodeChar(key[0], charMode)
                 time.sleep(interval)
                 if debug:
                     pass
             else:
+                scanCode = _VKtoSC(key[0])
+                if not key[1] & KeyboardEventFlag.KeyUp:
+                    # Record before injection: the call may raise after sending.
+                    pressedKeys[key[0]] = (scanCode, key[1] | KeyboardEventFlag.KeyUp)
+                keybd_event(key[0], scanCode, key[1], 0)
                 if key[1] & KeyboardEventFlag.KeyUp:
-                    if (
-                        keys[i + 1][1] == "UnicodeChar"
-                        or keys[i + 1][1] & KeyboardEventFlag.KeyUp == 0
-                    ):
-                        time.sleep(interval)
-                        if debug:
-                            pass
-                    else:
-                        time.sleep(
-                            hotkeyInterval
-                        )  # must sleep for a while, otherwise combined keys may not be caught
-                        if debug:
-                            pass
-                else:  # KeyboardEventFlag.KeyDown
-                    time.sleep(hotkeyInterval)
+                    pressedKeys.pop(key[0], None)
+                if debug:
+                    pass
+                if i + 1 == len(keys):
+                    time.sleep(interval)
                     if debug:
                         pass
-    # make sure hold keys are not pressed
-    # win = ctypes.windll.user32.GetAsyncKeyState(Keys.VK_LWIN)
-    # ctrl = ctypes.windll.user32.GetAsyncKeyState(Keys.VK_CONTROL)
-    # alt = ctypes.windll.user32.GetAsyncKeyState(Keys.VK_MENU)
-    # shift = ctypes.windll.user32.GetAsyncKeyState(Keys.VK_SHIFT)
-    # if shift & 0x8000:
-    # keybd_event(Keys.VK_SHIFT, 0, KeyboardEventFlag.KeyUp | KeyboardEventFlag.ExtendedKey, 0)
+                else:
+                    if key[1] & KeyboardEventFlag.KeyUp:
+                        if (
+                            keys[i + 1][1] == "UnicodeChar"
+                            or keys[i + 1][1] & KeyboardEventFlag.KeyUp == 0
+                        ):
+                            time.sleep(interval)
+                            if debug:
+                                pass
+                        else:
+                            time.sleep(
+                                hotkeyInterval
+                            )  # must sleep for a while, otherwise combined keys may not be caught
+                            if debug:
+                                pass
+                    else:  # KeyboardEventFlag.KeyDown
+                        time.sleep(hotkeyInterval)
+                        if debug:
+                            pass
+    except BaseException:
+        for vk, (scanCode, flags) in reversed(pressedKeys.items()):
+            try:
+                keybd_event(vk, scanCode, flags, 0)
+            except Exception:
+                # Attempt every release without masking the original failure.
+                pass
+        raise
     time.sleep(waitTime)
 
 
