@@ -16,7 +16,6 @@ from windows_mcp.filesystem.views import (
     MAX_RESULTS,
     File,
     Directory,
-    format_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,14 +144,19 @@ def move_path(source: str, destination: str, overwrite: bool = False) -> str:
 
 
 def delete_path(path: str, recursive: bool = False) -> str:
-    """Delete a file or directory."""
-    target = Path(path).resolve()
-
-    if not target.exists():
-        return f'Error: Path not found: {target}'
+    """Delete a file or directory, removing links without following their targets."""
+    target = Path(path).absolute()
 
     try:
-        if target.is_file() or target.is_symlink():
+        if target.is_symlink():
+            target.unlink()
+            return f'Deleted file: {target}'
+        if target.is_junction():
+            target.rmdir()
+            return f'Deleted directory: {target}'
+        if not target.exists():
+            return f'Error: Path not found: {target}'
+        if target.is_file():
             target.unlink()
             return f'Deleted file: {target}'
         elif target.is_dir():
@@ -300,7 +304,7 @@ def get_file_info(path: str) -> str:
         if target.is_dir():
             try:
                 items = list(target.iterdir())
-                file.contents_dirs = sum(1 for i in items if i.is_dir())    
+                file.contents_dirs = sum(1 for i in items if i.is_dir())
                 file.contents_files = sum(1 for i in items if i.is_file())
             except PermissionError:
                 pass

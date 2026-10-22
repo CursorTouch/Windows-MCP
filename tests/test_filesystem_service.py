@@ -122,6 +122,54 @@ class TestMovePath:
 
 
 class TestDeletePath:
+    @pytest.mark.parametrize("recursive", [False, True])
+    @pytest.mark.parametrize("kind", ["file", "directory", "dangling"])
+    def test_delete_symlink_preserves_target(self, tmp_path, recursive, kind):
+        target = tmp_path / "target"
+        if kind == "file":
+            target.write_text("keep me", encoding="utf-8")
+        elif kind == "directory":
+            target.mkdir()
+            (target / "child.txt").write_text("keep me", encoding="utf-8")
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(target, target_is_directory=kind == "directory")
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Creating symbolic links requires Windows privileges")
+            raise
+
+        result = delete_path(str(link), recursive=recursive)
+
+        assert "Deleted file" in result
+        assert not link.is_symlink()
+        if kind == "file":
+            assert target.read_text(encoding="utf-8") == "keep me"
+        elif kind == "directory":
+            assert (target / "child.txt").read_text(encoding="utf-8") == "keep me"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junctions")
+    @pytest.mark.parametrize("recursive", [False, True])
+    @pytest.mark.parametrize("dangling", [False, True])
+    def test_delete_junction_preserves_target(self, tmp_path, recursive, dangling):
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        _winapi.CreateJunction(str(target), str(link))
+        if dangling:
+            target.rmdir()
+        else:
+            (target / "child.txt").write_text("keep me", encoding="utf-8")
+
+        result = delete_path(str(link), recursive=recursive)
+
+        assert "Deleted directory" in result
+        assert not link.is_junction()
+        if not dangling:
+            assert (target / "child.txt").read_text(encoding="utf-8") == "keep me"
+
     def test_delete_file(self, tmp_path):
         f = tmp_path / "del.txt"
         f.write_text("bye", encoding="utf-8")
