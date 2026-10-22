@@ -91,6 +91,9 @@ def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
     if not src.exists():
         return f'Error: Source not found: {src}'
 
+    if src == dst or dst in src.parents or (src.is_dir() and src in dst.parents):
+        return 'Error: Source and destination paths overlap.'
+
     if dst.exists() and not overwrite:
         return f'Error: Destination already exists: {dst}. Set overwrite=True to replace.'
 
@@ -122,6 +125,9 @@ def move_path(source: str, destination: str, overwrite: bool = False) -> str:
 
     if not src.exists():
         return f'Error: Source not found: {src}'
+
+    if src == dst or dst in src.parents or (src.is_dir() and src in dst.parents):
+        return 'Error: Source and destination paths overlap.'
 
     if dst.exists() and not overwrite:
         return f'Error: Destination already exists: {dst}. Set overwrite=True to replace.'
