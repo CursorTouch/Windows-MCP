@@ -26,6 +26,7 @@ import ctypes
 import ctypes.wintypes
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -1023,9 +1024,132 @@ def uia_click_at(x: int, y: int) -> bool:
 # and the allow_with_match policy refuses on caller side.
 _PUBLISHER_PATTERNS = [
     re.compile(r"Verified publisher:\s*(.+)", re.IGNORECASE),
-    re.compile(r"Program name:\s*(.+)", re.IGNORECASE),
     re.compile(r"Publisher:\s*(.+)", re.IGNORECASE),
 ]
+
+_UTF16_PRINTABLE_RUN = re.compile(rb"(?:[\x20-\x7e]\x00){4,}")
+_ABSOLUTE_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:\\|\\\\)")
+
+
+def _extract_target_path(data: bytes, exists=os.path.isfile) -> str | None:
+    """Return the first existing absolute Windows path in UTF-16LE data."""
+    for match in _UTF16_PRINTABLE_RUN.finditer(data):
+        candidate = match.group().decode("utf-16le", errors="ignore").strip().strip('"').strip()
+        if _ABSOLUTE_WINDOWS_PATH.match(candidate) and exists(candidate):
+            return candidate
+    return None
+
+
+def get_elevation_target_path(consent_pid: int) -> str | None:
+    """Read consent.exe's Appinfo command buffer and extract its target path."""
+    process_handle = None
+    try:
+        import psutil
+
+        args = psutil.Process(consent_pid).cmdline()
+        if len(args) < 4:
+            raise ValueError("consent.exe command line has no Appinfo memory arguments")
+        appinfo_pid = int(args[1])
+        buffer_length = min(int(args[2]), 65536)
+        address = int(args[3], 16)
+        if appinfo_pid <= 0 or buffer_length <= 0 or address <= 0:
+            raise ValueError("invalid consent.exe command-line memory arguments")
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.BOOL,
+            ctypes.wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+        kernel32.ReadProcessMemory.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        kernel32.ReadProcessMemory.restype = ctypes.wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+        process_handle = kernel32.OpenProcess(
+            0x0010 | 0x0400, False, appinfo_pid
+        )
+        if not process_handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        buffer = ctypes.create_string_buffer(buffer_length)
+        bytes_read = ctypes.c_size_t()
+        if not kernel32.ReadProcessMemory(
+            process_handle,
+            ctypes.c_void_p(address),
+            buffer,
+            buffer_length,
+            ctypes.byref(bytes_read),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        target_path = _extract_target_path(buffer.raw[:bytes_read.value])
+        if target_path is None:
+            logger.warning(
+                "get_elevation_target_path(%d): no existing absolute path in Appinfo buffer",
+                consent_pid,
+            )
+        return target_path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("get_elevation_target_path(%d) failed: %s", consent_pid, exc)
+        return None
+    finally:
+        if process_handle:
+            try:
+                kernel32.CloseHandle(process_handle)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def get_file_signer(path: str) -> str | None:
+    """Return the signer of a file with a valid Authenticode signature."""
+    script = (
+        "$s=Get-AuthenticodeSignature -LiteralPath $env:WINDOWS_MCP_SIG_PATH; "
+        "if($s.Status -eq 'Valid')"
+        "{$s.SignerCertificate.GetNameInfo('SimpleName',$false)}"
+    )
+    env = os.environ.copy()
+    env["WINDOWS_MCP_SIG_PATH"] = path
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=env,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Get-AuthenticodeSignature failed for %r: %s",
+                path,
+                result.stderr.strip(),
+            )
+            return None
+        return result.stdout.strip() or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("get_file_signer(%r) failed: %s", path, exc)
+        return None
+
+
+def get_uac_publisher_verified(consent_pid: int) -> str | None:
+    """Return the verified signer for the target of a consent.exe prompt."""
+    target_path = get_elevation_target_path(consent_pid)
+    if target_path is None:
+        return None
+    return get_file_signer(target_path)
 
 
 def get_uac_publisher(consent_pid: int = 0) -> str | None:
@@ -1560,10 +1684,14 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                         )
                         break
                     time.sleep(0.2)
-                # Publisher is best-effort; only spend time on it if the
-                # deadline hasn't already passed.
+                # Read Appinfo's command buffer from the SYSTEM process first;
+                # consent.exe's UIA tree may not expose the publisher text.
+                publisher = get_uac_publisher_verified(consent_pid)
+                target_path = get_elevation_target_path(consent_pid)
+                # Fall back to UIA extraction only when signature inspection
+                # could not identify a valid publisher.
                 pub_remaining = deadline - time.monotonic()
-                if pub_remaining > 3.0:
+                if publisher is None and pub_remaining > 3.0:
                     try:
                         publisher = _spawn_in_user_session(
                             "publisher", pid_arg, timeout=min(15.0, pub_remaining - 1.0)
@@ -1574,6 +1702,7 @@ def wait_for_uac_prompt(timeout_ms: int = 60_000, poll_ms: int = 250) -> dict | 
                 return {
                     "desktop": name or "Default",
                     "publisher": publisher,
+                    "target_path": target_path,
                     "tree": tree,
                 }
 

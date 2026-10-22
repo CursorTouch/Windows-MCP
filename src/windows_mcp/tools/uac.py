@@ -82,6 +82,7 @@ def register(mcp, *, get_desktop, get_analytics):
             "fired": True,
             "desktop": result.get("desktop"),
             "publisher": result.get("publisher"),
+            "target_path": result.get("target_path"),
             "tree": result.get("tree"),
             "policy": pol,
         }

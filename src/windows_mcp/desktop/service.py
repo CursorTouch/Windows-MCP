@@ -79,6 +79,11 @@ def _route_click_through_host(x: int, y: int) -> bool:
             logger.info("Click(%d,%d) routed through host UIAccess worker", x, y)
         return ok
     except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        if "policy denied" in message.lower():
+            raise PermissionError(
+                f"{message}; a human must click the UAC dialog"
+            ) from exc
         logger.warning("host-routed click failed, falling back to local: %s", exc)
         return False
 

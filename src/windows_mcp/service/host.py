@@ -244,15 +244,28 @@ def _enforce_policy(operation: str) -> tuple[bool, str]:
     the desktop check is dropped in favour of unconditional enforcement.
     """
     pol = policy.read_from_registry()
-    try:
-        publisher = secure_desktop._spawn_in_user_session("publisher", timeout=15.0)
-    except Exception as exc:
-        logger.warning("policy: user-session publisher lookup failed: %s", exc)
-        publisher = None
+    consent_pid = secure_desktop._find_consent_pid()
+    publisher = (
+        secure_desktop.get_uac_publisher_verified(consent_pid)
+        if consent_pid
+        else None
+    )
+    target_path = (
+        secure_desktop.get_elevation_target_path(consent_pid)
+        if consent_pid
+        else None
+    )
+    logger.info("policy target path: consent_pid=%s path=%r", consent_pid, target_path)
+    if publisher is None:
+        try:
+            publisher = secure_desktop._spawn_in_user_session("publisher", timeout=15.0)
+        except Exception as exc:
+            logger.warning("policy: user-session publisher lookup failed: %s", exc)
+            publisher = None
     allowed, reason = pol.allows_auto_click(publisher)
     logger.info(
-        "policy check: op=%s policy=%s publisher=%r → %s (%s)",
-        operation, pol.policy, publisher, allowed, reason,
+        "policy check: op=%s policy=%s publisher=%r target_path=%r → %s (%s)",
+        operation, pol.policy, publisher, target_path, allowed, reason,
     )
     return allowed, reason
 
