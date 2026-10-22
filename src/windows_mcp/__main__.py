@@ -973,14 +973,25 @@ def _schtasks(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["schtasks", *args], capture_output=True, text=True)
 
 
+def _headless_task_argument(script_path: str) -> str:
+    """Return the conhost argument string that runs ``script_path`` without a visible window."""
+    return f'--headless cmd.exe /c "{script_path}"'
+
+
 def _register_task_powershell(task_name: str, script_path: str) -> subprocess.CompletedProcess:
     """Register an ONLOGON scheduled task via PowerShell at RunLevel Limited.
 
     Unlike `schtasks /Create /SC ONLOGON`, Register-ScheduledTask with
     -RunLevel Limited does not require an elevated shell.
+
+    The .cmd wrapper is started through ``conhost.exe --headless`` so the long-running
+    server gets a hidden console. Executing the .cmd directly allocates a visible
+    console (a Windows Terminal window on Windows 11) that stays open for the whole
+    session, and closing it kills the server.
     """
     ps = (
-        f"$action  = New-ScheduledTaskAction -Execute '{script_path}';"
+        f"$action  = New-ScheduledTaskAction -Execute 'conhost.exe'"
+        f" -Argument '{_headless_task_argument(script_path)}';"
         f"$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME;"
         f"$set     = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;"
         f"Register-ScheduledTask -TaskName '{task_name}' -Action $action"
