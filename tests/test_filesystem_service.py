@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from windows_mcp.filesystem.service import (
@@ -158,6 +156,32 @@ class TestDeletePath:
 
 
 class TestListDirectory:
+    @pytest.mark.parametrize("pattern", [None, "*.txt"])
+    @pytest.mark.parametrize("show_hidden", [False, True])
+    def test_recursive_hidden_ancestors(self, tmp_path, pattern, show_hidden):
+        hidden = tmp_path / ".hidden" / "nested"
+        hidden.mkdir(parents=True)
+        (hidden / "secret.txt").write_text("hidden", encoding="utf-8")
+        visible = tmp_path / "visible"
+        visible.mkdir()
+        (visible / "public.txt").write_text("visible", encoding="utf-8")
+        (visible / ".private.txt").write_text("hidden", encoding="utf-8")
+
+        result = list_directory(
+            str(tmp_path), pattern=pattern, recursive=True, show_hidden=show_hidden
+        )
+
+        assert "public.txt" in result
+        assert ("secret.txt" in result) is show_hidden
+        assert (".private.txt" in result) is show_hidden
+
+    def test_recursive_listing_inside_explicit_hidden_root(self, tmp_path):
+        root = tmp_path / ".config"
+        root.mkdir()
+        (root / "settings.txt").write_text("visible", encoding="utf-8")
+
+        assert "settings.txt" in list_directory(str(root), recursive=True)
+
     def test_list_basic(self, tmp_path):
         (tmp_path / "a.txt").write_text("a", encoding="utf-8")
         (tmp_path / "b.txt").write_text("b", encoding="utf-8")

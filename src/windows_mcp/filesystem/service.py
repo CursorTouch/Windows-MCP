@@ -16,7 +16,6 @@ from windows_mcp.filesystem.views import (
     MAX_RESULTS,
     File,
     Directory,
-    format_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,7 +193,9 @@ def list_directory(path: str, pattern: str | None = None, recursive: bool = Fals
             iterator = dir_path.iterdir()
 
         for entry in sorted(iterator, key=lambda e: (not e.is_dir(), e.name.lower())):
-            if not show_hidden and entry.name.startswith('.'):
+            if not show_hidden and any(
+                part.startswith('.') for part in entry.relative_to(dir_path).parts
+            ):
                 continue
             if pattern and not recursive and not fnmatch.fnmatch(entry.name, pattern):
                 continue
@@ -300,7 +301,7 @@ def get_file_info(path: str) -> str:
         if target.is_dir():
             try:
                 items = list(target.iterdir())
-                file.contents_dirs = sum(1 for i in items if i.is_dir())    
+                file.contents_dirs = sum(1 for i in items if i.is_dir())
                 file.contents_files = sum(1 for i in items if i.is_file())
             except PermissionError:
                 pass
