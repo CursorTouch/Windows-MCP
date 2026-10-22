@@ -51,7 +51,58 @@ _KEY_ALIASES = {
     "windows": "Win",
     "command": "Win",
     "option": "Alt",
+    # Natural names for punctuation keys (US layout).
+    "comma": ",",
+    "period": ".",
+    "dot": ".",
+    "minus": "-",
+    "dash": "-",
+    "hyphen": "-",
+    "equal": "=",
+    "equals": "=",
+    # "+" itself needs Shift and would be typed as a Unicode packet, not a key chord;
+    # the "=/+" key is what apps bind for Ctrl+Plus (zoom in).
+    "plus": "=",
+    "semicolon": ";",
+    "slash": "/",
+    "backslash": "\\",
+    "grave": "`",
+    "backtick": "`",
+    "bracketleft": "[",
+    "lbracket": "[",
+    "bracketright": "]",
+    "rbracket": "]",
+    "apostrophe": "'",
+    "quote": "'",
 }
+
+# Characters with a meaning in SendKeys syntax; they must be braced to be literal.
+_SENDKEYS_SYNTAX_CHARS = set("{}()")
+
+
+def _shortcut_to_sendkeys(shortcut: str) -> str:
+    """Translate "ctrl+shift+comma" style input into a SendKeys string.
+
+    Natural names such as "comma" or "bracketleft" map to their character, and
+    SendKeys syntax characters are braced so "alt+(" is a key, not a group.
+    Raises ValueError for empty parts (e.g. "ctrl++"; use "plus") so nothing is
+    pressed. Unknown multi-character names are rejected by SendKeys itself before
+    any input is sent.
+    """
+    parts = [part.strip() for part in shortcut.split("+")]
+    if not shortcut.strip() or any(not part for part in parts):
+        raise ValueError(
+            f"Invalid shortcut {shortcut!r}: empty key name. "
+            'Use names such as "plus", "comma", "minus" for punctuation keys.'
+        )
+    sendkeys_str = ""
+    for key in parts:
+        name = _KEY_ALIASES.get(key.lower(), key)
+        if len(name) == 1:
+            sendkeys_str += "{" + name + "}" if name in _SENDKEYS_SYNTAX_CHARS else name
+        else:
+            sendkeys_str += "{" + name + "}"
+    return sendkeys_str
 
 
 def _snapshot_profile_enabled() -> bool:
@@ -986,17 +1037,9 @@ class Desktop:
             sleep(0.003)
 
     def shortcut(self, shortcut: str):
+        sendkeys_str = _shortcut_to_sendkeys(shortcut)
         owner = get_controller()
         owner.checkpoint_current()
-        keys = shortcut.split("+")
-        sendkeys_str = ""
-        for key in keys:
-            key = key.strip()
-            if len(key) == 1:
-                sendkeys_str += key
-            else:
-                name = _KEY_ALIASES.get(key.lower(), key)
-                sendkeys_str += "{" + name + "}"
         uia.SendKeys(sendkeys_str, interval=0.01)
         owner.record_step_current()
 
@@ -1006,6 +1049,9 @@ class Desktop:
         press_ctrl = press_ctrl is True or (
             isinstance(press_ctrl, str) and press_ctrl.lower() == "true"
         )
+        # Validate every point before Ctrl goes down, so bad input fails without
+        # touching the keyboard (and without clicking half of the list).
+        points = [self._normalize_drag_point(loc, f"locs[{i}]") for i, loc in enumerate(locs)]
         try:
             if press_ctrl:
                 owner.input_ledger.press(
@@ -1014,9 +1060,8 @@ class Desktop:
                     lambda: uia.ReleaseKey(uia.Keys.VK_CONTROL, waitTime=0.05),
                     lambda: owner.physical_key_down(uia.Keys.VK_CONTROL),
                 )
-            for loc in locs:
+            for x, y in points:
                 owner.checkpoint_current()
-                x, y = loc
                 uia.Click(x, y, waitTime=0.2)
                 owner.record_step_current()
                 sleep(0.5)
