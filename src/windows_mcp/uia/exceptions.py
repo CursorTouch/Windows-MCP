@@ -1,7 +1,7 @@
 """UIA exception hierarchy for typed error handling."""
 
 from _ctypes import COMError  # noqa: F401 — re-exported for callers
-from .enums import UIAError, is_dead_element_error, is_retryable_error
+from .enums import UIAError, is_dead_element_error, is_retryable_error, is_timeout_error
 
 
 class UIAException(Exception):
@@ -47,7 +47,11 @@ class UIANoClickablePointError(UIAException):
 
 
 class UIATimeoutError(UIAException):
-    """UIA or RPC operation timed out (UIA_E_TIMEOUT, RPC_E_TIMEOUT)."""
+    """UIA or RPC operation timed out — the provider did not answer, retrying will not help.
+
+    Covers: UIA_E_TIMEOUT, RPC_E_TIMEOUT, ERROR_TIMEOUT (0x800705B4, raised when the
+            client's ConnectionTimeout/TransactionTimeout expires).
+    """
 
 
 class UIAThreadError(UIAException):
@@ -86,6 +90,7 @@ _CODE_TO_EXCEPTION: dict[int, type[UIAException]] = {
     UIAError.UIA_E_NOCLICKABLEPOINT: UIANoClickablePointError,
     UIAError.UIA_E_TIMEOUT: UIATimeoutError,
     UIAError.RPC_E_TIMEOUT: UIATimeoutError,
+    UIAError.ERROR_TIMEOUT: UIATimeoutError,
     UIAError.UIA_E_INVALIDOPERATION: UIAInvalidOperationError,
     UIAError.RPC_E_WRONG_THREAD: UIAThreadError,
     UIAError.RPC_E_THREAD_NOT_INIT: UIAThreadError,
@@ -93,6 +98,13 @@ _CODE_TO_EXCEPTION: dict[int, type[UIAException]] = {
     UIAError.E_ACCESSDENIED: UIAAccessDeniedError,
     UIAError.RPC_E_ACCESS_DENIED: UIAAccessDeniedError,
 }
+
+
+def is_timeout_exception(error: BaseException) -> bool:
+    """Whether ``error`` (a typed UIAException or a raw COMError) is a provider timeout."""
+    if isinstance(error, UIATimeoutError):
+        return True
+    return isinstance(error, COMError) and bool(error.args) and is_timeout_error(error.args[0])
 
 
 def from_com_error(e: COMError) -> UIAException:

@@ -731,6 +731,15 @@ A window is excluded *before* any UI Automation call is made against it, so its 
 
 This is an exclusion mechanism — a mitigation, not a complete fix for every form of [#383](https://github.com/CursorTouch/Windows-MCP/issues/383). It only skips the processes you name; a pathological window you have not listed can still stall a capture.
 
+### UI Automation timeouts
+
+| Variable | Default | Description |
+|---|---|---|
+| `WINDOWS_MCP_UIA_CONNECTION_TIMEOUT_MS` | `2000` | Milliseconds UI Automation waits to connect to a window's accessibility provider before failing that window. Positive integer; anything else uses the default. |
+| `WINDOWS_MCP_UIA_TRANSACTION_TIMEOUT_MS` | `5000` | Milliseconds a single UI Automation call into a provider may take before it fails. Positive integer; anything else uses the default. |
+
+When a window stops answering UI Automation (its UI thread is busy, deadlocked, or still starting up), `Snapshot`, `WaitFor` and other UI-tree tools now skip that window after one timeout. The window is reported as a failed capture, and the rest of the desktop is still returned. Previously the call waited until the window recovered, and every later tool call queued behind it. Raise these values only if an application legitimately needs longer for a single accessibility call. To stop traversing an application at all, use `WINDOWS_MCP_EXCLUDE_PROCESSES`.
+
 ### Desktop control settings
 
 If a physical key/button release event is missed, the input monitor checks residual

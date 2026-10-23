@@ -1,5 +1,5 @@
 from __future__ import annotations
-from windows_mcp.uia import Control, ComboBoxControl, DocumentControl, CheckBoxControl, EditControl, ButtonControl, SliderControl, ScrollPattern, WindowControl, ImageControl, Rect, ExpandCollapseState, ToggleState, PatternId, PropertyId, AccessibleRoleNames, TreeScope, ControlFromHandle, UIADeadElementError, from_com_error, TextPatternRangeEndpoint
+from windows_mcp.uia import Control, ComboBoxControl, DocumentControl, CheckBoxControl, EditControl, ButtonControl, SliderControl, ScrollPattern, WindowControl, ImageControl, Rect, ExpandCollapseState, ToggleState, PatternId, PropertyId, AccessibleRoleNames, TreeScope, ControlFromHandle, UIADeadElementError, from_com_error, is_timeout_exception, TextPatternRangeEndpoint
 from windows_mcp.tree.config import INTERACTIVE_CONTROL_TYPE_NAMES, DOCUMENT_CONTROL_TYPE_NAMES, INFORMATIVE_CONTROL_TYPE_NAMES, DEFAULT_ACTIONS, INTERACTIVE_ROLES, THREAD_MAX_RETRIES, STRUCTURAL_CONTROL_TYPE_NAMES
 from windows_mcp.tree.views import TreeElementNode, ScrollElementNode, TextElementNode, Center, BoundingBox, TreeState, SemanticNode, _prune_structural, _reverse_children_order
 from windows_mcp.tree.cache_utils import (
@@ -259,8 +259,14 @@ class Tree:
                 if active_window_flag and temp_node.ClassName == "Progman":
                     continue
                 is_browser = self.desktop.is_window_browser(temp_node)
-            except Exception:
-                pass
+            except Exception as e:
+                if is_timeout_exception(e):
+                    logger.warning(
+                        f"Window handle {handle} is not responding to UI Automation; "
+                        f"skipping it for this capture. Error: {e}"
+                    )
+                    failed_handles.append(handle)
+                    continue
             task_inputs.append((handle, is_browser))
 
         retry_counts = {handle: 0 for handle in windows_handles}
@@ -284,6 +290,15 @@ class Tree:
                             window_sem_nodes.append(win_sem_node)
                     break
                 except Exception as e:
+                    if is_timeout_exception(e):
+                        # The window's UI thread is not answering. Retrying, or even reading
+                        # its Name for the log line, would pay the full timeout again.
+                        logger.warning(
+                            f"Window handle {handle} is not responding to UI Automation; "
+                            f"skipping it for this capture. Error: {e}"
+                        )
+                        failed_handles.append(handle)
+                        break
                     retry_counts[handle] = attempt + 1
                     try:
                         window_name = ControlFromHandle(handle).Name

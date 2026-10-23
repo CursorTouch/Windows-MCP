@@ -15,6 +15,7 @@ from windows_mcp.uia import (
     Control,
     UIADeadElementError,
     from_com_error,
+    is_timeout_exception,
 )
 from typing import Optional, Any
 import logging
@@ -202,6 +203,10 @@ class CachedControlHelper:
             if is_uia_dead_element_error(e):
                 logger.debug("UIA element is no longer available; pruning stale subtree")
                 return []
+            if is_timeout_exception(e):
+                # The provider did not answer; the uncached fallback would wait out the
+                # same timeout again (once per child call). Let the window fail now.
+                raise
 
             logger.debug(f"Failed to get cached children, falling back to regular access: {e}")
             try:

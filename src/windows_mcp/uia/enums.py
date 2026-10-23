@@ -2145,6 +2145,7 @@ class UIAError(IntEnum):
     CO_E_NOTINITIALIZED = -2147220496  # 0x800401F0 — CoInitialize not called
 
     E_ACCESSDENIED = -2147024891  # 0x80070005 — access denied
+    ERROR_TIMEOUT = -2147023436  # 0x800705B4 — HRESULT_FROM_WIN32(ERROR_TIMEOUT); returned when the IUIAutomation2 connection/transaction timeout expires against a provider that does not answer
 
 
 def is_dead_element_error(code: int) -> bool:
@@ -2170,3 +2171,17 @@ def is_retryable_error(code: int) -> bool:
         UIAError.RPC_E_SERVERCALL_REJECTED,
     }
     return code in retryable_codes
+
+
+def is_timeout_error(code: int) -> bool:
+    """Check if error code indicates the provider did not answer in time.
+
+    Retrying will not help: the window's UI thread is not processing requests, and each
+    retry pays the full timeout again.
+    """
+    timeout_codes = {
+        UIAError.UIA_E_TIMEOUT,
+        UIAError.RPC_E_TIMEOUT,
+        UIAError.ERROR_TIMEOUT,
+    }
+    return code in timeout_codes

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import comtypes
 import comtypes.client
 from _ctypes import COMError
-from typing import Any, Callable, Dict, Generator, List, Tuple
+from typing import Any, Callable, Dict, Generator, List, Mapping, Tuple
 
 
 METRO_WINDOW_CLASS_NAME = "Windows.UI.Core.CoreWindow"  # for Windows 8 and 8.1
@@ -49,6 +49,27 @@ from .exceptions import from_com_error  # noqa: E402
 from .comtypes_cache import safe_get_module  # noqa: E402
 
 
+DEFAULT_UIA_CONNECTION_TIMEOUT_MS = 2000
+DEFAULT_UIA_TRANSACTION_TIMEOUT_MS = 5000
+
+
+def _uia_timeout_ms(name: str, default: int, env: Mapping[str, str] | None = None) -> int:
+    """Read a UI Automation client timeout (milliseconds) from the environment.
+
+    Args:
+        name: Environment variable to read.
+        default: Value used when the variable is unset, blank, not an integer, or below 1.
+        env: Mapping to read from. Defaults to ``os.environ``.
+    """
+    source = os.environ if env is None else env
+    raw = source.get(name, "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 1 else default
+
+
 class _AutomationClient:
     _instance = None
 
@@ -70,10 +91,7 @@ class _AutomationClient:
                 self.UIAutomationCore = safe_get_module(
                     "UIAutomationCore.dll", required_attr="IUIAutomation"
                 )
-                self.IUIAutomation = comtypes.client.CreateObject(
-                    "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-                    interface=self.UIAutomationCore.IUIAutomation,
-                )
+                self.IUIAutomation = self._create_client()
                 self.ViewWalker = self.IUIAutomation.RawViewWalker
                 # self.ViewWalker = self.IUIAutomation.ControlViewWalker
                 break
@@ -81,6 +99,32 @@ class _AutomationClient:
                 if retry + 1 == tryCount:
                     raise from_com_error(ex) from ex
                 time.sleep(0.1)
+
+    def _create_client(self):
+        """Create the shared client with bounded connection/transaction timeouts.
+
+        The v1 ``CUIAutomation`` coclass only implements ``IUIAutomation``, which has no
+        timeouts: a call into a window whose UI thread has stopped pumping messages blocks
+        until that window recovers. ``CUIAutomation8`` implements ``IUIAutomation2``, whose
+        ConnectionTimeout/TransactionTimeout make such a call fail with ERROR_TIMEOUT
+        instead. It is still a valid ``IUIAutomation``, so every existing caller keeps
+        working. Falls back to ``CUIAutomation`` where ``CUIAutomation8`` is unavailable.
+        """
+        core = self.UIAutomationCore
+        try:
+            client = comtypes.client.CreateObject(core.CUIAutomation8, interface=core.IUIAutomation2)
+            client.ConnectionTimeout = _uia_timeout_ms(
+                "WINDOWS_MCP_UIA_CONNECTION_TIMEOUT_MS", DEFAULT_UIA_CONNECTION_TIMEOUT_MS
+            )
+            client.TransactionTimeout = _uia_timeout_ms(
+                "WINDOWS_MCP_UIA_TRANSACTION_TIMEOUT_MS", DEFAULT_UIA_TRANSACTION_TIMEOUT_MS
+            )
+            return client
+        except (COMError, AttributeError, OSError):
+            return comtypes.client.CreateObject(
+                "{ff48dba4-60ef-4201-aa87-54103eef594e}",
+                interface=core.IUIAutomation,
+            )
 
 
 # set Windows dll restype
@@ -2614,14 +2658,12 @@ def _get_automation3():
     """
     Get an `IUIAutomation3` object, for the TextEdit-changed handlers below.
 
-    Naively QueryInterface-ing the shared `_AutomationClient.instance().IUIAutomation`
-    singleton up to `IUIAutomation3` does NOT work -- verified live: that singleton is created
-    from the `CUIAutomation` coclass (CLSID `{ff48dba4-...}`), which only ever implements
-    plain `IUIAutomation`; `QueryInterface(IUIAutomation2/3/.../6)` on it fails with
-    E_NOINTERFACE regardless of Windows version. The whole newer interface ladder
-    (IUIAutomation2 through IUIAutomation6) is only reachable through the separate
-    `CUIAutomation8` coclass, so this creates and caches its own independent COM object from
-    that coclass instead of trying to upgrade the existing one.
+    The shared `_AutomationClient.instance().IUIAutomation` singleton is normally created
+    from `CUIAutomation8` (see `_AutomationClient._create_client`), but it falls back to the
+    v1 `CUIAutomation` coclass (CLSID `{ff48dba4-...}`), which only ever implements plain
+    `IUIAutomation`: `QueryInterface(IUIAutomation2/3/.../6)` on that fails with
+    E_NOINTERFACE regardless of Windows version. So this still creates and caches its own
+    independent `CUIAutomation8` object instead of trying to upgrade the shared one.
     """
     global _automation3_instance
     if _automation3_instance is None:

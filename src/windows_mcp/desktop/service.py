@@ -1211,6 +1211,10 @@ class Desktop:
                 )
             except Exception as ex:
                 last_error = ex
+                if uia.is_timeout_exception(ex):
+                    # The foreground window is not answering UI Automation; a retry
+                    # would only wait out the same timeout again.
+                    break
                 # Same retry policy for transient exceptions —
                 # ControlFromHandle(NULL) raises during focus transitions
                 # and the next attempt usually succeeds.
@@ -1218,7 +1222,7 @@ class Desktop:
                 continue
         if last_error is not None:
             logger.error(
-                f"Error in get_active_window after {self._UIA_RETRIES} retries: {last_error}"
+                f"Error in get_active_window after {attempt + 1} attempt(s): {last_error}"
             )
         return None
 
