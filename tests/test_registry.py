@@ -129,3 +129,40 @@ class TestRegistryList:
         with patch(EXECUTE_COMMAND_PATH, return_value=("No values or sub-keys found.", 0)):
             result = registry.list_key(path="HKCU:\\Software\\Empty")
         assert 'No values or sub-keys found' in result
+
+
+class TestRegistryLiteralPath:
+    """Key names may contain wildcards (HKCR\\* is a real key); -Path would expand
+    them and act on every sibling key that matches."""
+
+    PATH = "HKCU:\\Software\\Classes\\*\\shell\\Demo"
+
+    def _command(self, func, **kwargs):
+        with patch(EXECUTE_COMMAND_PATH, return_value=("", 0)) as mock_exec:
+            func(path=self.PATH, **kwargs)
+        return mock_exec.call_args[0][0]
+
+    def _assert_literal(self, cmd):
+        assert f"-LiteralPath {ps_quote(self.PATH)}" in cmd
+        # New-Item has no -LiteralPath and creates the path as written.
+        assert cmd.count(" -Path ") == cmd.count("New-Item -Path ")
+
+    def test_get(self):
+        self._assert_literal(self._command(registry.get_value, name="MyValue"))
+
+    def test_set(self):
+        cmd = self._command(registry.set_value, name="MyValue", value="1")
+        self._assert_literal(cmd)
+        assert f"Test-Path -LiteralPath {ps_quote(self.PATH)}" in cmd
+        assert f"Set-ItemProperty -LiteralPath {ps_quote(self.PATH)}" in cmd
+
+    def test_delete_value(self):
+        self._assert_literal(self._command(registry.delete_entry, name="MyValue"))
+
+    def test_delete_key(self):
+        self._assert_literal(self._command(registry.delete_entry, name=None))
+
+    def test_list(self):
+        cmd = self._command(registry.list_key)
+        self._assert_literal(cmd)
+        assert f"Get-ChildItem -LiteralPath {ps_quote(self.PATH)}" in cmd

@@ -2,6 +2,12 @@
 Registry service for the Windows MCP server.
 Provides structured operations for reading and writing the Windows Registry
 via PowerShell cmdlets.
+
+Key paths are passed with -LiteralPath. Registry key names may contain
+wildcard characters (HKCR\\* holds the shell entries for all file types), and
+-Path would expand them, reading, writing or deleting every sibling key that
+matches instead of the one the caller named. New-Item keeps -Path: it creates
+the path as written, and Windows PowerShell 5.1's New-Item has no -LiteralPath.
 """
 
 import logging
@@ -19,7 +25,7 @@ def get_value(path: str, name: str) -> str:
     q_path = ps_quote(path)
     q_name = ps_quote(name)
     command = (
-        f"Get-ItemProperty -Path {q_path} -Name {q_name} | "
+        f"Get-ItemProperty -LiteralPath {q_path} -Name {q_name} | "
         f"Select-Object -ExpandProperty {q_name}"
     )
     response, status = PowerShellExecutor.execute_command(command)
@@ -39,8 +45,8 @@ def set_value(path: str, name: str, value: str, reg_type: RegistryType = 'String
     q_name = ps_quote(name)
     q_value = ps_quote(value)
     command = (
-        f"if (-not (Test-Path {q_path})) {{ New-Item -Path {q_path} -Force | Out-Null }}; "
-        f"Set-ItemProperty -Path {q_path} -Name {q_name} -Value {q_value} -Type {reg_type} -Force"
+        f"if (-not (Test-Path -LiteralPath {q_path})) {{ New-Item -Path {q_path} -Force | Out-Null }}; "
+        f"Set-ItemProperty -LiteralPath {q_path} -Name {q_name} -Value {q_value} -Type {reg_type} -Force"
     )
     response, status = PowerShellExecutor.execute_command(command)
     if status != 0:
@@ -53,12 +59,12 @@ def delete_entry(path: str, name: str | None = None) -> str:
     q_path = ps_quote(path)
     if name:
         q_name = ps_quote(name)
-        command = f"Remove-ItemProperty -Path {q_path} -Name {q_name} -Force"
+        command = f"Remove-ItemProperty -LiteralPath {q_path} -Name {q_name} -Force"
         response, status = PowerShellExecutor.execute_command(command)
         if status != 0:
             return f'Error deleting registry value: {response.strip()}'
         return f'Registry value [{path}] "{name}" deleted.'
-    command = f"Remove-Item -Path {q_path} -Recurse -Force"
+    command = f"Remove-Item -LiteralPath {q_path} -Recurse -Force"
     response, status = PowerShellExecutor.execute_command(command)
     if status != 0:
         return f'Error deleting registry key: {response.strip()}'
@@ -69,9 +75,9 @@ def list_key(path: str) -> str:
     """List values and sub-keys under *path*."""
     q_path = ps_quote(path)
     command = (
-        f"$values = (Get-ItemProperty -Path {q_path} -ErrorAction Stop | "
+        f"$values = (Get-ItemProperty -LiteralPath {q_path} -ErrorAction Stop | "
         f"Select-Object * -ExcludeProperty PS* | Format-List | Out-String).Trim(); "
-        f"$subkeys = (Get-ChildItem -Path {q_path} -ErrorAction SilentlyContinue | "
+        f"$subkeys = (Get-ChildItem -LiteralPath {q_path} -ErrorAction SilentlyContinue | "
         f"Select-Object -ExpandProperty PSChildName) -join \"`n\"; "
         f"if ($values) {{ Write-Output \"Values:`n$values\" }}; "
         f"if ($subkeys) {{ Write-Output \"`nSub-Keys:`n$subkeys\" }}; "
