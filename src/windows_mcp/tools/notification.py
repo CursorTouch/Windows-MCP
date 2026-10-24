@@ -12,7 +12,7 @@ from windows_mcp import notifications
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name="Notification",
-        description="Sends a Windows toast notification with a title and message. Avoid unnecessary notifications that interrupt the user; relaxed control policy does not gate this tool.",
+        description="Sends a Windows toast notification. Requires title, message, and app_id (a registered Windows AppUserModelID). Find available IDs with PowerShell: Get-StartApps | Select-Object Name, AppID. Avoid unnecessary notifications that interrupt the user; relaxed control policy does not gate this tool.",
         annotations=ToolAnnotations(
             title="Notification",
             readOnlyHint=False,
@@ -34,7 +34,7 @@ def register(mcp, *, get_desktop, get_analytics):
         app_id: Annotated[
             str,
             Field(
-                description="The valid Application User Model ID of the toast notification. Required to display the notification in a specific app.",
+                description="Required registered Windows AppUserModelID. Use the AppID column from Get-StartApps, not the app's display name. The notification is attributed to that app.",
             ),
         ],
         ctx: Context = None,

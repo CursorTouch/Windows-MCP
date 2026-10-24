@@ -854,8 +854,32 @@ MCP Client can access the following tools to interact with Windows:
 - `MultiEdit`: Enter text into multiple input fields at specified coordinates. Uses bulk label-to-coordinate resolution when labels are provided.
 - `Clipboard`: Read or set Windows clipboard content.
 - `Process`: List running processes or terminate them by PID or name.
-- `Notification`: Send a Windows toast notification with a title and message.
+- `Notification`: Send a Windows toast notification with `title`, `message`, and a required `app_id` (registered Windows AppUserModelID). See the example below.
 - `Registry`: Read, write, delete, or list Windows Registry values and keys.
+
+### Toast notifications
+
+`Notification` requires a registered Windows AppUserModelID in `app_id`, in addition
+to `title` and `message`. Windows attributes the toast to that app. To find IDs
+registered on the target machine, run this in PowerShell (or via the `PowerShell` tool):
+
+```powershell
+Get-StartApps | Select-Object Name, AppID
+```
+
+Use the `AppID` value, not the app's display name. For example, if the list includes
+`Microsoft.Windows.Explorer`, an MCP tool call is:
+
+```json
+{
+  "name": "Notification",
+  "arguments": {
+    "title": "Windows-MCP",
+    "message": "Task complete",
+    "app_id": "Microsoft.Windows.Explorer"
+  }
+}
+```
 
 
 ## 🤝 Connect with Us
