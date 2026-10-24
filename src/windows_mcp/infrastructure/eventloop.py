@@ -4,6 +4,8 @@ import logging
 import socket
 from asyncio.selector_events import BaseSelectorEventLoop
 
+from windows_mcp.infrastructure.power import install_keep_awake_from_env
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["install_selfpipe_guard", "SELFPIPE_REBUILD_WARN_AT"]
@@ -50,7 +52,10 @@ def _rebuild_selfpipe(loop: BaseSelectorEventLoop) -> None:
 
 
 def install_selfpipe_guard() -> None:
-    """Rebuild asyncio's self-pipe instead of busy-looping when Windows kills it.
+    """Install process guards used by the long-running Windows server.
+
+    The optional keep-awake request is installed here because this startup hook
+    runs once on the server's main thread before the MCP event loop starts.
 
     asyncio wakes its event loop through a loopback socketpair. A Windows
     session or display transition tears that idle pair down, and the loop never
@@ -69,6 +74,8 @@ def install_selfpipe_guard() -> None:
 
     Related issue: #392
     """
+    install_keep_awake_from_env()
+
     original = BaseSelectorEventLoop._read_from_self
     if getattr(original, "_selfpipe_guard", False):
         return
