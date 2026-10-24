@@ -969,8 +969,20 @@ def _build_start_script(program_args: list[str]) -> str:
     return f'@echo off\nsetlocal\n{command} 1>>"{log_out}" 2>>"{log_err}"\n'
 
 
+def _run_console_tool(args: list[str]) -> subprocess.CompletedProcess:
+    """Run a Windows console tool and capture its output as text.
+
+    schtasks and PowerShell write in the console code page (GBK on a zh-CN system),
+    not in UTF-8 or the locale encoding text=True would use. Decoding with the wrong
+    codec raises UnicodeDecodeError in subprocess's reader thread, which prints a
+    traceback and drops the output. Decode with the OEM code page instead, and replace
+    anything that still does not fit rather than failing.
+    """
+    return subprocess.run(args, capture_output=True, encoding="oem", errors="replace")
+
+
 def _schtasks(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["schtasks", *args], capture_output=True, text=True)
+    return _run_console_tool(["schtasks", *args])
 
 
 def _headless_task_argument(script_path: str) -> str:
@@ -997,11 +1009,7 @@ def _register_task_powershell(task_name: str, script_path: str) -> subprocess.Co
         f"Register-ScheduledTask -TaskName '{task_name}' -Action $action"
         f" -Trigger $trigger -Settings $set -RunLevel Limited -Force"
     )
-    return subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-        capture_output=True,
-        text=True,
-    )
+    return _run_console_tool(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
 
 
 @main.command()
