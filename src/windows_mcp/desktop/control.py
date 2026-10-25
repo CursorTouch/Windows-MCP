@@ -49,6 +49,7 @@ class ControlCoordinator:
         self._lease_until = 0.0
         self._last_user = 0.0
         self._last_physical_event = 0.0  # Written before hook events enter the queue.
+        self._last_point: tuple[int, int] | None = None  # Cursor baseline for activity.
         self._last_move = 0.0
         self._motion_since = 0.0
         self._raw_distance = 0.0

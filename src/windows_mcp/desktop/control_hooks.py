@@ -23,19 +23,30 @@ def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
     button = None
     try:
         data = ctypes.cast(lparam, ctypes.POINTER(_MouseHookData)).contents
+        point = (int(data.pt.x), int(data.pt.y))
         if data.flags & 1:  # LL mouse injection flags.
+            # Keep the cursor baseline on the AI's own pointer so the stationary
+            # repeats that follow an AI move are not read as user movement.
+            owner._last_point = point
             return _user32.CallNextHookEx(owner._mouse_hook, code, wparam, lparam)
         valid = True
-        owner._last_physical_event = time.monotonic()
-        # Motion is still swallowed, but does not interrupt AI until the raw
-        # movement accumulator confirms a deliberate takeover.
         button = _mouse_button(wparam, data.mouseData)
+        # Some wireless receivers stream WM_MOUSEMOVE at an unchanged position
+        # for as long as they are powered. Counting that as user activity keeps
+        # the coordinator in "user" forever, so only a button or real cursor
+        # displacement counts. Motion is still swallowed, but does not interrupt
+        # AI until the raw accumulator confirms a deliberate takeover.
+        active = button is not None or point != owner._last_point
+        owner._last_point = point
+        if active:
+            owner._last_physical_event = time.monotonic()
         if button:
             if button[1]:
                 owner._mouse_down.add(button[0])
             else:
                 owner._mouse_down.discard(button[0])
-        owner._queue(("point", data.pt.x, data.pt.y, int(wparam)))
+        if active:
+            owner._queue(("point", data.pt.x, data.pt.y, int(wparam)))
         if owner._suppress and not owner._emergency:
             if time.monotonic() <= owner._deadline:
                 return 1
@@ -117,6 +128,8 @@ def raw_input(owner: Any, lparam: int) -> None:
     raw = _read_raw_mouse(lparam)
     if raw is None:
         return  # Null devices can be touchpads; do not infer source.
+    if not raw[1] and not raw[2]:
+        return  # A zero-delta report is device chatter, not user activity.
     owner._last_physical_event = time.monotonic()
     # Preserve arrival time: queue latency must not join separate gestures.
     owner._queue(("raw", *raw, owner._last_physical_event))
