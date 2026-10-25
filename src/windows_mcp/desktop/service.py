@@ -200,8 +200,6 @@ class Desktop:
             active_window = None
             active_window_handle = None
 
-        cursor_position = self.get_cursor_location()
-
         try:
             active_desktop = get_current_desktop()
             all_desktops = get_all_desktops()
@@ -265,8 +263,12 @@ class Desktop:
             windows = self._filter_windows_to_region(windows, screenshot_region)
             if use_ui_tree:
                 tree_state = self._filter_tree_state_to_region(tree_state, screenshot_region)
-            if cursor_position and not self._point_in_region(cursor_position, screenshot_region):
-                cursor_position = None
+
+        # Desktop queries and UI tree traversal can be slow. Sample the cursor
+        # afterwards to keep the metadata and annotation close to capture time.
+        cursor_position = self.get_cursor_location()
+        if screenshot_region and not self._point_in_region(cursor_position, screenshot_region):
+            cursor_position = None
 
         if profile_enabled:
             region_filter_ms = (perf_counter() - stage_started_at) * 1000
