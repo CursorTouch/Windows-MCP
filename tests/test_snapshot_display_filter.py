@@ -740,6 +740,28 @@ class TestSnapshotTools:
         assert call["use_ui_tree"] is True
         assert call["use_annotation"] is True
 
+    @pytest.mark.parametrize(
+        ("region", "use_ui_tree"),
+        [(None, True), ([0, 0, 640, 480], True), ([0, 0, 640, 480], False)],
+    )
+    def test_snapshot_tool_reports_region_tree_scope(
+        self, desktop_state, monkeypatch, region, use_ui_tree
+    ):
+        if region is None:
+            desktop_state.screenshot_region = None
+            desktop_state.screenshot_displays = None
+        fake_desktop = MagicMock()
+        fake_desktop.get_state.return_value = desktop_state
+        monkeypatch.setattr(main_module, "desktop", fake_desktop)
+
+        result = asyncio.run(main_module.state_tool(region=region, use_ui_tree=use_ui_tree))
+
+        filtered_tree = region is not None and use_ui_tree
+        assert ("UI Tree Scope: Region-filtered" in result[0]) is filtered_tree
+        if filtered_tree:
+            assert "outside this region are omitted" in result[0]
+            assert "Omit region" in result[0]
+
     def test_screenshot_tool_uses_fast_path_without_ui_tree(self, desktop_state, monkeypatch):
         fake_desktop = MagicMock()
         fake_desktop.get_state.return_value = desktop_state
@@ -749,6 +771,7 @@ class TestSnapshotTools:
 
         assert len(result) == 2
         assert "UI Tree: Skipped for fast screenshot-only capture." in result[0]
+        assert "UI Tree Scope:" not in result[0]
         call = fake_desktop.get_state.call_args.kwargs
         assert call["use_vision"] is True
         assert call["use_ui_tree"] is False

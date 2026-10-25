@@ -137,6 +137,7 @@ def capture_desktop_state(
         "active_desktop": active_desktop,
         "all_desktops": all_desktops,
         "screenshot_bytes": screenshot_bytes,
+        "use_ui_tree": use_ui_tree,
     }
 
 
@@ -208,6 +209,11 @@ def build_snapshot_response(
     if desktop_state.screenshot_region:
         metadata_text += f"Screenshot Region: {desktop_state.screenshot_region.xyxy_to_string()}\n"
         metadata_text += "Coordinate Space: Virtual desktop coordinates\n"
+        if include_ui_details and capture_result["use_ui_tree"]:
+            metadata_text += (
+                "UI Tree Scope: Region-filtered. Windows and UI elements outside this region "
+                "are omitted. Omit region and display to inspect the full desktop.\n"
+            )
     if desktop_state.screenshot_backend:
         metadata_text += f"Screenshot Backend: {desktop_state.screenshot_backend}\n"
     if ui_detail_note:
