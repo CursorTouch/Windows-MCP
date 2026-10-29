@@ -290,14 +290,22 @@ def search_files(path: str, pattern: str, recursive: bool = True) -> str:
 
 def get_file_info(path: str) -> str:
     """Get detailed metadata about a file or directory."""
-    target = Path(path).resolve()
+    target = Path(path).absolute()
+    is_link = target.is_symlink() or target.is_junction()
+    if not is_link:
+        target = target.resolve()
 
-    if not target.exists():
+    if not is_link and not target.exists():
         return f'Error: Path not found: {target}'
 
     try:
-        stat = target.stat()
-        file_type = 'Directory' if target.is_dir() else 'File' if target.is_file() else 'Symlink' if target.is_symlink() else 'Other'
+        stat = target.lstat() if is_link else target.stat()
+        if target.is_symlink():
+            file_type = 'Symlink'
+        elif target.is_junction():
+            file_type = 'Junction'
+        else:
+            file_type = 'Directory' if target.is_dir() else 'File' if target.is_file() else 'Other'
 
         file = File(
             path=str(target),
@@ -320,7 +328,7 @@ def get_file_info(path: str) -> str:
         if target.is_file():
             file.extension = target.suffix or '(none)'
 
-        if target.is_symlink():
+        if is_link:
             file.link_target = str(os.readlink(target))
 
         return file.to_string()

@@ -319,3 +319,41 @@ class TestGetFileInfo:
     def test_not_found(self, tmp_path):
         result = get_file_info(str(tmp_path / "nope"))
         assert "Error: Path not found" in result
+
+    @pytest.mark.parametrize("dangling", [False, True])
+    def test_symlink_info_reports_link(self, tmp_path, dangling):
+        target = tmp_path / "target.txt"
+        target.write_text("hello", encoding="utf-8")
+        link = tmp_path / "link.txt"
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Creating symbolic links requires Windows privileges")
+            raise
+        if dangling:
+            target.unlink()
+
+        result = get_file_info(str(link))
+
+        assert f"Path: {link}" in result
+        assert "Type: Symlink" in result
+        assert f"Link target: {target}" in result
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junctions")
+    @pytest.mark.parametrize("dangling", [False, True])
+    def test_junction_info_reports_link(self, tmp_path, dangling):
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        _winapi.CreateJunction(str(target), str(link))
+        if dangling:
+            target.rmdir()
+
+        result = get_file_info(str(link))
+
+        assert f"Path: {link}" in result
+        assert "Type: Junction" in result
+        assert "Link target:" in result and str(target) in result
