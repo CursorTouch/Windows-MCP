@@ -356,4 +356,4 @@ class TestGetFileInfo:
 
         assert f"Path: {link}" in result
         assert "Type: Junction" in result
-        assert "Link target:" in result and str(target) in result
+        assert f"Link target: {target}" in result

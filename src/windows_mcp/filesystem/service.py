@@ -302,6 +302,15 @@ def search_files(path: str, pattern: str, recursive: bool = True) -> str:
         return f'Error searching: {e}'
 
 
+def _strip_nt_prefix(path: str) -> str:
+    """Drop the ``\\\\?\\`` prefix that ``os.readlink`` keeps on absolute targets."""
+    if path.startswith('\\\\?\\UNC\\'):
+        return '\\\\' + path[8:]
+    if path.startswith('\\\\?\\'):
+        return path[4:]
+    return path
+
+
 def get_file_info(path: str) -> str:
     """Get detailed metadata about a file or directory."""
     target = Path(path).absolute()
@@ -343,7 +352,7 @@ def get_file_info(path: str) -> str:
             file.extension = target.suffix or '(none)'
 
         if is_link:
-            file.link_target = str(os.readlink(target))
+            file.link_target = _strip_nt_prefix(os.readlink(target))
 
         return file.to_string()
     except PermissionError:
