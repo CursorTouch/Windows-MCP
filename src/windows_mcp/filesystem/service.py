@@ -125,6 +125,20 @@ def move_path(source: str, destination: str, overwrite: bool = False) -> str:
     if not src.exists():
         return f'Error: Source not found: {src}'
 
+    # On a case-insensitive file system, renaming 'a.txt' to 'A.txt' resolves to the source.
+    raw_dst = Path(destination).absolute()
+    if (
+        src == dst
+        and raw_dst.name != src.name
+        and raw_dst.name.casefold() == src.name.casefold()
+        and raw_dst.parent.resolve() == src.parent
+    ):
+        try:
+            src.rename(src.with_name(raw_dst.name))
+            return f'Moved: {src} -> {src.with_name(raw_dst.name)}'
+        except Exception as e:
+            return f'Error moving: {e}'
+
     if src == dst or dst in src.parents or (src.is_dir() and src in dst.parents):
         return 'Error: Source and destination paths overlap.'
 
