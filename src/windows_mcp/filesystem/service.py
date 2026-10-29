@@ -5,6 +5,7 @@ Provides structured, safe file operations as an alternative to raw Shell command
 
 from datetime import datetime
 from pathlib import Path
+import codecs
 import fnmatch
 import logging
 import shutil
@@ -21,6 +22,26 @@ from windows_mcp.filesystem.views import (
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Windows tools write byte order marks: Windows PowerShell's `>` and `reg export`
+# write UTF-16 LE, and Notepad and `Out-File -Encoding utf8` write UTF-8 with a BOM.
+_BOM_ENCODINGS = (
+    (codecs.BOM_UTF8, 'utf-8-sig'),
+    (codecs.BOM_UTF16_LE, 'utf-16'),
+    (codecs.BOM_UTF16_BE, 'utf-16'),
+)
+
+
+def _bom_encoding(file_path: Path, encoding: str) -> str:
+    """Return the encoding named by the file's BOM when reading as UTF-8, else *encoding*."""
+    if codecs.lookup(encoding).name != 'utf-8':
+        return encoding
+    with open(file_path, 'rb') as f:
+        head = f.read(3)
+    for bom, bom_encoding in _BOM_ENCODINGS:
+        if head.startswith(bom):
+            return bom_encoding
+    return encoding
+
 
 def read_file(path: str, offset: int | None = None, limit: int | None = None, encoding: str = 'utf-8') -> str:
     """Read the contents of a text file."""
@@ -34,6 +55,7 @@ def read_file(path: str, offset: int | None = None, limit: int | None = None, en
         return f'Error: File too large ({file_path.stat().st_size:,} bytes). Maximum is {MAX_READ_SIZE:,} bytes. Use offset/limit parameters or the Shell tool for large files.'
 
     try:
+        encoding = _bom_encoding(file_path, encoding)
         with open(file_path, 'r', encoding=encoding, errors='replace') as f:
             if offset is not None or limit is not None:
                 lines = f.readlines()

@@ -1,3 +1,4 @@
+import codecs
 import os
 
 import pytest
@@ -36,6 +37,27 @@ class TestReadFile:
     def test_read_directory_path(self, tmp_path):
         result = read_file(str(tmp_path))
         assert "Error: Path is not a file" in result
+
+    @pytest.mark.parametrize(
+        "bom, codec",
+        [
+            (codecs.BOM_UTF8, "utf-8"),
+            (codecs.BOM_UTF16_LE, "utf-16-le"),
+            (codecs.BOM_UTF16_BE, "utf-16-be"),
+        ],
+        ids=["utf-8-sig", "utf-16-le", "utf-16-be"],
+    )
+    def test_read_decodes_bom(self, tmp_path, bom, codec):
+        # Windows PowerShell 5.1's `>` writes UTF-16 LE; Notepad writes UTF-8 with a BOM.
+        f = tmp_path / "bom.txt"
+        f.write_bytes(bom + "héllo\r\nwörld\r\n".encode(codec))
+        assert read_file(str(f)).endswith("\nhéllo\nwörld\n")
+        assert read_file(str(f), offset=2, limit=1).endswith("of 2:\nwörld\n")
+
+    def test_read_keeps_explicit_encoding_over_bom(self, tmp_path):
+        f = tmp_path / "bom.txt"
+        f.write_bytes(codecs.BOM_UTF8 + b"hi")
+        assert read_file(str(f), encoding="latin-1").endswith("\nï»¿hi")
 
 
 class TestWriteFile:
