@@ -1,4 +1,5 @@
 import os
+import stat
 
 import pytest
 
@@ -96,6 +97,19 @@ class TestCopyPath:
         result = copy_path(str(src), str(dst), overwrite=True)
         assert "Copied file" in result
         assert dst.read_text(encoding="utf-8") == "new"
+
+    def test_copy_directory_overwrites_read_only_files(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "new.txt").write_text("new", encoding="utf-8")
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        old = dst / "old.txt"
+        old.write_text("old", encoding="utf-8")
+        os.chmod(old, stat.S_IREAD)
+        result = copy_path(str(src), str(dst), overwrite=True)
+        assert "Copied directory" in result
+        assert [p.name for p in dst.iterdir()] == ["new.txt"]
 
 
 class TestMovePath:
@@ -196,6 +210,17 @@ class TestDeletePath:
         d = tmp_path / "fulldir"
         d.mkdir()
         (d / "file.txt").write_text("x", encoding="utf-8")
+        result = delete_path(str(d), recursive=True)
+        assert "Deleted directory" in result
+        assert not d.exists()
+
+    def test_delete_recursive_removes_read_only_files(self, tmp_path):
+        # Git marks .git/objects files read-only, which blocks a plain rmtree on Windows.
+        d = tmp_path / "repo"
+        pack = d / ".git" / "objects" / "pack" / "pack-1.pack"
+        pack.parent.mkdir(parents=True)
+        pack.write_bytes(b"x")
+        os.chmod(pack, stat.S_IREAD)
         result = delete_path(str(d), recursive=True)
         assert "Deleted directory" in result
         assert not d.exists()

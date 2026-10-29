@@ -8,6 +8,7 @@ from pathlib import Path
 import fnmatch
 import logging
 import shutil
+import stat
 import os
 from windows_mcp.desktop.utils import is_elevated
 
@@ -20,6 +21,21 @@ from windows_mcp.filesystem.views import (
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree, including read-only entries, as `rd /s` does.
+
+    Git marks the files under .git/objects read-only, so a plain rmtree cannot
+    delete a cloned repository on Windows.
+    """
+    def clear_readonly(func, entry, exc):
+        if not isinstance(exc, PermissionError):
+            raise exc
+        os.chmod(entry, stat.S_IWRITE)
+        func(entry)
+
+    shutil.rmtree(str(path), onexc=clear_readonly)
 
 
 def read_file(path: str, offset: int | None = None, limit: int | None = None, encoding: str = 'utf-8') -> str:
@@ -103,7 +119,7 @@ def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
             return f'Copied file: {src} -> {dst}'
         elif src.is_dir():
             if dst.exists() and overwrite:
-                shutil.rmtree(str(dst))
+                _rmtree(dst)
             shutil.copytree(str(src), str(dst))
             return f'Copied directory: {src} -> {dst}'
         else:
@@ -149,7 +165,7 @@ def move_path(source: str, destination: str, overwrite: bool = False) -> str:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists() and overwrite:
             if dst.is_dir():
-                shutil.rmtree(str(dst))
+                _rmtree(dst)
             else:
                 dst.unlink()
         shutil.move(str(src), str(dst))
@@ -186,7 +202,7 @@ def delete_path(path: str, recursive: bool = False) -> str:
                     return f'Error: Directory is not empty: {target}. Set recursive=True to delete non-empty directories.'
                 target.rmdir()
             else:
-                shutil.rmtree(str(target))
+                _rmtree(target)
             return f'Deleted directory: {target}'
         else:
             return f'Error: Unsupported file type: {target}'
