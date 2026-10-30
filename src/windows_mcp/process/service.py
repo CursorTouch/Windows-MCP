@@ -1,7 +1,13 @@
+import time
 from typing import Literal
 
 
 __all__ = ["list_processes", "kill_process"]
+
+#: Window over which CPU usage is measured. psutil's ``cpu_percent()`` reports
+#: usage since the previous call on the same process, and a meaningless 0.0 on
+#: the first one, so a single pass shows every process idle.
+CPU_SAMPLE_SECONDS = 0.25
 
 
 def list_processes(
@@ -12,16 +18,33 @@ def list_processes(
     import psutil
     from tabulate import tabulate
 
+    candidates = []
+    for p in psutil.process_iter(["pid", "name", "memory_info"]):
+        # PID 0 is the System Idle Process: its "CPU" is idle time summed over
+        # every core, so it would top any CPU ranking. It is not a real process.
+        if p.info["pid"] == 0:
+            continue
+        try:
+            p.cpu_percent(None)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        candidates.append(p)
+    time.sleep(CPU_SAMPLE_SECONDS)
+
     procs = []
-    for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+    for p in candidates:
         try:
             info = p.info
             mem_mb = info["memory_info"].rss / (1024 * 1024) if info["memory_info"] else 0
+            try:
+                cpu = p.cpu_percent(None)
+            except psutil.AccessDenied:
+                cpu = 0
             procs.append(
                 {
                     "pid": info["pid"],
                     "name": info["name"] or "Unknown",
-                    "cpu": info["cpu_percent"] or 0,
+                    "cpu": cpu or 0,
                     "mem_mb": round(mem_mb, 1),
                 }
             )
