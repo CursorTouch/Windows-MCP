@@ -14,9 +14,16 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+# PowerShell ends a single-quoted string at the typographic single quotes U+2018 to
+# U+201B as well as at the ASCII apostrophe, and reads any of them doubled as one
+# literal quote, so all five are doubled.
+_DOUBLE_SINGLE_QUOTES = str.maketrans({q: q * 2 for q in "'\u2018\u2019\u201a\u201b"})
+
+
 def ps_quote(value: str) -> str:
-    """Wrap value in PowerShell single-quoted string literal (escapes ' as '')."""
-    return "'" + value.replace("'", "''") + "'"
+    """Wrap value in PowerShell single-quoted string literal (escapes ' as '', and
+    the typographic single quotes the same way)."""
+    return "'" + value.translate(_DOUBLE_SINGLE_QUOTES) + "'"
 
 
 def ps_quote_for_xml(value: str) -> str:
