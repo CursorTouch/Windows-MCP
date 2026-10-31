@@ -24,7 +24,11 @@ from typing import Literal
 from markdownify import markdownify
 from fuzzywuzzy import process
 
-from windows_mcp.desktop.app_launch import match_start_menu_app
+from windows_mcp.desktop.app_launch import (
+    direct_launch_path,
+    launch_direct_path,
+    match_start_menu_app,
+)
 from windows_mcp.safety.launch import LaunchDenied, get_launch_guard
 from time import sleep, time, perf_counter
 from psutil import Process
@@ -595,6 +599,20 @@ class Desktop:
         return status == 0 and response.strip().lower() == "true"
 
     def launch_app(self, name: str) -> tuple[str, int, int]:
+        # A path (.exe/.com/.lnk) is started directly, never fuzzy-matched to the Start Menu.
+        try:
+            direct = direct_launch_path(name)
+        except ValueError as exc:
+            return (str(exc), 1, 0)
+        if direct is not None:
+            from windows_mcp.tools.app import _launch_executable
+
+            return launch_direct_path(
+                name,
+                direct,
+                guard=get_launch_guard(),
+                launch=lambda path: _launch_executable(path, None, None),
+            )
         apps_map = self.get_apps_from_start_menu()
         matched_app = match_start_menu_app(name, apps_map, resolve=_resolve_start_menu_target)
         if matched_app is None:
