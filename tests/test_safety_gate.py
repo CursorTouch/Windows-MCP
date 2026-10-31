@@ -308,3 +308,38 @@ async def test_launch_denied_logs_one_line_unexpected_error_keeps_traceback(tmp_
         with pytest.raises(Exception):
             await c.call_tool("App", {"mode": "switch"})
     assert any(r.exc_info and r.exc_info[0] is RuntimeError for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "bad, message",
+    [
+        ("notepad_ok.lnk", "must be an absolute path"),
+        ("missing", "does not exist"),
+        ("readme", ".exe, .com or .lnk"),
+    ],
+)
+async def test_app_path_validation_error_is_tool_error_and_audited(tmp_path, bad, message):
+    from windows_mcp.desktop.app_launch import direct_launch_path
+
+    (tmp_path / "readme.txt").write_text("")
+    names = {
+        "missing": str(tmp_path / "missing.lnk"),
+        "readme": str(tmp_path / "readme.txt"),
+    }
+    mcp, _, _, _, log = make(tmp_path, apps={"allowed": ["notepad"]})
+
+    @mcp.tool(name="App")
+    def app(mode: str, name: str) -> str:
+        # Same contract as Desktop.launch_app: a bad path raises, it is not a text result.
+        direct_launch_path(name)
+        return "launched"
+
+    async with Client(mcp) as c:
+        result = await c.call_tool(
+            "App", {"mode": "launch", "name": names.get(bad, bad)}, raise_on_error=False
+        )
+    assert result.is_error is True
+    assert message in result.content[0].text
+    entry = audit_lines(log)[-1]
+    assert entry["decision"] == "allowed" and entry["result"] == "error"
+    assert message in entry["error"]
