@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from windows_mcp.config import enable_debug
 from windows_mcp.infrastructure.config import ControlConfig, validate_idle_timeout
+from windows_mcp.safety.config import SafetyConfig
+from windows_mcp.safety.transport import check_http_exposure
 from windows_mcp.infrastructure import (
     AuthKeyMiddleware,
     OAuthOnlyMiddleware,
@@ -68,6 +70,7 @@ analytics: Any | None = None
 screen_size: Any | None = None
 _mcp: FastMCP | None = None
 _control_config = ControlConfig()
+_safety_config = SafetyConfig()
 _control_notifier: Any | None = None
 
 instructions = dedent("""
@@ -269,6 +272,9 @@ def _build_mcp() -> FastMCP:
     from windows_mcp.desktop.control import describe_failure, get_controller
     from windows_mcp.desktop import control_overlay
 
+    from windows_mcp.safety import build_safety_gate
+
+    safety_gate = build_safety_gate(_safety_config)
     controller = get_controller()
     notifier = ControlNotifier(controller)
     _control_notifier = notifier
@@ -351,6 +357,7 @@ def _build_mcp() -> FastMCP:
         controller.policy = _control_config.policy
         controller.idle_timeout_seconds = _control_config.idle_timeout_seconds
 
+        safety_gate.start()
         try:
             if controller.enabled:
                 control_overlay.start()
@@ -361,6 +368,7 @@ def _build_mcp() -> FastMCP:
             logger.debug("Server started, entering main loop")
             yield
         finally:
+            safety_gate.stop()
             await notifier.close()
             try:
                 controller.stop()
@@ -377,6 +385,8 @@ def _build_mcp() -> FastMCP:
                     control_loop = None
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
+    # Safety runs first: a refused call never takes the desktop ownership lease.
+    _mcp.add_middleware(safety_gate)
     _mcp.add_middleware(ControlToolGate(controller, notifier))
     register_all(_mcp, get_desktop=_get_desktop, get_analytics=_get_analytics)
     return _mcp
@@ -728,7 +738,7 @@ def serve(
     control_idle_timeout,
     control_policy,
 ):
-    global _control_config
+    global _control_config, _safety_config
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     install_selfpipe_guard()
     if transport == Transport.STDIO.value:
@@ -746,6 +756,7 @@ def serve(
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc))
     _control_config = cfg.control
+    _safety_config = cfg.safety
     _control_config.policy = _choose_value(
         ctx, "control_policy", control_policy, cfg.control.policy, "relaxed"
     )
@@ -825,6 +836,18 @@ def serve(
             "  Use --auth-key <token> or --oauth-client-id/--oauth-client-secret.\n"
             "  Or pass --allow-insecure-remote to explicitly allow unauthenticated access (not recommended)."
         )
+
+    exposure_error = check_http_exposure(
+        transport=transport,
+        host=host,
+        auth_key=auth_key,
+        oauth_configured=configured_oauth,
+        require_auth=cfg.server.require_auth,
+        allow_remote_bind=cfg.server.allow_remote_bind,
+        is_loopback=is_loopback_host,
+    )
+    if exposure_error:
+        raise click.ClickException(exposure_error)
 
     if (auth_key or cli_allowlist) and transport == Transport.STDIO.value:
         logger.warning("--auth-key / --ip-allowlist have no effect on stdio transport")
