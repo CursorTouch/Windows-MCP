@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from fastmcp.exceptions import FastMCPError
 from fuzzywuzzy import process
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,17 @@ def _stem(value: str) -> str:
         if name.endswith(ext):
             return name[: -len(ext)]
     return name
+
+
+class LaunchPathError(FastMCPError, ValueError):
+    """An App launch path that fails validation (not absolute, missing, wrong type).
+
+    An expected input error: FastMCP logs it as one WARNING line without a traceback,
+    and the client still gets isError=true with the message.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, log_level=logging.WARNING)
 
 
 DIRECT_LAUNCH_SUFFIXES = (".exe", ".com", ".lnk")
@@ -38,7 +50,7 @@ def direct_launch_path(name: str) -> str | None:
 
     A path, or any name ending in ``.exe``, ``.com`` or ``.lnk``, is never fuzzy-matched
     to a Start Menu entry: it must be an existing absolute ``.exe``, ``.com`` or ``.lnk``
-    file, otherwise ValueError is raised.
+    file, otherwise LaunchPathError (a ValueError) is raised.
     """
     text = os.path.expandvars(name.strip().strip('"'))
     has_file_suffix = text.lower().endswith(DIRECT_LAUNCH_SUFFIXES)
@@ -46,15 +58,15 @@ def direct_launch_path(name: str) -> str | None:
         return None
     if not (os.path.isabs(text) or _WINDOWS_ABS.match(text)):
         # A bare "app.lnk"/"app.exe" is a file name, not a Start Menu name: never fuzzy-match it.
-        raise ValueError(
+        raise LaunchPathError(
             f"App path must be an absolute path (got {name!r}); "
             "use a full path such as C:\\...\\app.lnk, or a Start Menu name without extension"
         )
     path = Path(text)
     if not path.is_file():
-        raise ValueError(f"App path does not exist: {name}")
+        raise LaunchPathError(f"App path does not exist: {name}")
     if path.suffix.lower() not in DIRECT_LAUNCH_SUFFIXES:
-        raise ValueError(f"App path must be an .exe, .com or .lnk file: {name}")
+        raise LaunchPathError(f"App path must be an .exe, .com or .lnk file: {name}")
     return str(path.resolve())
 
 
