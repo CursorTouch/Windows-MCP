@@ -13,6 +13,8 @@ import threading
 from collections.abc import Callable
 from ctypes import wintypes
 
+from windows_mcp.safety.launch import ShortcutInfo
+
 logger = logging.getLogger(__name__)
 
 MB_YESNO = 0x00000004
@@ -239,15 +241,28 @@ def _packaged_app_exe(aumid: str) -> str | None:
     return out if done.returncode == 0 and out else None
 
 
-def _shortcut_target(lnk_path: str) -> str | None:
+def read_shortcut(lnk_path: str) -> ShortcutInfo | None:
+    """Target, arguments and working directory of a ``.lnk`` file, or None."""
     import win32com.client
 
     try:
-        target = win32com.client.Dispatch("WScript.Shell").CreateShortcut(lnk_path).TargetPath
+        link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(lnk_path)
+        target, arguments, working_dir = link.TargetPath, link.Arguments, link.WorkingDirectory
     except Exception:  # COM errors surface as pywintypes.com_error.
         logger.warning("Could not read shortcut %s", lnk_path)
         return None
-    return target or None  # Advertised (MSI) shortcuts have no plain target.
+    if not target:
+        return None  # Advertised (MSI) shortcuts have no plain target.
+    return ShortcutInfo(
+        target=os.path.expandvars(target),
+        arguments=arguments or "",
+        working_dir=os.path.expandvars(working_dir) if working_dir else None,
+    )
+
+
+def _shortcut_target(lnk_path: str) -> str | None:
+    info = read_shortcut(lnk_path)
+    return info.target if info else None
 
 
 def resolve_app_target(appid: str) -> str | None:
@@ -301,3 +316,4 @@ class WindowsPlatform:
     resolve_app_target = staticmethod(resolve_app_target)
     process_exe = staticmethod(process_exe)
     terminate_process = staticmethod(terminate_process)
+    read_shortcut = staticmethod(read_shortcut)
