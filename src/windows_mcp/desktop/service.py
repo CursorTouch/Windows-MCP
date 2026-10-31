@@ -600,10 +600,8 @@ class Desktop:
 
     def launch_app(self, name: str) -> tuple[str, int, int]:
         # A path (.exe/.com/.lnk) is started directly, never fuzzy-matched to the Start Menu.
-        try:
-            direct = direct_launch_path(name)
-        except ValueError as exc:
-            return (str(exc), 1, 0)
+        # An invalid path raises ValueError, which reaches the client as isError=true.
+        direct = direct_launch_path(name)
         if direct is not None:
             from windows_mcp.tools.app import _launch_executable
 
