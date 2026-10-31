@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from windows_mcp.safety.config import SafetyConfig, parse_safety_config
 
 
 @dataclass
@@ -24,6 +27,10 @@ class ServerConfig:
     # rejected with "Session not found") and for horizontal scaling
     # behind a load balancer.
     stateless_http: bool = False
+    # HTTP transports refuse to start without a bearer token (auth_key or OAuth).
+    require_auth: bool = True
+    # HTTP transports refuse non-loopback bind addresses unless this is True.
+    allow_remote_bind: bool = False
 
 
 @dataclass
@@ -55,6 +62,9 @@ class WindowsMCPConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
+    # Raw [safety] table, kept so write_config() can round-trip it unchanged.
+    safety_raw: dict = field(default_factory=dict)
     source_path: Path | None = None
 
 
@@ -159,6 +169,9 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
             cfg.server.ssl_keyfile = str((path.parent / raw).resolve())
     if "stateless_http" in server:
         cfg.server.stateless_http = _strict_bool(server["stateless_http"], "server.stateless_http")
+    for key in ("require_auth", "allow_remote_bind"):
+        if key in server:
+            setattr(cfg.server, key, _strict_bool(server[key], f"server.{key}"))
 
     if "ip_allowlist" in security:
         cfg.security.ip_allowlist = _list_of_strings(
@@ -196,6 +209,10 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
             if not 40 <= value <= 2000:
                 raise ValueError(f"control.{key} must be between 40 and 2000")
             setattr(cfg.control, key, value)
+
+    if "safety" in data:
+        cfg.safety = parse_safety_config(data["safety"])
+        cfg.safety_raw = data["safety"]
 
     cfg.source_path = path
     return cfg
@@ -237,6 +254,10 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
         server_lines.append(f"ssl_keyfile = {_toml_string(sd.ssl_keyfile)}")
     if sd.stateless_http:
         server_lines.append("stateless_http = true")
+    if not sd.require_auth:
+        server_lines.append("require_auth = false")
+    if sd.allow_remote_bind:
+        server_lines.append("allow_remote_bind = true")
     if server_lines:
         lines += ["[server]"] + server_lines + [""]
 
@@ -274,4 +295,29 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     if control_lines:
         lines += ["[control]", *control_lines, ""]
 
+    if cfg.safety_raw:
+        lines += _toml_tables("safety", cfg.safety_raw)
+
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    raise ValueError(f"Cannot serialize {type(value).__name__} to TOML")
+
+
+def _toml_tables(name: str, table: dict) -> list[str]:
+    """Serialize a nested table of scalars/arrays (enough for the [safety] section)."""
+    scalars = [f"{k} = {_toml_value(v)}" for k, v in table.items() if not isinstance(v, dict)]
+    out = [f"[{name}]", *scalars, ""] if scalars else []
+    for key, value in table.items():
+        if isinstance(value, dict):
+            out += _toml_tables(f"{name}.{key}", value)
+    return out

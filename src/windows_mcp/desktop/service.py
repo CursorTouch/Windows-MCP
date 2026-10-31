@@ -23,6 +23,13 @@ from locale import getpreferredencoding
 from typing import Literal
 from markdownify import markdownify
 from fuzzywuzzy import process
+
+from windows_mcp.desktop.app_launch import (
+    direct_launch_path,
+    launch_direct_path,
+    match_start_menu_app,
+)
+from windows_mcp.safety.launch import LaunchDenied, get_launch_guard
 from time import sleep, time, perf_counter
 from psutil import Process
 import math
@@ -130,6 +137,13 @@ def _escape_text_for_sendkeys(text: str) -> str:
         else:
             result.append(ch)
     return "".join(result)
+
+
+def _resolve_start_menu_target(appid: str) -> str | None:
+    """Executable behind a Start Menu entry (used to prefer exact exe-name matches)."""
+    from windows_mcp.safety.win32 import resolve_app_target
+
+    return resolve_app_target(appid)
 
 
 class Desktop:
@@ -585,14 +599,28 @@ class Desktop:
         return status == 0 and response.strip().lower() == "true"
 
     def launch_app(self, name: str) -> tuple[str, int, int]:
+        # A path (.exe/.com/.lnk) is started directly, never fuzzy-matched to the Start Menu.
+        # An invalid path raises ValueError, which reaches the client as isError=true.
+        direct = direct_launch_path(name)
+        if direct is not None:
+            from windows_mcp.tools.app import _launch_executable
+
+            return launch_direct_path(
+                name,
+                direct,
+                guard=get_launch_guard(),
+                launch=lambda path: _launch_executable(path, None, None),
+            )
         apps_map = self.get_apps_from_start_menu()
-        matched_app = process.extractOne(name, apps_map.keys(), score_cutoff=70)
+        matched_app = match_start_menu_app(name, apps_map, resolve=_resolve_start_menu_target)
         if matched_app is None:
             return (f"{name.title()} not found in start menu.", 1, 0)
-        app_name, _ = matched_app
-        appid = apps_map.get(app_name)
-        if appid is None:
-            return (f"{name.title()} not found in start menu.", 1, 0)
+        app_name, appid = matched_app
+        guard = get_launch_guard()
+        if guard is not None:
+            error = guard.check_target(name, app_name, appid)
+            if error:
+                raise LaunchDenied(error)
 
         pid = 0
         if os.path.exists(appid) or "\\" in appid:
@@ -610,6 +638,10 @@ class Desktop:
             command = f"Start-Process {safe}"
             response, status = PowerShellExecutor.execute_command(command)
 
+        if guard is not None and status == 0:
+            error = guard.verify_launched(name, pid)
+            if error:
+                raise LaunchDenied(error)
         return response, status, pid
 
     def switch_app(self, name: str):

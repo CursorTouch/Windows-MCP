@@ -49,3 +49,10 @@ def test_start_menu_shortcut_fallback_is_preserved_when_appsfolder_is_unavailabl
     monkeypatch.setattr(desktop, "_get_apps_from_shortcuts", lambda: shortcut_apps)
 
     assert desktop.get_apps_from_start_menu() == shortcut_apps
+
+
+def test_invalid_app_path_raises_instead_of_text_result(tmp_path) -> None:
+    desktop = Desktop.__new__(Desktop)
+    for bad in ["notepad_ok.lnk", str(tmp_path / "missing.lnk")]:
+        with pytest.raises(ValueError):
+            desktop.launch_app(bad)
