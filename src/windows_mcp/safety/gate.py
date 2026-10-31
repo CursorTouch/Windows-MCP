@@ -277,6 +277,16 @@ class SafetyGate(Middleware):
 
     def start(self) -> None:
         self.kill_switch.start()
+        ks = self.cfg.kill_switch
+        register = getattr(self.input_monitor, "set_kill_hotkey", None)
+        parse = getattr(self.platform, "parse_hotkey", None)
+        if ks.enabled and ks.hotkey and register is not None and parse is not None:
+            # The desktop-control keyboard hook swallows physical keys while the AI
+            # acts, which also hides them from RegisterHotKey; let the hook see the chord.
+            try:
+                register(*parse(ks.hotkey), self.kill_switch.engage)
+            except Exception:
+                logger.exception("Kill-switch hotkey not wired into the input hook")
 
     def stop(self) -> None:
         self.kill_switch.stop()

@@ -106,6 +106,11 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
             owner.input_ledger.block_new()
             owner._queue(("hotkey",))
             return 1
+        chord = owner._kill_chord
+        if down and not was_down and chord is not None and vk == chord[1]:
+            held = {0x5B if _key(k) == 0x5C else _key(k) for k in owner._pressed}
+            if chord[0].issubset(held):
+                owner._queue(("kill",))  # The coordinator thread runs the callback.
         owner._queue(("key",))
         if owner._suppress and not owner._emergency:
             if time.monotonic() <= owner._deadline:
