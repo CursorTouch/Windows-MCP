@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,15 @@ from windows_mcp.safety.apps import is_allowed
 from windows_mcp.safety.config import SafetyConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ShortcutInfo:
+    """What a ``.lnk`` file runs (``IWshShortcut`` TargetPath/Arguments/WorkingDirectory)."""
+
+    target: str
+    arguments: str = ""
+    working_dir: str | None = None
 
 
 def _has_dir_part(text: str) -> bool:
@@ -108,6 +118,12 @@ class LaunchGuard:
                 f"{exe}; that executable is not in safety.apps.allowed. Not launched."
             )
         return None
+
+    def check_executable(self, requested: str, exe: str) -> str | None:
+        """Return an error message if *exe* (a shortcut's target) is not allowed."""
+        if is_allowed(exe, self.cfg.apps.allowed):
+            return None
+        return f"Safety: {requested!r} runs {exe}, which is not in safety.apps.allowed."
 
     def verify_launched(self, requested: str, pid: int) -> str | None:
         """Check the process we started. Return an error message if it is not allowed.

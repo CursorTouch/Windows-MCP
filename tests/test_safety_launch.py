@@ -5,6 +5,7 @@ fuzzy Start Menu match for "notepad" picks Notepad++ and the name-only allowlist
 """
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from windows_mcp.safety.gate import SafetyGate
 from windows_mcp.safety.launch import (
     LaunchDenied,
     LaunchGuard,
+    ShortcutInfo,
     find_launch_denied,
     get_launch_guard,
     resolve_command,
@@ -292,3 +294,132 @@ def test_find_launch_denied_walks_the_cause_chain():
     except RuntimeError as outer:
         assert find_launch_denied(outer) is inner
     assert find_launch_denied(ValueError("x")) is None
+
+
+# -- launch_executable on a .lnk starts the shortcut's target ---------------------------
+
+
+def _load_app_tool(monkeypatch):
+    stub = type(sys)("windows_mcp.infrastructure")
+    stub.with_analytics = lambda *a, **k: lambda f: f
+    monkeypatch.setitem(sys.modules, "windows_mcp.infrastructure", stub)
+    path = Path(__file__).parents[1] / "src/windows_mcp/tools/app.py"
+    spec = importlib.util.spec_from_file_location("app_tool_lnk_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakePopen:
+    def __init__(self, pid=4242):
+        self.pid = pid
+        self.calls = []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((command, kwargs))
+        return self
+
+
+def _shortcut_setup(tmp_path, target_name="editor.exe"):
+    target = tmp_path / "Program Files" / target_name
+    target.parent.mkdir()
+    target.write_text("")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    lnk = tmp_path / "Editor.lnk"
+    lnk.write_text("")
+    info = ShortcutInfo(
+        target=str(target), arguments='--profile "Work A"', working_dir=str(workdir)
+    )
+    return lnk, target, workdir, info
+
+
+def test_lnk_starts_target_with_shortcut_args_and_workdir(tmp_path, monkeypatch):
+    app = _load_app_tool(monkeypatch)
+    set_launch_guard(None)
+    lnk, target, workdir, info = _shortcut_setup(tmp_path)
+    popen = FakePopen()
+    out = json.loads(
+        app._launch_executable(
+            str(lnk), ["my file.txt"], None, read_shortcut=lambda p: info, popen=popen
+        )
+    )
+    ((command, kwargs),) = popen.calls
+    assert command == f'"{target}" --profile "Work A" "my file.txt"'  # Spaces quoted.
+    assert kwargs["cwd"] == str(workdir) and kwargs["shell"] is False
+    assert out["executable"] == str(target) and out["shortcut"] == str(lnk)
+
+
+def test_lnk_explicit_cwd_wins(tmp_path, monkeypatch):
+    app = _load_app_tool(monkeypatch)
+    set_launch_guard(None)
+    lnk, _, _, info = _shortcut_setup(tmp_path)
+    popen = FakePopen()
+    app._launch_executable(str(lnk), None, str(tmp_path), read_shortcut=lambda p: info, popen=popen)
+    assert popen.calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_lnk_target_changed_to_disallowed_is_denied_before_start(tmp_path, monkeypatch):
+    app = _load_app_tool(monkeypatch)
+    lnk, _, _, info = _shortcut_setup(tmp_path, "notepad++.exe")
+    set_launch_guard(guard(allowed=("notepad",)))
+    popen = FakePopen()
+    try:
+        app._launch_executable(str(lnk), None, None, read_shortcut=lambda p: info, popen=popen)
+    except LaunchDenied as exc:
+        assert "notepad++.exe" in exc.reason
+    else:
+        raise AssertionError("expected LaunchDenied")
+    finally:
+        set_launch_guard(None)
+    assert popen.calls == []
+
+
+def test_lnk_started_process_is_checked_by_pid(tmp_path, monkeypatch):
+    app = _load_app_tool(monkeypatch)
+    lnk, _, _, info = _shortcut_setup(tmp_path, "notepad.exe")
+    platform = FakeLaunchPlatform(exes={4242: NPP})  # The started pid turned out to be npp.
+    set_launch_guard(guard(platform, allowed=("notepad",)))
+    try:
+        app._launch_executable(
+            str(lnk), None, None, read_shortcut=lambda p: info, popen=FakePopen()
+        )
+    except LaunchDenied as exc:
+        assert "terminated" in exc.reason
+    else:
+        raise AssertionError("expected LaunchDenied")
+    finally:
+        set_launch_guard(None)
+    assert platform.terminated == [4242]
+
+
+def test_lnk_without_target_or_with_non_exe_target_is_rejected(tmp_path, monkeypatch):
+    app = _load_app_tool(monkeypatch)
+    set_launch_guard(None)
+    lnk, _, _, _ = _shortcut_setup(tmp_path)
+    doc = tmp_path / "readme.txt"
+    doc.write_text("")
+    cases = [
+        (lambda p: None, "no readable target"),
+        (lambda p: ShortcutInfo(target=str(doc)), "not an executable"),
+        (lambda p: ShortcutInfo(target=str(tmp_path / "gone.exe")), "does not exist"),
+    ]
+    for reader, message in cases:
+        popen = FakePopen()
+        try:
+            app._launch_executable(str(lnk), None, None, read_shortcut=reader, popen=popen)
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError(f"expected ValueError: {message}")
+        assert popen.calls == []
+
+
+def test_plain_executable_still_uses_argv_list(tmp_path, monkeypatch):
+    app = _load_app_tool(monkeypatch)
+    set_launch_guard(None)
+    exe = tmp_path / "tool.exe"
+    exe.write_text("")
+    popen = FakePopen()
+    app._launch_executable(str(exe), ["a b"], None, popen=popen)
+    assert popen.calls[0][0] == [str(exe), "a b"]
