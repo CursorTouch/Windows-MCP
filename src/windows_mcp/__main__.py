@@ -966,7 +966,9 @@ def _build_start_script(program_args: list[str]) -> str:
     log_out = CONFIG_DIR / "server.log"
     log_err = CONFIG_DIR / "server.error.log"
     command = subprocess.list2cmdline(program_args)
-    return f'@echo off\nsetlocal\n{command} 1>>"{log_out}" 2>>"{log_err}"\n'
+    # The file is written as UTF-8, but cmd.exe decodes each line with the console code page.
+    # Switch to UTF-8 first, since the paths below can contain a non-ASCII profile folder name.
+    return f'@echo off\nchcp 65001 >nul\nsetlocal\n{command} 1>>"{log_out}" 2>>"{log_err}"\n'
 
 
 def _run_console_tool(args: list[str]) -> subprocess.CompletedProcess:
