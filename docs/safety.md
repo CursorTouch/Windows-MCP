@@ -168,6 +168,13 @@ failure is logged and does not stop the server. The file is never rotated.
 
 The default hotkey is `ctrl+alt+shift+k` (no F keys, which many laptop keyboards hide
 behind Fn); set `hotkey` to override it.
+The desktop-control keyboard hook also recognizes the hotkey, so it engages even while the AI
+is acting and physical keys are being held back from apps. At startup the log says
+`Kill-switch hotkey: <combo>`; if that line is missing, the hotkey was not registered.
+
+The confirmation dialog moves itself to the foreground and takes keyboard focus. No is the
+default button: Enter or Space answers No; press the Yes button's letter (Y, or S on an
+Italian system) or click Yes to approve.
 
 The switch is checked before each call and again after a confirmation dialog; it does not
 abort a tool that is already running.

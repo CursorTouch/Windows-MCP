@@ -36,6 +36,7 @@ class KillSwitch:
         try:
             self._listener = self._hotkey_factory(self.cfg.hotkey, self.engage)
             self._listener.start()
+            logger.info("Kill-switch hotkey: %s", self.cfg.hotkey)
         except Exception:
             logger.exception("Kill-switch hotkey unavailable; the flag file still works")
 

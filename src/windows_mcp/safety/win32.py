@@ -10,6 +10,7 @@ import ctypes
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from ctypes import wintypes
 
@@ -95,13 +96,91 @@ def pids_for_window_title(fragment: str) -> list[int]:
     return found
 
 
+def _dialog_on_thread(user32, thread_id: int) -> int | None:
+    """Return the message-box window (class #32770) owned by *thread_id*, if any."""
+    found: list[int] = []
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _lparam):
+        name = ctypes.create_unicode_buffer(16)
+        user32.GetClassNameW(hwnd, name, 16)
+        if name.value == "#32770" and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumThreadWindows(thread_id, proc(visit), 0)
+    return found[0] if found else None
+
+
+def _force_foreground(user32, hwnd: int, send_alt: Callable[[], None]) -> bool:
+    """Give *hwnd* foreground and keyboard focus despite the foreground lock.
+
+    SetForegroundWindow is refused unless the caller is allowed to move the
+    foreground (Microsoft docs: e.g. it received the last input event). Attaching
+    to the current foreground thread's input, then if needed sending an injected
+    Alt tap so this process owns the last input event, satisfies that rule.
+    """
+    if user32.GetForegroundWindow() == hwnd:
+        return True
+    for attempt in range(2):
+        if attempt:
+            send_alt()
+        fg = user32.GetForegroundWindow()
+        fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        here = ctypes.WinDLL("kernel32").GetCurrentThreadId()
+        attached = bool(fg_thread and fg_thread != here) and bool(
+            user32.AttachThreadInput(here, fg_thread, True)
+        )
+        try:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(here, fg_thread, False)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+    return False
+
+
+def _send_alt_tap() -> None:
+    """Inject Alt down/up (no character, no menu on a message box)."""
+    user32 = _user32()
+    VK_MENU, KEYEVENTF_KEYUP = 0x12, 0x0002
+    user32.keybd_event(VK_MENU, 0, 0, 0)
+    user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+
+
+def bring_dialog_forward(
+    find: Callable[[], int | None],
+    force: Callable[[int], bool],
+    stop: threading.Event,
+    wait_seconds: float = 3.0,
+    poll_seconds: float = 0.02,
+) -> bool:
+    """Wait for the dialog window to appear, then make it the keyboard target."""
+    deadline = time.monotonic() + wait_seconds
+    while not stop.is_set() and time.monotonic() < deadline:
+        hwnd = find()
+        if hwnd:
+            if force(hwnd):
+                return True
+            logger.warning("Confirmation dialog could not take keyboard focus; click it")
+            return False
+        stop.wait(poll_seconds)
+    return False
+
+
 def confirm_dialog(title: str, text: str, timeout_seconds: float) -> bool:
     """Show a native, topmost Yes/No dialog. True only for an explicit Yes.
 
     Uses ``MessageBoxTimeoutW`` so an unanswered dialog closes itself; a timeout,
     No, Escape, a closed box or any error all count as a denial. The default
-    button is No so a stray Enter cannot approve.
+    button is No so a stray Enter cannot approve. A helper thread moves the box to
+    the foreground so keyboard answers reach it, not the window under it.
     """
+    stop = threading.Event()
     try:
         user32 = _user32()
         fn = user32.MessageBoxTimeoutW
@@ -114,6 +193,9 @@ def confirm_dialog(title: str, text: str, timeout_seconds: float) -> bool:
             wintypes.DWORD,
         ]
         fn.restype = ctypes.c_int
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
         flags = (
             MB_YESNO
             | MB_ICONWARNING
@@ -122,11 +204,25 @@ def confirm_dialog(title: str, text: str, timeout_seconds: float) -> bool:
             | MB_SETFOREGROUND
             | MB_TOPMOST
         )
+        dialog_thread = ctypes.WinDLL("kernel32").GetCurrentThreadId()
+        helper = threading.Thread(
+            target=bring_dialog_forward,
+            args=(
+                lambda: _dialog_on_thread(user32, dialog_thread),
+                lambda hwnd: _force_foreground(user32, hwnd, _send_alt_tap),
+                stop,
+            ),
+            name="safety-confirm-focus",
+            daemon=True,
+        )
+        helper.start()
         result = fn(None, text, title, flags, 0, int(timeout_seconds * 1000))
         return result == IDYES
     except Exception:
         logger.exception("Confirmation dialog failed; denying")
         return False
+    finally:
+        stop.set()
 
 
 def take_screenshot(path: str) -> str | None:
@@ -313,6 +409,7 @@ class WindowsPlatform:
     confirm_dialog = staticmethod(confirm_dialog)
     take_screenshot = staticmethod(take_screenshot)
     hotkey_listener = HotkeyListener
+    parse_hotkey = staticmethod(parse_hotkey)
     resolve_app_target = staticmethod(resolve_app_target)
     process_exe = staticmethod(process_exe)
     terminate_process = staticmethod(terminate_process)
