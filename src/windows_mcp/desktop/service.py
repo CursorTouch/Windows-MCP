@@ -23,6 +23,9 @@ from locale import getpreferredencoding
 from typing import Literal
 from markdownify import markdownify
 from fuzzywuzzy import process
+
+from windows_mcp.desktop.app_launch import match_start_menu_app
+from windows_mcp.safety.launch import get_launch_guard
 from time import sleep, time, perf_counter
 from psutil import Process
 import math
@@ -586,13 +589,15 @@ class Desktop:
 
     def launch_app(self, name: str) -> tuple[str, int, int]:
         apps_map = self.get_apps_from_start_menu()
-        matched_app = process.extractOne(name, apps_map.keys(), score_cutoff=70)
+        matched_app = match_start_menu_app(name, apps_map)
         if matched_app is None:
             return (f"{name.title()} not found in start menu.", 1, 0)
-        app_name, _ = matched_app
-        appid = apps_map.get(app_name)
-        if appid is None:
-            return (f"{name.title()} not found in start menu.", 1, 0)
+        app_name, appid = matched_app
+        guard = get_launch_guard()
+        if guard is not None:
+            error = guard.check_target(name, app_name, appid)
+            if error:
+                return (error, 1, 0)
 
         pid = 0
         if os.path.exists(appid) or "\\" in appid:
@@ -610,6 +615,10 @@ class Desktop:
             command = f"Start-Process {safe}"
             response, status = PowerShellExecutor.execute_command(command)
 
+        if guard is not None and status == 0:
+            error = guard.verify_launched(name, pid)
+            if error:
+                return (error, 1, 0)
         return response, status, pid
 
     def switch_app(self, name: str):

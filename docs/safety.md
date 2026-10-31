@@ -75,9 +75,19 @@ hotkey = "ctrl+alt+shift+f12"
 |---|---|
 | `Click`, `Scroll`, `Move`, `MultiSelect`, `MultiEdit` with coordinates | process of the top-level window under **each** point (`WindowFromPoint`); drags check both ends |
 | `Type`, `Shortcut`, any call by `label`, calls without coordinates | process of the **foreground** window |
-| `App` `launch` / `launch_executable` | the Start Menu name or executable basename |
+| `App` `launch` | the executable the fuzzy Start Menu match resolves to (exe path, `.lnk` target, or the packaged app's manifest `Executable`); unresolvable = refuse. After the start, the process from the returned pid is checked again |
+| `App` `launch_executable` | the resolved file: a path as given, a bare name (`notepad.exe`) through the absolute `PATH` entries only, never the current directory; not found = refuse |
 | `App` `switch` / `resize` | processes of every visible window whose title contains `name` (none found = refuse) |
 | `Process` `kill` | the process of `pid`, or `name` |
+
+The requested name is not what counts: on an Italian Windows Notepad is listed as
+"Blocco note", so `name = "notepad"` fuzzy-matches Notepad++ and is refused unless
+`notepad++` is allowed, while `name = "blocco note"` is allowed by `notepad`.
+
+If the started process (the pid from `Start-Process -PassThru`) is not allowed, that one
+process is terminated and the call fails with the reason; nothing else is ever killed.
+Packaged (Store) apps start through `shell:AppsFolder` without a pid, so for them only the
+pre-launch check applies.
 
 Unknown process, unparsable coordinates or a lookup error = refuse. The windows-mcp process
 itself (which owns the confirmation dialogs) is always refused, even with `enforce = false`.
@@ -121,11 +131,19 @@ One JSON object per line (UTF-8, LF), for every call including refusals:
 
 ```json
 {"ts": "2026-10-31T13:10:00.123+01:00", "tool": "Type", "arguments": {"text": "<redacted 12 chars>"},
- "decision": "allowed", "result": "ok", "duration_ms": 84, "screenshot": null}
+ "decision": "allowed", "reason": null, "result": "ok", "error": null, "duration_ms": 84,
+ "screenshot": null}
 ```
 
-`decision`: `allowed`, `confirmed`, `denied`, `declined`, `killswitch`; refusals carry
-`reason`, failures `result: "error"` and `error`. Values of `redact_keys` are replaced by
+Every row has the same keys; ones that do not apply are `null`.
+
+* `decision`: `allowed`, `confirmed`, `denied`, `declined`, `killswitch`.
+* `reason`: why it was refused; `null` when it ran.
+* `result`: `ok` or `error` when the tool ran; `null` when it was refused.
+* `error`: the tool's error text (at most 500 chars) when `result` is `error`.
+* `duration_ms`: measured from the moment the gate received the call to the moment it
+  refused it or the tool finished, so it includes any time spent in a confirmation dialog.
+* `screenshot`: path of the PNG, or `null`. Values of `redact_keys` are replaced by
 their length; other long strings are cut at `max_value_length`. With `screenshot = true` a
 full-desktop PNG is saved *before* each executed action (not for refused ones). A write
 failure is logged and does not stop the server. The file is never rotated.

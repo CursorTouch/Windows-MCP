@@ -240,3 +240,37 @@ async def test_gate_runs_before_inner_middleware(tmp_path):
             await c.call_tool("Click", {"loc": [500, 5]})
         await c.call_tool("Click", {"loc": [5, 5]})
     assert seen == ["Click"]
+
+
+AUDIT_KEYS = {
+    "ts",
+    "tool",
+    "arguments",
+    "decision",
+    "reason",
+    "result",
+    "error",
+    "duration_ms",
+    "screenshot",
+}
+
+
+async def test_every_audit_row_has_the_same_fields(tmp_path):
+    mcp, gate, _, _, log = make(tmp_path, answer=False)
+    async with Client(mcp) as c:
+        await c.call_tool("Click", {"loc": [5, 5]})  # allowed
+        with pytest.raises(Exception, match="safety_denied"):
+            await c.call_tool("Click", {"loc": [500, 5]})
+        with pytest.raises(Exception, match="safety_declined"):
+            await c.call_tool("Process", {"mode": "kill", "pid": 1})
+        (tmp_path / "KILL").write_text("")
+        with pytest.raises(Exception, match="safety_killswitch"):
+            await c.call_tool("Click", {"loc": [5, 5]})
+    rows = audit_lines(log)
+    assert [r["decision"] for r in rows] == ["allowed", "denied", "declined", "killswitch"]
+    for row in rows:
+        assert set(row) == AUDIT_KEYS
+        assert isinstance(row["duration_ms"], int) and row["duration_ms"] >= 0
+    assert rows[0]["result"] == "ok" and rows[0]["reason"] is None
+    for row in rows[1:]:
+        assert row["result"] is None and row["error"] is None and row["reason"]

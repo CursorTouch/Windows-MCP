@@ -18,6 +18,7 @@ from windows_mcp.safety.apps import is_allowed, normalize_app, parse_point, pars
 from windows_mcp.safety.audit import AuditLog, redact
 from windows_mcp.safety.config import SafetyConfig
 from windows_mcp.safety.killswitch import KillSwitch
+from windows_mcp.safety.launch import LaunchGuard, resolve_command, set_launch_guard
 from windows_mcp.safety.powershell import check_powershell, cmdlet_of
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class SafetyPolicy:
     def __init__(self, cfg: SafetyConfig, platform: Any) -> None:
         self.cfg = cfg
         self.platform = platform
+        self.resolve_command = getattr(platform, "resolve_command", resolve_command)
 
     # -- process resolution -------------------------------------------------
     def _names(self, pids: list[int | None]) -> list[str | None]:
@@ -147,8 +149,18 @@ class SafetyPolicy:
                 target = args.get("executable") if mode == "launch_executable" else args.get("name")
                 if not target:
                     return Decision(True)  # The tool itself rejects missing arguments.
-                if self.cfg.apps.enforce and not is_allowed(str(target), self.cfg.apps.allowed):
-                    return Decision(False, f"App {target!r} is not in safety.apps.allowed.")
+                # mode "launch": the Start Menu match is checked on its resolved executable
+                # by LaunchGuard inside the launch itself (the name alone proves nothing).
+                if mode == "launch_executable" and self.cfg.apps.enforce:
+                    resolved = self.resolve_command(str(target))
+                    if resolved is None:
+                        return Decision(
+                            False, f"Executable {target!r} not found as a path or on PATH."
+                        )
+                    if not is_allowed(resolved, self.cfg.apps.allowed):
+                        return Decision(
+                            False, f"Executable {resolved} is not in safety.apps.allowed."
+                        )
                 extra = args.get("args")
                 arg_list = extra if isinstance(extra, list) else [str(extra)] if extra else []
                 if self._looks_like_installer(str(target)) or any(
@@ -239,6 +251,9 @@ class SafetyGate(Middleware):
         )
         self.audit = audit or AuditLog(cfg.audit, getattr(platform, "take_screenshot", None))
         self._confirm_lock = asyncio.Lock()
+        # The App tool's Start Menu launch consults this guard (fail closed on resolution).
+        enforce = cfg.enabled and cfg.apps.enforce
+        set_launch_guard(LaunchGuard(cfg, platform) if enforce else None)
 
     def start(self) -> None:
         self.kill_switch.start()
@@ -246,15 +261,32 @@ class SafetyGate(Middleware):
     def stop(self) -> None:
         self.kill_switch.stop()
 
-    def _refuse(self, name: str, args: dict, decision: str, reason: str) -> ToolError:
-        self.audit.write(self._record(name, args, decision=decision, reason=reason))
+    def _refuse(self, name: str, args: dict, decision: str, reason: str, start: float) -> ToolError:
+        self.audit.write(self._record(name, args, start, decision=decision, reason=reason))
         return ToolError(json.dumps({"code": "safety_" + decision, "reason": reason}))
 
-    def _record(self, name: str, args: dict, **extra) -> dict:
+    def _record(
+        self,
+        name: str,
+        args: dict,
+        start: float,
+        *,
+        decision: str,
+        reason: str | None = None,
+        result: str | None = None,
+        error: str | None = None,
+        screenshot: str | None = None,
+    ) -> dict:
+        """One audit row. Every row has the same keys; unused ones are null."""
         return {
             "tool": name,
             "arguments": redact(args, self.cfg.audit.redact_keys, self.cfg.audit.max_value_length),
-            **extra,
+            "decision": decision,
+            "reason": reason,
+            "result": result,
+            "error": error,
+            "duration_ms": round((time.monotonic() - start) * 1000),
+            "screenshot": screenshot,
         }
 
     async def _ask(self, question: str) -> bool:
@@ -275,14 +307,15 @@ class SafetyGate(Middleware):
         args = dict(getattr(context.message, "arguments", None) or {})
         if not self.cfg.enabled:
             return await call_next(context)
+        start = time.monotonic()
 
         reason = self.kill_switch.engaged()
         if reason:
-            raise self._refuse(name, args, "killswitch", reason)
+            raise self._refuse(name, args, "killswitch", reason, start)
         if self._confirm_lock.locked():
             # Nothing may run while a dialog is open, or the agent could click "Yes" itself.
             raise self._refuse(
-                name, args, "denied", "A safety confirmation is pending; retry later."
+                name, args, "denied", "A safety confirmation is pending; retry later.", start
             )
 
         try:
@@ -291,7 +324,7 @@ class SafetyGate(Middleware):
             logger.exception("Safety policy evaluation failed; denying")
             decision = Decision(False, f"Safety policy error: {exc}")
         if not decision.allowed:
-            raise self._refuse(name, args, "denied", decision.reason)
+            raise self._refuse(name, args, "denied", decision.reason, start)
 
         outcome = "allowed"
         if decision.confirm is not None and self.cfg.confirm.enabled:
@@ -299,19 +332,22 @@ class SafetyGate(Middleware):
                 approved = await self._ask(decision.confirm)
             if not approved:
                 raise self._refuse(
-                    name, args, "declined", "The user did not approve on the PC (No or timeout)."
+                    name,
+                    args,
+                    "declined",
+                    "The user did not approve on the PC (No or timeout).",
+                    start,
                 )
             outcome = "confirmed"
             reason = self.kill_switch.engaged()  # The switch may be hit while the dialog is open.
             if reason:
-                raise self._refuse(name, args, "killswitch", reason)
+                raise self._refuse(name, args, "killswitch", reason, start)
 
         shot = (
             await asyncio.to_thread(self.audit.screenshot, name)
             if self.cfg.audit.screenshot
             else None
         )
-        start = time.monotonic()
         try:
             result = await call_next(context)
         except Exception as exc:
@@ -319,23 +355,16 @@ class SafetyGate(Middleware):
                 self._record(
                     name,
                     args,
+                    start,
                     decision=outcome,
                     result="error",
                     error=str(exc)[:500],
-                    duration_ms=round((time.monotonic() - start) * 1000),
                     screenshot=shot,
                 )
             )
             raise
         self.audit.write(
-            self._record(
-                name,
-                args,
-                decision=outcome,
-                result="ok",
-                duration_ms=round((time.monotonic() - start) * 1000),
-                screenshot=shot,
-            )
+            self._record(name, args, start, decision=outcome, result="ok", screenshot=shot)
         )
         return result
 
