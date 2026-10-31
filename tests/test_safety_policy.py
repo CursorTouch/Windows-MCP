@@ -110,10 +110,32 @@ class ResolvingPlatform(FakePlatform):
         "D:\\setup.exe": "D:\\setup.exe",
         "cmd.exe": "C:\\Windows\\System32\\cmd.exe",
         "tool.exe": "C:\\Tools\\evil.exe",
+        "C:\\s\\Notepad.lnk": "C:\\s\\Notepad.lnk",
+        "C:\\s\\Editor.lnk": "C:\\s\\Editor.lnk",
+        "C:\\s\\Broken.lnk": "C:\\s\\Broken.lnk",
+    }
+    targets = {
+        "C:\\s\\Notepad.lnk": "C:\\Program Files\\Notepad++\\notepad++.exe",
+        "C:\\s\\Editor.lnk": "C:\\Windows\\System32\\notepad.exe",
     }
 
     def resolve_command(self, executable):
         return self.paths.get(executable)
+
+    def resolve_app_target(self, appid):
+        return self.targets.get(appid)
+
+
+def test_launch_executable_shortcut_is_checked_on_its_target():
+    pol = policy(ResolvingPlatform(), apps={"allowed": ["notepad"]})
+    # Named "Notepad.lnk" but runs Notepad++: refused.
+    d = pol.evaluate("App", {"mode": "launch_executable", "executable": "C:\\s\\Notepad.lnk"})
+    assert not d.allowed and "notepad++.exe" in d.reason
+    # Named "Editor.lnk" but runs notepad.exe: allowed.
+    d = pol.evaluate("App", {"mode": "launch_executable", "executable": "C:\\s\\Editor.lnk"})
+    assert d.allowed
+    d = pol.evaluate("App", {"mode": "launch_executable", "executable": "C:\\s\\Broken.lnk"})
+    assert not d.allowed and "no resolvable target" in d.reason
 
 
 def test_launch_executable_checks_the_resolved_path():

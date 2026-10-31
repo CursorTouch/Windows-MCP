@@ -12,7 +12,9 @@ from pathlib import Path
 from windows_mcp.safety.config import parse_safety_config
 from windows_mcp.safety.gate import SafetyGate
 from windows_mcp.safety.launch import (
+    LaunchDenied,
     LaunchGuard,
+    find_launch_denied,
     get_launch_guard,
     resolve_command,
     set_launch_guard,
@@ -65,11 +67,50 @@ def guard(platform=None, allowed=("notepad",)):
     return LaunchGuard(cfg, platform or FakeLaunchPlatform())
 
 
-def test_notepad_fuzzy_matches_notepad_plus_plus_and_is_denied():
+def test_fuzzy_only_match_picks_notepad_plus_plus_and_guard_denies_it():
+    # Without target lookups the fuzzy fallback picks Notepad++ (the original field bug);
+    # the guard then refuses it on its real executable.
     matched = match_start_menu_app("notepad", ITALIAN_START_MENU)
-    assert matched == ("notepad++", NPP)  # The bug: the requested name passes, the target differs.
+    assert matched == ("notepad++", NPP)
     error = guard().check_target("notepad", *matched)
     assert error and "notepad++.exe" in error and "not in safety.apps.allowed" in error
+
+
+def test_notepad_prefers_the_entry_whose_executable_is_notepad():
+    resolve = FakeLaunchPlatform().resolve_app_target
+    matched = match_start_menu_app("notepad", ITALIAN_START_MENU, resolve=resolve)
+    assert matched == ("blocco note", NOTEPAD_AUMID)
+    assert guard().check_target("notepad", *matched) is None
+    matched = match_start_menu_app("notepad.exe", ITALIAN_START_MENU, resolve=resolve)
+    assert matched == ("blocco note", NOTEPAD_AUMID)
+
+
+def test_exact_display_name_wins_and_path_stem_matches():
+    resolve = FakeLaunchPlatform().resolve_app_target
+    assert match_start_menu_app("Notepad++", ITALIAN_START_MENU, resolve=resolve) == (
+        "notepad++",
+        NPP,
+    )
+    assert match_start_menu_app("Blocco Note", ITALIAN_START_MENU) == ("blocco note", NOTEPAD_AUMID)
+    apps = {"editor": "C:\\Windows\\notepad.exe", "notepad++": NPP}
+    assert match_start_menu_app("notepad", apps) == ("editor", "C:\\Windows\\notepad.exe")
+
+
+def test_shortcut_entries_match_on_their_target():
+    lnk = "C:\\ProgramData\\Start Menu\\Notepad.lnk"
+    apps = {"notepad++": NPP, "blocco note": lnk}
+    platform = FakeLaunchPlatform(targets={lnk: "C:\\Windows\\System32\\notepad.exe"})
+    assert match_start_menu_app("notepad", apps, resolve=platform.resolve_app_target) == (
+        "blocco note",
+        lnk,
+    )
+
+
+def test_resolver_errors_fall_back_to_fuzzy():
+    def broken(appid):
+        raise OSError("COM failure")
+
+    assert match_start_menu_app("notepad", ITALIAN_START_MENU, resolve=broken) == ("notepad++", NPP)
 
 
 def test_localized_notepad_entry_is_allowed_by_its_executable():
@@ -164,3 +205,90 @@ def test_tool_resolve_executable_uses_path(tmp_path, monkeypatch):
         assert "not found" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+# -- denial reaches the client as safety_denied and is audited as denied --------------
+
+
+def _gate_app(tmp_path, error_from_guard):
+    import json as _json
+
+    from fastmcp import FastMCP
+
+    cfg = parse_safety_config(
+        {
+            "apps": {"allowed": ["notepad"]},
+            "audit": {"path": str(tmp_path / "audit.jsonl")},
+            "kill_switch": {"flag_file": str(tmp_path / "K")},
+            "confirm": {"enabled": False},
+        }
+    )
+    platform = FakeLaunchPlatform(exes={4242: NPP})
+    gate = SafetyGate(cfg, platform)
+    mcp = FastMCP("t")
+    mcp.add_middleware(gate)
+
+    @mcp.tool(name="App")
+    def app(mode: str = "launch", name: str | None = None) -> str:
+        # Mirrors Desktop.launch_app: guard check before, process check after.
+        g = get_launch_guard()
+        if error_from_guard == "before":
+            matched = match_start_menu_app(name, ITALIAN_START_MENU)
+            err = g.check_target(name, *matched)
+        else:
+            err = g.verify_launched(name, 4242)
+        if err:
+            raise LaunchDenied(err)
+        return "launched"
+
+    def rows():
+        lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        return [_json.loads(line) for line in lines]
+
+    return mcp, platform, rows
+
+
+async def _call_denied(mcp):
+    import json as _json
+
+    from fastmcp import Client
+
+    async with Client(mcp) as c:
+        result = await c.call_tool(
+            "App", {"mode": "launch", "name": "notepad"}, raise_on_error=False
+        )
+    assert result.is_error
+    body = _json.loads(result.content[0].text)
+    assert body["code"] == "safety_denied"
+    return body
+
+
+async def test_start_menu_denial_is_a_safety_denied_error(tmp_path):
+    mcp, _, rows = _gate_app(tmp_path, "before")
+    body = await _call_denied(mcp)
+    assert "notepad++.exe" in body["reason"]
+    (row,) = rows()
+    assert row["decision"] == "denied" and row["result"] is None
+    assert "notepad++.exe" in row["reason"]
+    set_launch_guard(None)
+
+
+async def test_post_launch_kill_is_a_safety_denied_error(tmp_path):
+    mcp, platform, rows = _gate_app(tmp_path, "after")
+    body = await _call_denied(mcp)
+    assert "terminated" in body["reason"] and platform.terminated == [4242]
+    (row,) = rows()
+    assert row["decision"] == "denied" and row["result"] is None
+    set_launch_guard(None)
+
+
+def test_find_launch_denied_walks_the_cause_chain():
+    inner = LaunchDenied("no")
+    try:
+        try:
+            raise inner
+        except LaunchDenied as e:
+            raise RuntimeError("wrapped") from e
+    except RuntimeError as outer:
+        assert find_launch_denied(outer) is inner
+    assert find_launch_denied(ValueError("x")) is None

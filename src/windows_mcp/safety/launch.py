@@ -57,6 +57,28 @@ def resolve_command(
     return None
 
 
+class LaunchDenied(Exception):
+    """Raised from inside a launch when LaunchGuard refuses it.
+
+    SafetyGate turns it into a ``safety_denied`` tool error and a ``denied`` audit row.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def find_launch_denied(exc: BaseException | None) -> LaunchDenied | None:
+    """Find a LaunchDenied in *exc*'s cause/context chain (FastMCP wraps tool errors)."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, LaunchDenied):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 class LaunchGuard:
     """Checks a Start Menu launch on what it resolves to and on what actually started.
 
