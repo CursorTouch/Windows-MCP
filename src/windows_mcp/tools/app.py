@@ -7,6 +7,7 @@ from typing import Literal
 
 from mcp.types import ToolAnnotations
 from windows_mcp.infrastructure import with_analytics
+from windows_mcp.safety.launch import resolve_command
 from fastmcp import Context
 
 
@@ -23,10 +24,11 @@ def _as_args(value: list[str] | str | None) -> list[str]:
 
 
 def _resolve_executable(executable: str) -> Path:
-    path = Path(executable).expanduser().resolve()
-    if not path.is_file():
-        raise ValueError(f"Executable does not exist: {path}")
-    return path
+    """Resolve a path, or a bare name through PATH (never the current directory)."""
+    resolved = resolve_command(executable)
+    if resolved is None:
+        raise ValueError(f"Executable not found (as a path or on PATH): {executable}")
+    return Path(resolved)
 
 
 def _resolve_cwd(cwd: str | None) -> Path | None:

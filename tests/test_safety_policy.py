@@ -2,6 +2,7 @@
 
 import pytest
 
+from windows_mcp.safety.apps import is_allowed
 from windows_mcp.safety.config import SafetyConfig, parse_safety_config
 from windows_mcp.safety.gate import SafetyPolicy
 
@@ -89,13 +90,43 @@ def test_enforce_false_allows_any_app():
 
 
 def test_allowlist_normalizes_paths_and_exe():
-    pol = policy(apps={"allowed": ["C:\\Program Files\\Google\\Chrome\\chrome.exe"]})
-    assert pol.evaluate("App", {"mode": "launch", "name": "Chrome"}).allowed
-    assert not pol.evaluate("App", {"mode": "launch", "name": "Notepad"}).allowed
+    allowed = ["C:\\Program Files\\Google\\Chrome\\chrome.exe"]
+    assert is_allowed("chrome", allowed) and is_allowed("D:\\x\\CHROME.EXE", allowed)
+    assert not is_allowed("notepad", allowed)
+
+
+def test_start_menu_launch_is_left_to_the_launch_guard():
+    # The name alone proves nothing (fuzzy match); LaunchGuard checks the resolved exe.
+    pol = policy(apps={"allowed": ["chrome"]})
+    assert pol.evaluate("App", {"mode": "launch", "name": "Notepad"}).allowed
+
+
+class ResolvingPlatform(FakePlatform):
+    """Fake PATH lookup: bare names resolve like ``shutil.which`` on PATH would."""
+
+    paths = {
+        "notepad.exe": "C:\\Windows\\System32\\notepad.exe",
+        "C:\\x\\notepad.exe": "C:\\x\\notepad.exe",
+        "D:\\setup.exe": "D:\\setup.exe",
+        "cmd.exe": "C:\\Windows\\System32\\cmd.exe",
+        "tool.exe": "C:\\Tools\\evil.exe",
+    }
+
+    def resolve_command(self, executable):
+        return self.paths.get(executable)
+
+
+def test_launch_executable_checks_the_resolved_path():
+    pol = policy(ResolvingPlatform(), apps={"allowed": ["notepad", "tool"]})
+    assert pol.evaluate("App", {"mode": "launch_executable", "executable": "notepad.exe"}).allowed
+    d = pol.evaluate("App", {"mode": "launch_executable", "executable": "tool.exe"})
+    assert not d.allowed and "evil.exe" in d.reason
+    d = pol.evaluate("App", {"mode": "launch_executable", "executable": "missing.exe"})
+    assert not d.allowed and "not found" in d.reason
 
 
 def test_app_launch_executable_allowlist_and_installer_confirm():
-    pol = policy(apps={"allowed": ["notepad", "setup"]})
+    pol = policy(ResolvingPlatform(), apps={"allowed": ["notepad", "setup"]})
     d = pol.evaluate("App", {"mode": "launch_executable", "executable": "C:\\x\\notepad.exe"})
     assert d.allowed and d.confirm is None
     d = pol.evaluate("App", {"mode": "launch_executable", "executable": "D:\\setup.exe"})

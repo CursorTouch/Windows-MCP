@@ -204,6 +204,89 @@ class HotkeyListener:
             _user32().PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
 
 
+_APPX_EXE_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$pkg = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $env:WMCP_PFN } | Select-Object -First 1
+if (-not $pkg) { exit 2 }
+$app = (Get-AppxPackageManifest -Package $pkg).Package.Applications.Application |
+    Where-Object { $_.Id -eq $env:WMCP_APPID } | Select-Object -First 1
+if (-not $app -or -not $app.Executable) { exit 3 }
+[Console]::Out.Write((Join-Path $pkg.InstallLocation $app.Executable))
+"""
+
+
+def _packaged_app_exe(aumid: str) -> str | None:
+    """Executable of a packaged app from its AppUserModelID (``PFN!AppId``)."""
+    import subprocess
+
+    family, _, app_id = aumid.partition("!")
+    if not family or not app_id:
+        return None
+    env = {**os.environ, "WMCP_PFN": family, "WMCP_APPID": app_id}
+    try:
+        done = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _APPX_EXE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+            check=False,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        logger.warning("Could not query the package of %s", aumid)
+        return None
+    out = done.stdout.strip()
+    return out if done.returncode == 0 and out else None
+
+
+def _shortcut_target(lnk_path: str) -> str | None:
+    import win32com.client
+
+    try:
+        target = win32com.client.Dispatch("WScript.Shell").CreateShortcut(lnk_path).TargetPath
+    except Exception:  # COM errors surface as pywintypes.com_error.
+        logger.warning("Could not read shortcut %s", lnk_path)
+        return None
+    return target or None  # Advertised (MSI) shortcuts have no plain target.
+
+
+def resolve_app_target(appid: str) -> str | None:
+    """Executable that a Start Menu entry (path, .lnk or AppUserModelID) would run."""
+    if "\\" in appid or os.path.exists(appid):
+        from windows_mcp.desktop.utils import resolve_known_folder_guid_path
+
+        path = resolve_known_folder_guid_path(appid)
+        if path.lower().endswith(".lnk"):
+            return _shortcut_target(path)
+        return path
+    if "!" in appid:
+        return _packaged_app_exe(appid)
+    return None  # Other AppIDs (no package, no path) cannot be mapped to an executable.
+
+
+def process_exe(pid: int) -> str | None:
+    import psutil
+
+    try:
+        return psutil.Process(pid).exe() or None
+    except psutil.Error:
+        return None
+
+
+def terminate_process(pid: int) -> bool:
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()
+        proc.wait(timeout=5)
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.Error:
+        return False
+    return True
+
+
 class WindowsPlatform:
     """Bundle of the Windows calls the gate needs (replaced by a fake in tests)."""
 
@@ -215,3 +298,6 @@ class WindowsPlatform:
     confirm_dialog = staticmethod(confirm_dialog)
     take_screenshot = staticmethod(take_screenshot)
     hotkey_listener = HotkeyListener
+    resolve_app_target = staticmethod(resolve_app_target)
+    process_exe = staticmethod(process_exe)
+    terminate_process = staticmethod(terminate_process)
