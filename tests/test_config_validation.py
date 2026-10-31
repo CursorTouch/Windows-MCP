@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from windows_mcp.infrastructure.config import ServerConfig, load_config, write_config
+from windows_mcp.infrastructure.config import (
+    ServerConfig,
+    WindowsMCPConfig,
+    load_config,
+    write_config,
+)
 
 
 @pytest.mark.parametrize(
@@ -81,6 +86,22 @@ def test_valid_server_config_loads_and_round_trips(tmp_path: Path) -> None:
     out = tmp_path / "out.toml"
     write_config(cfg, out)
     assert out.read_text(encoding="utf-8") == text
+
+
+def test_write_config_round_trips_strings_that_need_escaping(tmp_path: Path) -> None:
+    # `windows-mcp auth --with-tls` saves paths like C:\Users\me\.windows-mcp\cert.pem.
+    cfg = WindowsMCPConfig()
+    cfg.server.ssl_certfile = str(tmp_path / "cert.pem")
+    cfg.server.ssl_keyfile = str(tmp_path / "key.pem")
+    cfg.security.oauth_client_id = "tab\t newline\n delete\x7f"
+    cfg.security.oauth_client_secret = 'quote " backslash \\'
+    path = tmp_path / "config.toml"
+
+    write_config(cfg, path)
+    loaded = load_config(path)
+
+    assert loaded.server == cfg.server
+    assert loaded.security == cfg.security
 
 
 def test_empty_server_section_loads_defaults(tmp_path: Path) -> None:
