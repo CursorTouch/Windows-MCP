@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
 from collections.abc import Callable
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from fuzzywuzzy import process
 
@@ -17,6 +21,54 @@ def _stem(value: str) -> str:
         if name.endswith(ext):
             return name[: -len(ext)]
     return name
+
+
+DIRECT_LAUNCH_SUFFIXES = (".exe", ".com", ".lnk")
+_WINDOWS_ABS = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{2})")
+
+
+def is_path_like(name: str) -> bool:
+    """True if *name* is written as a file path rather than a Start Menu name."""
+    text = name.strip().strip('"')
+    return "\\" in text or "/" in text or bool(re.match(r"^[A-Za-z]:", text))
+
+
+def direct_launch_path(name: str) -> str | None:
+    """Return the file to start when *name* is a path, None when it is a Start Menu name.
+
+    A path is never fuzzy-matched to a Start Menu entry: it must be an existing absolute
+    ``.exe``, ``.com`` or ``.lnk`` file, otherwise ValueError is raised.
+    """
+    if not is_path_like(name):
+        return None
+    text = os.path.expandvars(name.strip().strip('"'))
+    if not (os.path.isabs(text) or _WINDOWS_ABS.match(text)):
+        raise ValueError(f"App path must be absolute: {name}")
+    path = Path(text)
+    if not path.is_file():
+        raise ValueError(f"App path does not exist: {name}")
+    if path.suffix.lower() not in DIRECT_LAUNCH_SUFFIXES:
+        raise ValueError(f"App path must be an .exe, .com or .lnk file: {name}")
+    return str(path.resolve())
+
+
+def launch_direct_path(
+    name: str, path: str, *, guard: Any, launch: Callable[[str], str]
+) -> tuple[str, int, int]:
+    """Start *path* (a .lnk is started through its target) after the allowlist check.
+
+    *guard* is the LaunchGuard or None; a refusal raises LaunchDenied before anything
+    starts. *launch* is ``tools.app._launch_executable`` (re-checks a shortcut's target
+    right before start and the started pid afterwards). Returns (message, status, pid).
+    """
+    if guard is not None:
+        from windows_mcp.safety.launch import LaunchDenied
+
+        error = guard.check_path(name, path)
+        if error:
+            raise LaunchDenied(error)
+    result = json.loads(launch(path))
+    return f"Started {result['executable']} (pid {result['pid']}).", 0, int(result["pid"])
 
 
 def match_start_menu_app(

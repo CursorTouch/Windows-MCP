@@ -75,7 +75,7 @@ hotkey = "ctrl+alt+shift+k"
 |---|---|
 | `Click`, `Scroll`, `Move`, `MultiSelect`, `MultiEdit` with coordinates | process of the top-level window under **each** point (`WindowFromPoint`); drags check both ends |
 | `Type`, `Shortcut`, any call by `label`, calls without coordinates | process of the **foreground** window |
-| `App` `launch` | the executable the fuzzy Start Menu match resolves to (exe path, `.lnk` target, or the packaged app's manifest `Executable`); unresolvable = refuse. After the start, the process from the returned pid is checked again |
+| `App` `launch` | if `name` is a path: it must be an existing absolute `.exe`/`.com`/`.lnk` and is started directly like `launch_executable` (a `.lnk` through its target, arguments and working directory), checked on that executable and never matched against the Start Menu; otherwise the executable the fuzzy Start Menu match resolves to (exe path, `.lnk` target, or the packaged app's manifest `Executable`); unresolvable = refuse. After the start, the process from the returned pid is checked again |
 | `App` `launch_executable` | the resolved file: a path as given, a bare name (`notepad.exe`) through the absolute `PATH` entries only, never the current directory; not found = refuse. A `.lnk` is checked on its target executable (no target = refuse), then started as that target with the shortcut's arguments and working directory; the target is re-checked just before start and the started pid after |
 | `App` `switch` / `resize` | processes of every visible window whose title contains `name` (none found = refuse) |
 | `Process` `kill` | the process of `pid`, or `name` |
