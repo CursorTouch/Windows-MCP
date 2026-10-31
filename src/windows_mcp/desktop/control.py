@@ -27,6 +27,25 @@ from windows_mcp.desktop.control_win32 import (
 )
 
 
+def describe_failure(exc: BaseException) -> str:
+    """Return ``Type: message`` for the innermost cause of *exc*."""
+    # Must never raise: it runs inside fail-open handlers.
+    try:
+        seen: set[int] = {id(exc)}
+        root = exc
+        while root.__cause__ is not None and id(root.__cause__) not in seen:
+            root = root.__cause__
+            seen.add(id(root))
+        name = type(root).__name__
+        try:
+            text = str(root).strip()
+        except Exception:
+            text = ""
+        return f"{name}: {text}" if text else name
+    except Exception:
+        return "unknown failure"
+
+
 class ControlBlocked(RuntimeError):
     def __init__(self, code: str, status: dict):
         self.code = code
@@ -72,6 +91,8 @@ class ControlCoordinator:
         self._suppress = False  # Atomic snapshot read by the hook callbacks.
         self._deadline = 0.0
         self._emergency = False
+        # Why the last fail-open happened, reported while the state is unavailable.
+        self._fail_reason: str | None = None
         self._fast_takeover = False
         self._fast_pending = False
         self._rotating = False
@@ -170,6 +191,11 @@ class ControlCoordinator:
             "enabled": self.enabled,
             "policy": self.policy,
             "idle_timeout_seconds": self.idle_timeout_seconds,
+            **(
+                {"reason": self._fail_reason}
+                if state == "unavailable" and self._fail_reason
+                else {}
+            ),
         }
 
     def status(self) -> dict:
@@ -363,6 +389,7 @@ class ControlCoordinator:
         self.input_ledger.release_all()
         self.input_ledger.enable()
         self._emergency = False
+        self._fail_reason = None
         self._fast_takeover = False
         self._fast_pending = False
         self._rotating = False
@@ -420,7 +447,13 @@ class ControlCoordinator:
         self._quarantine.clear()
         self._thread = self._watchdog = None
 
-    def _fail_open(self) -> None:
+    def fail_open_with_reason(self, reason: str | None) -> None:
+        """Fail open and remember *reason* for the unavailable status."""
+        self._fail_open(reason=reason)
+
+    def _fail_open(self, reason: str | None = None) -> None:
+        if reason:
+            self._fail_reason = reason
         self._fault_token = object()  # Invalidate any older successful hook installation.
         self._suppress = False
         self._deadline = 0.0
@@ -484,6 +517,7 @@ class ControlCoordinator:
                     self.input_ledger.block_new()
                     return
                 self._emergency = False
+                self._fail_reason = None
                 self._fast_takeover = False
                 self._fast_pending = False
                 self._last_user = time.monotonic()
