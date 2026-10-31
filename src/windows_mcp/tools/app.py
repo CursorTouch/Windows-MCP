@@ -86,7 +86,7 @@ def _launch_executable(
     cwd: str | None,
     *,
     read_shortcut: Callable[[str], ShortcutInfo | None] = _read_shortcut,
-    popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    popen: Callable[..., subprocess.Popen] | None = None,
 ) -> str:
     resolved_executable = _resolve_executable(executable)
     resolved_cwd = _resolve_cwd(cwd)
@@ -109,6 +109,8 @@ def _launch_executable(
             if error:
                 raise LaunchDenied(error)
 
+    if popen is None:
+        popen = subprocess.Popen  # Looked up per call so tests can monkeypatch it.
     process = popen(
         command,
         cwd=str(resolved_cwd) if resolved_cwd is not None else None,
