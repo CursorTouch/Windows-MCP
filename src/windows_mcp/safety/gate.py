@@ -259,6 +259,7 @@ class SafetyGate(Middleware):
         *,
         kill_switch: KillSwitch | None = None,
         audit: AuditLog | None = None,
+        input_monitor: Any = None,
     ) -> None:
         self.cfg = cfg
         self.platform = platform
@@ -268,6 +269,8 @@ class SafetyGate(Middleware):
         )
         self.audit = audit or AuditLog(cfg.audit, getattr(platform, "take_screenshot", None))
         self._confirm_lock = asyncio.Lock()
+        # Desktop control monitor: told about dialogs so the answer is not "user activity".
+        self.input_monitor = input_monitor
         # The App tool's Start Menu launch consults this guard (fail closed on resolution).
         enforce = cfg.enabled and cfg.apps.enforce
         set_launch_guard(LaunchGuard(cfg, platform) if enforce else None)
@@ -309,7 +312,9 @@ class SafetyGate(Middleware):
     async def _ask(self, question: str) -> bool:
         if not self.cfg.confirm.enabled:
             return True
-        return bool(
+        monitor = self.input_monitor
+        begin = await asyncio.to_thread(monitor.begin_confirmation) if monitor else None
+        approved = bool(
             await asyncio.to_thread(
                 self.platform.confirm_dialog,
                 "Windows-MCP: confirm AI action",
@@ -318,6 +323,12 @@ class SafetyGate(Middleware):
                 self.cfg.confirm.timeout_seconds,
             )
         )
+        if approved and begin is not None:
+            try:
+                await asyncio.to_thread(monitor.end_confirmation, *begin)
+            except Exception:  # Never turn an approval into a crash; control stays strict.
+                logger.exception("Could not excuse confirmation-dialog input")
+        return approved
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: Callable) -> Any:
         name = context.message.name
@@ -392,6 +403,7 @@ class SafetyGate(Middleware):
 
 def build_safety_gate(cfg: SafetyConfig) -> SafetyGate:
     """Create the gate with the real Windows platform backends."""
+    from windows_mcp.desktop.control import get_controller
     from windows_mcp.safety.win32 import WindowsPlatform
 
-    return SafetyGate(cfg, WindowsPlatform())
+    return SafetyGate(cfg, WindowsPlatform(), input_monitor=get_controller())

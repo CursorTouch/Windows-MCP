@@ -22,7 +22,7 @@ def test_defaults_are_all_on():
     assert cfg.audit.enabled and not cfg.audit.screenshot and cfg.kill_switch.enabled
     assert cfg.powershell.mode == "disabled"
     assert cfg.confirm.timeout_seconds == 30.0
-    assert cfg.kill_switch.hotkey == "ctrl+alt+shift+f12"
+    assert cfg.kill_switch.hotkey == "ctrl+alt+shift+k"
 
 
 @pytest.mark.parametrize(

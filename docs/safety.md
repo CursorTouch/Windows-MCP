@@ -66,7 +66,7 @@ max_value_length = 200
 [safety.kill_switch]
 enabled = true
 flag_file = "~/.windows-mcp/KILL"
-hotkey = "ctrl+alt+shift+f12"
+hotkey = "ctrl+alt+shift+k"
 ```
 
 ## 1. App and process allowlist (`[safety.apps]`)
@@ -116,6 +116,12 @@ the latter go through confirmation instead. Use `[tools] exclude` to remove them
 
 Shown with `MessageBoxTimeoutW` (topmost, system-modal, warning icon, default button
 **No**). Only an explicit **Yes** approves; No, Esc, closing it, a timeout or any error deny.
+
+The click or key that answers **Yes** is not counted as the user taking over the desktop
+(it would otherwise block the approved action with `USER_CONTROL`). Only input stamped
+while the dialog was open is excused, after waiting up to 1 s for the answering key or
+button to be released; input after that, or input already active before the dialog
+opened, still counts as usual.
 Actions that ask:
 
 * `Process` `kill` (closing apps), and `Shortcut` in `risky_shortcuts` (Alt+F4, Ctrl+W,
@@ -159,6 +165,9 @@ failure is logged and does not stop the server. The file is never rotated.
 * **Hotkey** (`RegisterHotKey`, needs at least one modifier; keys `a-z`, `0-9`, `f1-f24`,
   `pause`, `scrolllock`): latches until the server restarts. If another app owns the hotkey an
   error is logged and the flag file still works.
+
+The default hotkey is `ctrl+alt+shift+k` (no F keys, which many laptop keyboards hide
+behind Fn); set `hotkey` to override it.
 
 The switch is checked before each call and again after a confirmation dialog; it does not
 abort a tool that is already running.

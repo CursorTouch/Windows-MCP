@@ -92,7 +92,7 @@ class AuditSafetyConfig:
 class KillSwitchSafetyConfig:
     enabled: bool = True
     flag_file: str = str(_CONFIG_DIR / "KILL")
-    hotkey: str = "ctrl+alt+shift+f12"
+    hotkey: str = "ctrl+alt+shift+k"
 
 
 @dataclass
