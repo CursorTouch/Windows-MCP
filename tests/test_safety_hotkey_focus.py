@@ -241,3 +241,61 @@ def test_begin_confirmation_stops_key_suppression(monkeypatch):
         assert owner._suppress is False
     finally:
         sys.modules.pop("windows_mcp.desktop.control", None)
+
+
+def _esc_sequence(states):
+    it = iter(states)
+    last = [False]
+
+    def down():
+        last[0] = next(it, last[0])
+        return last[0]
+
+    return down
+
+
+def test_escape_answers_no_when_dialog_focused():
+    from windows_mcp.safety.win32 import watch_escape
+
+    answered = []
+    ok = watch_escape(
+        lambda: 42,
+        lambda h: True,
+        _esc_sequence([False, False, True]),
+        answered.append,
+        threading.Event(),
+        poll_seconds=0,
+    )
+    assert ok and answered == [42]
+
+
+def test_escape_ignored_when_dialog_not_foreground():
+    from windows_mcp.safety.win32 import watch_escape
+
+    stop = threading.Event()
+    answered = []
+    threading.Timer(0.1, stop.set).start()
+    ok = watch_escape(
+        lambda: 42, lambda h: False, lambda: True, answered.append, stop, poll_seconds=0.005
+    )
+    assert not ok and answered == []
+
+
+def test_escape_held_before_dialog_is_not_an_answer():
+    from windows_mcp.safety.win32 import watch_escape
+
+    stop = threading.Event()
+    answered = []
+    threading.Timer(0.1, stop.set).start()
+    ok = watch_escape(
+        lambda: 42, lambda h: True, lambda: True, answered.append, stop, poll_seconds=0.005
+    )
+    assert not ok and answered == []
+
+
+def test_escape_watch_stops_when_dialog_closed():
+    from windows_mcp.safety.win32 import watch_escape
+
+    stop = threading.Event()
+    stop.set()
+    assert not watch_escape(lambda: 42, lambda h: True, lambda: False, print, stop)

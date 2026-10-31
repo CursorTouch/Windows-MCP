@@ -25,6 +25,9 @@ MB_SYSTEMMODAL = 0x00001000
 MB_SETFOREGROUND = 0x00010000
 MB_TOPMOST = 0x00040000
 IDYES = 6
+IDNO = 7
+WM_COMMAND = 0x0111
+VK_ESCAPE = 0x1B
 MB_TIMEDOUT = 32000
 GA_ROOT = 2
 WM_HOTKEY = 0x0312
@@ -172,13 +175,61 @@ def bring_dialog_forward(
     return False
 
 
+def watch_escape(
+    find: Callable[[], int | None],
+    is_foreground: Callable[[int], bool],
+    escape_down: Callable[[], bool],
+    answer_no: Callable[[int], None],
+    stop: threading.Event,
+    poll_seconds: float = 0.02,
+) -> bool:
+    """Answer No when Esc is pressed while the dialog has the foreground.
+
+    A ``MB_YESNO`` message box has no Cancel button, and Windows disables the
+    Escape key for message boxes without IDCANCEL (MessageBox docs), so Esc would
+    otherwise do nothing until the timeout. Returns True if Esc answered the box.
+    """
+    was_down = escape_down()  # an Esc already held when the box opened is not an answer
+    while not stop.is_set():
+        hwnd = find()
+        down = escape_down()
+        if hwnd and down and not was_down and is_foreground(hwnd):
+            answer_no(hwnd)
+            return True
+        was_down = down
+        stop.wait(poll_seconds)
+    return False
+
+
+def _escape_down(user32) -> bool:
+    return bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+
+
+def _answer_no(user32, hwnd: int) -> None:
+    # Same message the No button sends; MessageBox then returns IDNO.
+    user32.PostMessageW(hwnd, WM_COMMAND, IDNO, 0)
+
+
+def _focus_then_watch(user32, dialog_thread: int, stop: threading.Event) -> None:
+    find = lambda: _dialog_on_thread(user32, dialog_thread)  # noqa: E731
+    bring_dialog_forward(find, lambda hwnd: _force_foreground(user32, hwnd, _send_alt_tap), stop)
+    watch_escape(
+        find,
+        lambda hwnd: user32.GetForegroundWindow() == hwnd,
+        lambda: _escape_down(user32),
+        lambda hwnd: _answer_no(user32, hwnd),
+        stop,
+    )
+
+
 def confirm_dialog(title: str, text: str, timeout_seconds: float) -> bool:
     """Show a native, topmost Yes/No dialog. True only for an explicit Yes.
 
     Uses ``MessageBoxTimeoutW`` so an unanswered dialog closes itself; a timeout,
     No, Escape, a closed box or any error all count as a denial. The default
     button is No so a stray Enter cannot approve. A helper thread moves the box to
-    the foreground so keyboard answers reach it, not the window under it.
+    the foreground so keyboard answers reach it, not the window under it, and
+    maps Esc to No (a Yes/No box ignores Esc by itself).
     """
     stop = threading.Event()
     try:
@@ -196,6 +247,15 @@ def confirm_dialog(title: str, text: str, timeout_seconds: float) -> bool:
         user32.GetForegroundWindow.restype = wintypes.HWND
         user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
         user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        user32.PostMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.PostMessageW.restype = wintypes.BOOL
         flags = (
             MB_YESNO
             | MB_ICONWARNING
@@ -206,12 +266,8 @@ def confirm_dialog(title: str, text: str, timeout_seconds: float) -> bool:
         )
         dialog_thread = ctypes.WinDLL("kernel32").GetCurrentThreadId()
         helper = threading.Thread(
-            target=bring_dialog_forward,
-            args=(
-                lambda: _dialog_on_thread(user32, dialog_thread),
-                lambda hwnd: _force_foreground(user32, hwnd, _send_alt_tap),
-                stop,
-            ),
+            target=_focus_then_watch,
+            args=(user32, dialog_thread, stop),
             name="safety-confirm-focus",
             daemon=True,
         )
