@@ -143,7 +143,7 @@ def take_screenshot(path: str) -> str | None:
 
 
 def parse_hotkey(spec: str) -> tuple[int, int]:
-    """Parse ``ctrl+alt+shift+f12`` into (modifiers, virtual-key code)."""
+    """Parse ``ctrl+alt+shift+k`` into (modifiers, virtual-key code)."""
     parts = [p.strip().lower() for p in spec.split("+") if p.strip()]
     if not parts:
         raise ValueError("empty hotkey")

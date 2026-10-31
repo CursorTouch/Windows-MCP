@@ -204,6 +204,7 @@ async def test_pending_confirmation_blocks_other_calls(tmp_path):
 
 def test_parse_hotkey():
     assert parse_hotkey("ctrl+alt+shift+f12") == (0x2 | 0x1 | 0x4, 0x7B)
+    assert parse_hotkey("ctrl+alt+shift+k") == (0x2 | 0x1 | 0x4, 0x4B)  # Default.
     assert parse_hotkey("win+k") == (0x8, ord("K"))
     for bad in ("f12", "ctrl+", "hyper+k", "ctrl+enterx"):
         with pytest.raises(ValueError):
