@@ -201,6 +201,20 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     return cfg
 
 
+# TOML basic strings must escape the quote, the backslash and every control
+# character except tab; unescaped Windows paths would make the file unparsable.
+_TOML_ESCAPES = {
+    ord('"'): '\\"',
+    ord("\\"): "\\\\",
+    **{code: f"\\u{code:04X}" for code in (*range(0x20), 0x7F) if code != 0x09},
+}
+
+
+def _toml_string(value: str) -> str:
+    """Return *value* as a quoted TOML basic string."""
+    return f'"{value.translate(_TOML_ESCAPES)}"'
+
+
 def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     """Serialize *cfg* to TOML at *path*, writing only non-default values."""
     lines: list[str] = []
@@ -208,19 +222,19 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     sd, dd = cfg.server, ServerConfig()
     server_lines: list[str] = []
     if sd.transport != dd.transport:
-        server_lines.append(f'transport = "{sd.transport}"')
+        server_lines.append(f"transport = {_toml_string(sd.transport)}")
     if sd.host != dd.host:
-        server_lines.append(f'host = "{sd.host}"')
+        server_lines.append(f"host = {_toml_string(sd.host)}")
     if sd.port != dd.port:
         server_lines.append(f"port = {sd.port}")
     if sd.allow_insecure_remote:
         server_lines.append("allow_insecure_remote = true")
     if sd.auth_key:
-        server_lines.append(f'auth_key = "{sd.auth_key}"')
+        server_lines.append(f"auth_key = {_toml_string(sd.auth_key)}")
     if sd.ssl_certfile:
-        server_lines.append(f'ssl_certfile = "{sd.ssl_certfile}"')
+        server_lines.append(f"ssl_certfile = {_toml_string(sd.ssl_certfile)}")
     if sd.ssl_keyfile:
-        server_lines.append(f'ssl_keyfile = "{sd.ssl_keyfile}"')
+        server_lines.append(f"ssl_keyfile = {_toml_string(sd.ssl_keyfile)}")
     if sd.stateless_http:
         server_lines.append("stateless_http = true")
     if server_lines:
@@ -229,20 +243,20 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     sec = cfg.security
     sec_lines: list[str] = []
     if sec.ip_allowlist:
-        items = ", ".join(f'"{ip}"' for ip in sec.ip_allowlist)
+        items = ", ".join(_toml_string(ip) for ip in sec.ip_allowlist)
         sec_lines.append(f"ip_allowlist = [{items}]")
     if sec.cors_origins:
-        items = ", ".join(f'"{o}"' for o in sec.cors_origins)
+        items = ", ".join(_toml_string(o) for o in sec.cors_origins)
         sec_lines.append(f"cors_origins = [{items}]")
     if sec.oauth_client_id:
-        sec_lines.append(f'oauth_client_id = "{sec.oauth_client_id}"')
+        sec_lines.append(f"oauth_client_id = {_toml_string(sec.oauth_client_id)}")
     if sec.oauth_client_secret:
-        sec_lines.append(f'oauth_client_secret = "{sec.oauth_client_secret}"')
+        sec_lines.append(f"oauth_client_secret = {_toml_string(sec.oauth_client_secret)}")
     if sec_lines:
         lines += ["[security]"] + sec_lines + [""]
 
     if cfg.tools.exclude:
-        items = ", ".join(f'"{t}"' for t in cfg.tools.exclude)
+        items = ", ".join(_toml_string(t) for t in cfg.tools.exclude)
         lines += ["[tools]", f"exclude = [{items}]", ""]
 
     ctrl, default_ctrl = cfg.control, ControlConfig()
@@ -252,7 +266,7 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
         if getattr(ctrl, key) != getattr(default_ctrl, key)
     ]
     if ctrl.policy != default_ctrl.policy:
-        control_lines.append(f'policy = "{ctrl.policy}"')
+        control_lines.append(f"policy = {_toml_string(ctrl.policy)}")
     if ctrl.enabled != default_ctrl.enabled:
         control_lines.append(f"enabled = {str(ctrl.enabled).lower()}")
     if ctrl.idle_timeout_seconds != default_ctrl.idle_timeout_seconds:
