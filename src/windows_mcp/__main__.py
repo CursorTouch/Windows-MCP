@@ -266,7 +266,7 @@ def _build_mcp() -> FastMCP:
     except ModuleNotFoundError as exc:
         _exit_missing_dependency(exc)
     from windows_mcp.tools.control_notifications import ControlNotifier, ControlToolGate
-    from windows_mcp.desktop.control import get_controller
+    from windows_mcp.desktop.control import describe_failure, get_controller
     from windows_mcp.desktop import control_overlay
 
     controller = get_controller()
@@ -291,9 +291,9 @@ def _build_mcp() -> FastMCP:
                 control_overlay.set_pending(True, generation=generation)
             else:
                 control_overlay.set_active(False, generation=generation)
-        except Exception:
+        except Exception as exc:
             # A missing visual indicator invalidates the AI control lease.
-            controller._fail_open()
+            controller._fail_open(reason=f"AI control indicator failed: {describe_failure(exc)}")
             logger.exception("AI control indicator failed; releasing physical input")
 
     def show_control_state(status: dict) -> None:
@@ -312,8 +312,8 @@ def _build_mcp() -> FastMCP:
                         asyncio.to_thread(apply_control_state, status.copy())
                     )
                 )
-            except RuntimeError:
-                controller._fail_open()
+            except RuntimeError as exc:
+                controller._fail_open(reason=f"Could not schedule AI control indicator: {exc}")
                 logger.exception("Could not schedule AI control indicator update")
         else:
             # begin_call waits for the visible AI indicator before any tool runs.
