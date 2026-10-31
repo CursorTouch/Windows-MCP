@@ -79,6 +79,9 @@ _KEY_ALIASES = {
 # Characters with a meaning in SendKeys syntax; they must be braced to be literal.
 _SENDKEYS_SYNTAX_CHARS = set("{}()")
 
+# Scrape converts only these to Markdown; any other body is returned as fetched.
+_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
 
 def _shortcut_to_sendkeys(shortcut: str) -> str:
     """Translate "ctrl+shift+comma" style input into a SendKeys string.
@@ -1100,9 +1103,13 @@ class Desktop:
             # (RFC 2616) and ignores the in-document ``<meta charset>``, so
             # non-ASCII pages come back as mojibake. Sniff the body instead.
             response.encoding = response.apparent_encoding or "utf-8"
-        html = response.text
-        content = markdownify(html=html)
-        return content
+        # markdownify reads any other body as one HTML text node: it collapses
+        # line breaks and indentation and escapes "_" and "*", which mangles
+        # JSON, source files and plain text. A missing type keeps the old path.
+        media_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        if media_type and media_type not in _HTML_MEDIA_TYPES:
+            return response.text
+        return markdownify(html=response.text)
 
     def is_overlay_window(self, element: uia.Control) -> bool:
         """Return True if the window is a decorative overlay rather than a real app window.
