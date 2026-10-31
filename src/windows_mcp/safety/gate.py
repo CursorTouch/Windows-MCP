@@ -18,7 +18,12 @@ from windows_mcp.safety.apps import is_allowed, normalize_app, parse_point, pars
 from windows_mcp.safety.audit import AuditLog, redact
 from windows_mcp.safety.config import SafetyConfig
 from windows_mcp.safety.killswitch import KillSwitch
-from windows_mcp.safety.launch import LaunchGuard, resolve_command, set_launch_guard
+from windows_mcp.safety.launch import (
+    LaunchGuard,
+    find_launch_denied,
+    resolve_command,
+    set_launch_guard,
+)
 from windows_mcp.safety.powershell import check_powershell, cmdlet_of
 
 logger = logging.getLogger(__name__)
@@ -157,7 +162,19 @@ class SafetyPolicy:
                         return Decision(
                             False, f"Executable {target!r} not found as a path or on PATH."
                         )
-                    if not is_allowed(resolved, self.cfg.apps.allowed):
+                    if resolved.lower().endswith(".lnk"):
+                        # A shortcut runs its target, so the target is what gets checked.
+                        resolve_target = getattr(self.platform, "resolve_app_target", None)
+                        target_exe = resolve_target(resolved) if resolve_target else None
+                        if not target_exe:
+                            return Decision(False, f"Shortcut {resolved} has no resolvable target.")
+                        if not is_allowed(target_exe, self.cfg.apps.allowed):
+                            return Decision(
+                                False,
+                                f"Shortcut {resolved} runs {target_exe}, which is not in "
+                                "safety.apps.allowed.",
+                            )
+                    elif not is_allowed(resolved, self.cfg.apps.allowed):
                         return Decision(
                             False, f"Executable {resolved} is not in safety.apps.allowed."
                         )
@@ -351,6 +368,10 @@ class SafetyGate(Middleware):
         try:
             result = await call_next(context)
         except Exception as exc:
+            denied = find_launch_denied(exc)
+            if denied is not None:
+                # LaunchGuard refused inside the launch (resolved target or started process).
+                raise self._refuse(name, args, "denied", denied.reason, start) from exc
             self.audit.write(
                 self._record(
                     name,

@@ -76,13 +76,17 @@ hotkey = "ctrl+alt+shift+f12"
 | `Click`, `Scroll`, `Move`, `MultiSelect`, `MultiEdit` with coordinates | process of the top-level window under **each** point (`WindowFromPoint`); drags check both ends |
 | `Type`, `Shortcut`, any call by `label`, calls without coordinates | process of the **foreground** window |
 | `App` `launch` | the executable the fuzzy Start Menu match resolves to (exe path, `.lnk` target, or the packaged app's manifest `Executable`); unresolvable = refuse. After the start, the process from the returned pid is checked again |
-| `App` `launch_executable` | the resolved file: a path as given, a bare name (`notepad.exe`) through the absolute `PATH` entries only, never the current directory; not found = refuse |
+| `App` `launch_executable` | the resolved file: a path as given, a bare name (`notepad.exe`) through the absolute `PATH` entries only, never the current directory; not found = refuse. A `.lnk` is checked on its target executable (no target = refuse) |
 | `App` `switch` / `resize` | processes of every visible window whose title contains `name` (none found = refuse) |
 | `Process` `kill` | the process of `pid`, or `name` |
 
 The requested name is not what counts: on an Italian Windows Notepad is listed as
 "Blocco note", so `name = "notepad"` fuzzy-matches Notepad++ and is refused unless
 `notepad++` is allowed, while `name = "blocco note"` is allowed by `notepad`.
+The Start Menu match itself prefers, in order: an exact display name, an entry whose
+executable is named like the request (`notepad` -> the entry running `notepad.exe`, so the
+system Notepad wins), then the fuzzy match. Refusals from the launch come back as
+`safety_denied` errors and are audited as `denied`, like any other refusal.
 
 If the started process (the pid from `Start-Process -PassThru`) is not allowed, that one
 process is terminated and the call fails with the reason; nothing else is ever killed.
