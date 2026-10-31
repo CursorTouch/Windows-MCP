@@ -740,6 +740,16 @@ def serve(
         for name in ["uvicorn", "uvicorn.error", "uvicorn.access", "fastmcp"]:
             logging.getLogger(name).setLevel(logging.DEBUG)
 
+    # Safety notices (kill-switch hotkey, refusals) must reach stderr: with no root
+    # handler, Python's last-resort handler drops anything below WARNING.
+    safety_logger = logging.getLogger("windows_mcp.safety")
+    if not safety_logger.handlers:
+        safety_handler = logging.StreamHandler(sys.stderr)
+        safety_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        safety_logger.addHandler(safety_handler)
+        safety_logger.setLevel(logging.DEBUG if debug else logging.INFO)
+        safety_logger.propagate = False
+
     # Load config file and merge with CLI flags (CLI wins)
     config_path = discover_config_path(config)
     try:
