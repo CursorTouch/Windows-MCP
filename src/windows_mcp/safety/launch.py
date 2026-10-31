@@ -119,6 +119,28 @@ class LaunchGuard:
             )
         return None
 
+    def check_path(self, requested: str, path: str) -> str | None:
+        """Return an error message if the file *path* (.exe/.com, or a .lnk) must not start.
+
+        A shortcut is checked on its target, never on its own name.
+        """
+        try:
+            exe = self.platform.resolve_app_target(path)
+        except Exception:  # Resolution is best effort; any failure means deny.
+            logger.exception("Could not resolve %r", path)
+            exe = None
+        if not exe:
+            return (
+                f"Safety: {requested!r} ({path}): the executable it runs could not be "
+                "determined, so it was not launched."
+            )
+        if not is_allowed(exe, self.cfg.apps.allowed):
+            return (
+                f"Safety: {requested!r} runs {exe}; that executable is not in "
+                "safety.apps.allowed. Not launched."
+            )
+        return None
+
     def check_executable(self, requested: str, exe: str) -> str | None:
         """Return an error message if *exe* (a shortcut's target) is not allowed."""
         if is_allowed(exe, self.cfg.apps.allowed):

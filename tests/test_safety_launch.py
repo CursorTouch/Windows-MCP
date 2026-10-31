@@ -423,3 +423,97 @@ def test_plain_executable_still_uses_argv_list(tmp_path, monkeypatch):
     popen = FakePopen()
     app._launch_executable(str(exe), ["a b"], None, popen=popen)
     assert popen.calls[0][0] == [str(exe), "a b"]
+
+
+# -- App launch with a path in `name`: started directly, never fuzzy-matched -----------
+
+
+def test_path_like_names_are_not_start_menu_names():
+    al = _load_app_launch()
+    assert al.is_path_like("C:/Users/vince/wmcp-test/notepad_ok.lnk")
+    assert al.is_path_like("C:\\Windows\\System32\\notepad.exe")
+    assert al.is_path_like("\\\\server\\share\\app.exe")
+    assert not al.is_path_like("notepad")
+    assert not al.is_path_like("Blocco note")
+
+
+def test_direct_launch_path_requires_existing_absolute_exe_or_lnk(tmp_path):
+    al = _load_app_launch()
+    assert al.direct_launch_path("notepad") is None  # Start Menu name: normal matching.
+    lnk = tmp_path / "notepad_ok.lnk"
+    lnk.write_text("")
+    exe = tmp_path / "tool.exe"
+    exe.write_text("")
+    doc = tmp_path / "readme.txt"
+    doc.write_text("")
+    assert al.direct_launch_path(str(lnk)) == str(lnk.resolve())
+    assert al.direct_launch_path(f'"{exe}"') == str(exe.resolve())
+    for bad, message in [
+        (str(tmp_path / "charmap_no.lnk"), "does not exist"),
+        (str(doc), ".exe, .com or .lnk"),
+        ("wmcp-test/notepad_ok.lnk", "must be absolute"),
+    ]:
+        try:
+            al.direct_launch_path(bad)
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError(f"expected ValueError for {bad}")
+
+
+def _launch_recorder(executable, pid=4242):
+    calls = []
+
+    def launch(path):
+        calls.append(path)
+        return json.dumps({"pid": pid, "executable": executable, "args": [], "cwd": None})
+
+    return calls, launch
+
+
+def test_allowed_lnk_path_is_checked_on_its_target_and_started(tmp_path):
+    al = _load_app_launch()
+    lnk = str(tmp_path / "notepad_ok.lnk")
+    target = "C:\\Windows\\System32\\notepad.exe"
+    g = guard(FakeLaunchPlatform(targets={lnk: target}), allowed=("notepad",))
+    calls, launch = _launch_recorder(target)
+    msg, status, pid = al.launch_direct_path(lnk, lnk, guard=g, launch=launch)
+    assert (status, pid) == (0, 4242) and calls == [lnk] and target in msg
+
+
+def test_disallowed_lnk_target_is_denied_before_start_not_fuzzy_matched(tmp_path):
+    al = _load_app_launch()
+    lnk = str(tmp_path / "charmap_no.lnk")
+    g = guard(
+        FakeLaunchPlatform(targets={lnk: "C:\\Windows\\System32\\charmap.exe"}),
+        allowed=("notepad",),
+    )
+    calls, launch = _launch_recorder("x")
+    try:
+        al.launch_direct_path(lnk, lnk, guard=g, launch=launch)
+    except LaunchDenied as exc:
+        assert "charmap.exe" in exc.reason and "Start Menu" not in exc.reason
+    else:
+        raise AssertionError("expected LaunchDenied")
+    assert calls == []
+
+
+def test_disallowed_exe_path_and_unresolvable_lnk_are_denied(tmp_path):
+    al = _load_app_launch()
+    lnk = str(tmp_path / "broken.lnk")
+    g = guard(FakeLaunchPlatform(targets={NPP: NPP}), allowed=("notepad",))
+    for path, needle in [(NPP, "notepad++.exe"), (lnk, "could not be determined")]:
+        calls, launch = _launch_recorder("x")
+        try:
+            al.launch_direct_path(path, path, guard=g, launch=launch)
+        except LaunchDenied as exc:
+            assert needle in exc.reason
+        else:
+            raise AssertionError("expected LaunchDenied")
+        assert calls == []
+
+
+def test_direct_path_without_guard_just_starts(tmp_path):
+    al = _load_app_launch()
+    calls, launch = _launch_recorder("C:\\x\\tool.exe", pid=7)
+    assert al.launch_direct_path("p", "p", guard=None, launch=launch)[1:] == (0, 7)
