@@ -293,8 +293,17 @@ def _build_mcp() -> FastMCP:
                 control_overlay.set_active(False, generation=generation)
         except Exception as exc:
             # A missing visual indicator invalidates the AI control lease.
-            controller._fail_open(reason=f"AI control indicator failed: {describe_failure(exc)}")
+            release_control(f"AI control indicator failed: {describe_failure(exc)}")
             logger.exception("AI control indicator failed; releasing physical input")
+
+    def release_control(reason: str) -> None:
+        # Fail open without letting the reason plumbing raise or block.
+        # Controllers without fail_open_with_reason keep the plain fail-open.
+        fail_with_reason = getattr(controller, "fail_open_with_reason", None)
+        if callable(fail_with_reason):
+            fail_with_reason(reason)
+        else:
+            controller._fail_open()
 
     def show_control_state(status: dict) -> None:
         if threading.current_thread() is controller._thread or not (
@@ -313,7 +322,7 @@ def _build_mcp() -> FastMCP:
                     )
                 )
             except RuntimeError as exc:
-                controller._fail_open(reason=f"Could not schedule AI control indicator: {exc}")
+                release_control(f"Could not schedule AI control indicator: {describe_failure(exc)}")
                 logger.exception("Could not schedule AI control indicator update")
         else:
             # begin_call waits for the visible AI indicator before any tool runs.

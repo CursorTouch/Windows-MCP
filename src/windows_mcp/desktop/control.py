@@ -29,13 +29,21 @@ from windows_mcp.desktop.control_win32 import (
 
 def describe_failure(exc: BaseException) -> str:
     """Return ``Type: message`` for the innermost cause of *exc*."""
-    seen: set[int] = set()
-    root = exc
-    while root.__cause__ is not None and id(root.__cause__) not in seen:
-        seen.add(id(root))
-        root = root.__cause__
-    text = str(root).strip()
-    return f"{type(root).__name__}: {text}" if text else type(root).__name__
+    # Must never raise: it runs inside fail-open handlers.
+    try:
+        seen: set[int] = {id(exc)}
+        root = exc
+        while root.__cause__ is not None and id(root.__cause__) not in seen:
+            root = root.__cause__
+            seen.add(id(root))
+        name = type(root).__name__
+        try:
+            text = str(root).strip()
+        except Exception:
+            text = ""
+        return f"{name}: {text}" if text else name
+    except Exception:
+        return "unknown failure"
 
 
 class ControlBlocked(RuntimeError):
@@ -438,6 +446,10 @@ class ControlCoordinator:
         self._delivered_mouse.clear()
         self._quarantine.clear()
         self._thread = self._watchdog = None
+
+    def fail_open_with_reason(self, reason: str | None) -> None:
+        """Fail open and remember *reason* for the unavailable status."""
+        self._fail_open(reason=reason)
 
     def _fail_open(self, reason: str | None = None) -> None:
         if reason:
