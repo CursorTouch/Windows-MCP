@@ -288,6 +288,10 @@ async def test_launch_denied_logs_one_line_unexpected_error_keeps_traceback(tmp_
     def app(mode: str) -> str:
         if mode == "launch":
             raise LaunchDenied("notepad++.exe is not in the allowlist")
+        if mode == "path":
+            from windows_mcp.desktop.app_launch import direct_launch_path
+
+            direct_launch_path("notepad_ok.lnk")
         raise RuntimeError("boom")
 
     caplog.set_level(logging.DEBUG)
@@ -302,6 +306,17 @@ async def test_launch_denied_logs_one_line_unexpected_error_keeps_traceback(tmp_
     assert all(r.levelno <= logging.WARNING for r in denied)
     assert any("notepad++.exe is not in the allowlist" in r.getMessage() for r in denied)
     assert audit_lines(log)[-1]["decision"] == "denied"
+
+    # An invalid launch path: isError=true with its message, audit error, no traceback.
+    caplog.clear()
+    async with Client(mcp) as c:
+        result = await c.call_tool("App", {"mode": "path"}, raise_on_error=False)
+    assert result.is_error is True
+    assert "must be an absolute path" in result.content[0].text
+    assert audit_lines(log)[-1]["result"] == "error"
+    assert caplog.records, "expected a log line for the path error"
+    assert all(not r.exc_info for r in caplog.records)
+    assert all(r.levelno <= logging.WARNING for r in caplog.records)
 
     caplog.clear()
     async with Client(mcp) as c:
