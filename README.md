@@ -677,6 +677,10 @@ For contributors: tool categories and the few mode-specific exceptions live in
 registration coverage tests detect omissions. Unknown extensions conservatively
 use the gate. Keep policy decisions out of individual tool implementations.
 
+### Safety layer
+
+App allowlist, PowerShell policy (disabled by default), local confirmation dialogs for risky actions, JSONL audit log, kill switch and mandatory HTTP auth are enabled by default and configured under `[safety.*]` / `[server]`. See [docs/safety.md](docs/safety.md).
+
 ### `auth` Helper
 
 Generate an auth key and save a working config to `~/.windows-mcp/config.toml`:
