@@ -451,7 +451,7 @@ def test_direct_launch_path_requires_existing_absolute_exe_or_lnk(tmp_path):
     for bad, message in [
         (str(tmp_path / "charmap_no.lnk"), "does not exist"),
         (str(doc), ".exe, .com or .lnk"),
-        ("wmcp-test/notepad_ok.lnk", "must be absolute"),
+        ("wmcp-test/notepad_ok.lnk", "must be an absolute path"),
     ]:
         try:
             al.direct_launch_path(bad)
@@ -517,3 +517,28 @@ def test_direct_path_without_guard_just_starts(tmp_path):
     al = _load_app_launch()
     calls, launch = _launch_recorder("C:\\x\\tool.exe", pid=7)
     assert al.launch_direct_path("p", "p", guard=None, launch=launch)[1:] == (0, 7)
+
+
+def test_bare_file_name_with_launch_suffix_is_rejected_not_fuzzy_matched():
+    al = _load_app_launch()
+    for bare in ["notepad_ok.lnk", "NOTEPAD.EXE", "tool.Com", ' "app.lnk" ']:
+        try:
+            al.direct_launch_path(bare)
+        except ValueError as exc:
+            assert "must be an absolute path" in str(exc)
+        else:
+            raise AssertionError(f"expected ValueError for {bare!r}")
+    # Start Menu names without a file suffix still go to normal matching.
+    for name in ["notepad", "Blocco note", "Notepad++", "Visual Studio Code"]:
+        assert al.direct_launch_path(name) is None
+
+
+def test_launch_denied_is_logged_without_traceback():
+    import logging
+
+    from fastmcp.exceptions import FastMCPError
+
+    exc = LaunchDenied("not allowed")
+    assert isinstance(exc, FastMCPError)  # FastMCP logs it with exc_info=False.
+    assert exc.log_level == logging.WARNING
+    assert exc.reason == "not allowed"

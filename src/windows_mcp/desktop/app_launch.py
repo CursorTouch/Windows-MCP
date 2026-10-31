@@ -36,14 +36,20 @@ def is_path_like(name: str) -> bool:
 def direct_launch_path(name: str) -> str | None:
     """Return the file to start when *name* is a path, None when it is a Start Menu name.
 
-    A path is never fuzzy-matched to a Start Menu entry: it must be an existing absolute
-    ``.exe``, ``.com`` or ``.lnk`` file, otherwise ValueError is raised.
+    A path, or any name ending in ``.exe``, ``.com`` or ``.lnk``, is never fuzzy-matched
+    to a Start Menu entry: it must be an existing absolute ``.exe``, ``.com`` or ``.lnk``
+    file, otherwise ValueError is raised.
     """
-    if not is_path_like(name):
-        return None
     text = os.path.expandvars(name.strip().strip('"'))
+    has_file_suffix = text.lower().endswith(DIRECT_LAUNCH_SUFFIXES)
+    if not is_path_like(name) and not has_file_suffix:
+        return None
     if not (os.path.isabs(text) or _WINDOWS_ABS.match(text)):
-        raise ValueError(f"App path must be absolute: {name}")
+        # A bare "app.lnk"/"app.exe" is a file name, not a Start Menu name: never fuzzy-match it.
+        raise ValueError(
+            f"App path must be an absolute path (got {name!r}); "
+            "use a full path such as C:\\...\\app.lnk, or a Start Menu name without extension"
+        )
     path = Path(text)
     if not path.is_file():
         raise ValueError(f"App path does not exist: {name}")

@@ -275,3 +275,36 @@ async def test_every_audit_row_has_the_same_fields(tmp_path):
     assert rows[0]["result"] == "ok" and rows[0]["reason"] is None
     for row in rows[1:]:
         assert row["result"] is None and row["error"] is None and row["reason"]
+
+
+async def test_launch_denied_logs_one_line_unexpected_error_keeps_traceback(tmp_path, caplog):
+    import logging
+
+    from windows_mcp.safety.launch import LaunchDenied
+
+    mcp, _, _, _, log = make(tmp_path)
+
+    @mcp.tool(name="App")
+    def app(mode: str) -> str:
+        if mode == "launch":
+            raise LaunchDenied("notepad++.exe is not in the allowlist")
+        raise RuntimeError("boom")
+
+    caplog.set_level(logging.DEBUG)
+    async with Client(mcp) as c:
+        with pytest.raises(Exception, match="safety_denied"):
+            await c.call_tool("App", {"mode": "launch"})
+    denied = [
+        r for r in caplog.records if "allowlist" in r.getMessage() or "'App'" in r.getMessage()
+    ]
+    assert denied, "expected a log line for the refusal"
+    assert all(not r.exc_info for r in denied)
+    assert all(r.levelno <= logging.WARNING for r in denied)
+    assert any("notepad++.exe is not in the allowlist" in r.getMessage() for r in denied)
+    assert audit_lines(log)[-1]["decision"] == "denied"
+
+    caplog.clear()
+    async with Client(mcp) as c:
+        with pytest.raises(Exception):
+            await c.call_tool("App", {"mode": "switch"})
+    assert any(r.exc_info and r.exc_info[0] is RuntimeError for r in caplog.records)

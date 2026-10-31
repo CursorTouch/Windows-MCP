@@ -293,6 +293,8 @@ class SafetyGate(Middleware):
 
     def _refuse(self, name: str, args: dict, decision: str, reason: str, start: float) -> ToolError:
         self.audit.write(self._record(name, args, start, decision=decision, reason=reason))
+        # An expected refusal: one line, no traceback (those stay for unexpected errors).
+        logger.warning("Safety %s for tool %r: %s", decision, name, reason)
         return ToolError(json.dumps({"code": "safety_" + decision, "reason": reason}))
 
     def _record(

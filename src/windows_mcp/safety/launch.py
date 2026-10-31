@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from fastmcp.exceptions import FastMCPError
+
 from windows_mcp.safety.apps import is_allowed
 from windows_mcp.safety.config import SafetyConfig
 
@@ -67,14 +69,16 @@ def resolve_command(
     return None
 
 
-class LaunchDenied(Exception):
+class LaunchDenied(FastMCPError):
     """Raised from inside a launch when LaunchGuard refuses it.
 
     SafetyGate turns it into a ``safety_denied`` tool error and a ``denied`` audit row.
+    It is a FastMCPError at WARNING level so FastMCP logs an expected refusal as one
+    line, without the traceback it prints for unexpected tool errors.
     """
 
     def __init__(self, reason: str) -> None:
-        super().__init__(reason)
+        super().__init__(reason, log_level=logging.WARNING)
         self.reason = reason
 
 
