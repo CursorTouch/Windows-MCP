@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from windows_mcp import registry
 from windows_mcp.powershell.utils import ps_quote
 
@@ -13,6 +15,11 @@ class TestPsQuote:
 
     def test_single_quote_escaping(self):
         assert ps_quote("it's") == "'it''s'"
+
+    @pytest.mark.parametrize("quote", ["\u2018", "\u2019", "\u201a", "\u201b"])
+    def test_typographic_single_quote_escaping(self, quote):
+        # PowerShell treats these like the ASCII apostrophe inside a single-quoted string.
+        assert ps_quote(f"it{quote}s") == f"'it{quote}{quote}s'"
 
     def test_double_quotes_not_escaped(self):
         assert ps_quote('say "hi"') == """'say "hi"'"""
