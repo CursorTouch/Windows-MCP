@@ -135,6 +135,22 @@ def write_file(path: str, content: str, append: bool = False, encoding: str = 'u
         return f'Error writing file: {e}'
 
 
+def _kind_mismatch(src: Path, dst: Path, verb: str) -> str | None:
+    """Return an error if *dst* exists and only one of *src* and *dst* is a directory.
+
+    An overwrite removes the destination first, so letting a file replace a directory
+    would delete everything in it.
+    """
+    if not dst.exists() or src.is_dir() == dst.is_dir():
+        return None
+    if dst.is_dir():
+        return (
+            f'Error: Destination is a directory: {dst}. A file cannot replace a directory; '
+            f'to {verb} the file into it, use {dst / src.name} as the destination.'
+        )
+    return f'Error: Destination is a file: {dst}. A directory cannot replace a file.'
+
+
 def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
     """Copy a file or directory to a new location."""
     src = Path(source).resolve()
@@ -145,6 +161,9 @@ def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
 
     if src == dst or dst in src.parents or (src.is_dir() and src in dst.parents):
         return 'Error: Source and destination paths overlap.'
+
+    if error := _kind_mismatch(src, dst, 'copy'):
+        return error
 
     if dst.exists() and not overwrite:
         return f'Error: Destination already exists: {dst}. Set overwrite=True to replace.'
@@ -194,6 +213,9 @@ def move_path(source: str, destination: str, overwrite: bool = False) -> str:
 
     if src == dst or dst in src.parents or (src.is_dir() and src in dst.parents):
         return 'Error: Source and destination paths overlap.'
+
+    if error := _kind_mismatch(src, dst, 'move'):
+        return error
 
     if dst.exists() and not overwrite:
         return f'Error: Destination already exists: {dst}. Set overwrite=True to replace.'
