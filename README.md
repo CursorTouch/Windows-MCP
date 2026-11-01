@@ -710,6 +710,7 @@ All variables are optional unless noted. Set them via the `env` key in `claude_d
 | `WINDOWS_MCP_SCREENSHOT_BACKEND` | `auto` | Screenshot capture backend. Accepted values: `auto` (tries dxcam → mss → pillow in order), `dxcam`, `mss`, `pillow`. Use `mss` or `pillow` if `dxcam` is unavailable or causes issues on your GPU. |
 | `WINDOWS_MCP_PROFILE_SNAPSHOT` | _(disabled)_ | Set to `1`, `true`, `yes`, or `on` to emit per-stage timing logs for Screenshot/Snapshot calls. Useful for diagnosing slow captures. |
 | `WINDOWS_MCP_DISABLE_FLASH` | _(disabled)_ | Set to `1`, `true`, `yes`, or `on` to suppress the orange-red glowing border that briefly highlights the captured area after every screenshot. The flash is rendered on a transparent always-on-top window *after* capture so it never appears in the captured image. |
+| `WINDOWS_MCP_MERGE_WORD_NODES` | _(disabled)_ | Set to `1`, `true`, `yes`, or `on` to merge adjacent `Word` leaves on the same text line into one node. Electron/Chromium apps can report one word per glyph (each CJK character becomes its own node), which can dominate `Snapshot` output; merging keeps one clickable node per text run. Leave it off when you need to click individual words. |
 
 ### Excluding processes from UI Automation traversal
 
