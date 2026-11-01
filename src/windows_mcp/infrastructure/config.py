@@ -124,7 +124,8 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    # Accept a UTF-8 BOM, which Windows PowerShell 5.1 writes (Set-Content -Encoding UTF8).
+    data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
 
     server = data.get("server", {})
     security = data.get("security", {})
