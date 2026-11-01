@@ -67,19 +67,33 @@ def read_file(path: str, offset: int | None = None, limit: int | None = None, en
         return f'Error: File not found: {file_path}'
     if not file_path.is_file():
         return f'Error: Path is not a file: {file_path}'
-    if file_path.stat().st_size > MAX_READ_SIZE:
-        return f'Error: File too large ({file_path.stat().st_size:,} bytes). Maximum is {MAX_READ_SIZE:,} bytes. Use offset/limit parameters or the Shell tool for large files.'
+    if limit is not None and limit < 0:
+        return 'Error: limit cannot be negative.'
+    if offset is None and limit is None and file_path.stat().st_size > MAX_READ_SIZE:
+        return f'Error: File too large ({file_path.stat().st_size:,} bytes). Maximum is {MAX_READ_SIZE:,} bytes. Use offset/limit parameters or the PowerShell tool for large files.'
 
     try:
         encoding = _bom_encoding(file_path, encoding)
         with open(file_path, 'r', encoding=encoding, errors='replace') as f:
             if offset is not None or limit is not None:
-                lines = f.readlines()
                 start = (offset or 1) - 1  # Convert 1-based to 0-based
                 start = max(0, start)
-                end = start + limit if limit else len(lines)
-                selected = lines[start:end]
-                total = len(lines)
+                end = start + limit if limit else float('inf')
+                selected = []
+                size = 0
+                total = 0
+                at_line_start = True
+                # Stream the file instead of loading it, so ranges of files over MAX_READ_SIZE
+                # work. readline() is capped, so a very long line is read in pieces.
+                while piece := f.readline(MAX_READ_SIZE):
+                    if at_line_start:
+                        total += 1
+                    at_line_start = piece.endswith('\n')
+                    if start < total <= end:
+                        size += len(piece)
+                        if size > MAX_READ_SIZE:
+                            return f'Error: The requested lines add up to more than {MAX_READ_SIZE:,} characters. Use a smaller limit or the PowerShell tool.'
+                        selected.append(piece)
                 content = ''.join(selected)
                 return f'File: {file_path}\nLines {start + 1}-{min(end, total)} of {total}:\n{content}'
             else:
