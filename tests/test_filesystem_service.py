@@ -14,6 +14,7 @@ from windows_mcp.filesystem.service import (
     search_files,
     get_file_info,
 )
+from windows_mcp.filesystem.views import MAX_READ_SIZE
 
 
 class TestReadFile:
@@ -59,6 +60,55 @@ class TestReadFile:
         f = tmp_path / "bom.txt"
         f.write_bytes(codecs.BOM_UTF8 + b"hi")
         assert read_file(str(f), encoding="latin-1").endswith("\nï»¿hi")
+
+    @pytest.fixture
+    def large_file(self, tmp_path):
+        # 110,000 numbered lines of 101 bytes: 11,110,000 bytes, just over MAX_READ_SIZE.
+        f = tmp_path / "large.log"
+        f.write_bytes(b"".join(b"%06d " % n + b"x" * 93 + b"\n" for n in range(1, 110_001)))
+        assert f.stat().st_size > MAX_READ_SIZE
+        return f
+
+    @pytest.mark.parametrize(
+        "offset, limit, first, last",
+        [
+            (None, 3, 1, 3),
+            (100, 2, 100, 101),
+            (109_999, 10, 109_999, 110_000),
+            (109_999, None, 109_999, 110_000),
+        ],
+        ids=["first-lines", "middle", "end", "offset-only"],
+    )
+    def test_read_range_of_file_over_size_limit(self, large_file, offset, limit, first, last):
+        result = read_file(str(large_file), offset=offset, limit=limit)
+        lines = [f"{n:06d} " + "x" * 93 for n in range(first, last + 1)]
+        assert result.splitlines()[1:] == [f"Lines {first}-{last} of 110000:", *lines]
+
+    def test_read_whole_file_over_size_limit_is_refused(self, large_file):
+        result = read_file(str(large_file))
+        assert result.startswith("Error: File too large (11,110,000 bytes).")
+        assert "or the PowerShell tool" in result
+
+    @pytest.mark.parametrize(
+        "offset, limit", [(1, 110_000), (1, None)], ids=["limit", "offset-only"]
+    )
+    def test_read_range_too_large_is_refused(self, large_file, offset, limit):
+        result = read_file(str(large_file), offset=offset, limit=limit)
+        assert result.startswith(
+            f"Error: The requested lines add up to more than {MAX_READ_SIZE:,} characters."
+        )
+
+    def test_read_range_after_line_longer_than_size_limit(self, tmp_path):
+        # The first line is longer than MAX_READ_SIZE, so it is read in two pieces.
+        f = tmp_path / "long.txt"
+        f.write_bytes(b"x" * (MAX_READ_SIZE + 1) + b"\nlast\n")
+        assert read_file(str(f), offset=2, limit=1).endswith("\nLines 2-2 of 2:\nlast\n")
+        assert read_file(str(f), limit=1).startswith("Error: The requested lines add up to")
+
+    def test_read_rejects_negative_limit(self, tmp_path):
+        f = tmp_path / "lines.txt"
+        f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+        assert read_file(str(f), offset=2, limit=-1) == "Error: limit cannot be negative."
 
 
 class TestWriteFile:
