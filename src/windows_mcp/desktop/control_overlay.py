@@ -4,6 +4,7 @@ The display thread owns every HWND. Calls from MCP threads change desired state
 and wait for an acknowledgement, so a screenshot cannot race a visible frame.
 """
 
+from collections.abc import Callable
 from contextlib import contextmanager
 import ctypes
 import logging
@@ -135,8 +136,16 @@ def _monitor_rects() -> tuple[tuple[int, int, int, int], ...]:
 
 
 def _build_layers(
-    rects: tuple[tuple[int, int, int, int], ...], pending: bool
+    rects: tuple[tuple[int, int, int, int], ...],
+    pending: bool,
+    beat: Callable[[], None] | None = None,
 ) -> tuple[list[_Layer], _Layer]:
+    """Build the indicator layers; *beat* is called after each layer is made.
+
+    Rendering the bitmaps for very wide desktops can take longer than the
+    watchdog's one-second heartbeat window, so the caller passes a heartbeat
+    refresh to show the thread is still making progress.
+    """
     if not rects:
         raise RuntimeError("no display available for AI control indicator")
     color = _AMBER if pending else _BLUE
@@ -162,6 +171,8 @@ def _build_layers(
                     layers.append(
                         _Layer(x, y, w, h, _edge_bitmap(w, h, side, color), f"{index}_{side}")
                     )
+                    if beat is not None:
+                        beat()
             notice = _notice_bitmap(width)
             if notice is not None:
                 notice_width, notice_height, bitmap = notice
@@ -192,6 +203,8 @@ def _build_layers(
                         breathes=False,
                     )
                 )
+                if beat is not None:
+                    beat()
         point = wintypes.POINT()
         if not _user32.GetCursorPos(ctypes.byref(point)):
             raise RuntimeError("cannot locate cursor for AI control indicator")
@@ -296,6 +309,10 @@ class _Indicator:
         if self.thread.is_alive():
             raise RuntimeError("AI control indicator did not stop")
 
+    def _beat(self) -> None:
+        # A float store is atomic; the watchdog only reads it.
+        self.heartbeat = time.monotonic()
+
     def _run(self) -> None:
         layers: list[_Layer] = []
         ring: _Layer | None = None
@@ -325,7 +342,7 @@ class _Indicator:
                         if ring:
                             ring.close()
                             ring = None
-                        layers, ring = _build_layers(current_rects, pending)
+                        layers, ring = _build_layers(current_rects, pending, beat=self._beat)
                         rects, mode = current_rects, pending
                         visible = False
                     if suspended:
