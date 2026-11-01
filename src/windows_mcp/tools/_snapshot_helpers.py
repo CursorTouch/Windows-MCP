@@ -146,6 +146,7 @@ def build_snapshot_response(
     *,
     include_ui_details: bool,
     ui_detail_note: str | None = None,
+    saved_path: str | None = None,
 ):
     desktop_state = capture_result["desktop_state"]
     interactive_elements = capture_result["interactive_elements"]
@@ -216,6 +217,8 @@ def build_snapshot_response(
             )
     if desktop_state.screenshot_backend:
         metadata_text += f"Screenshot Backend: {desktop_state.screenshot_backend}\n"
+    if saved_path:
+        metadata_text += f"Screenshot Saved To: {saved_path}\n"
     if ui_detail_note:
         metadata_text += f"{ui_detail_note}\n"
 
