@@ -71,12 +71,23 @@ def delete_entry(path: str, name: str | None = None) -> str:
     return f'Registry key [{path}] deleted.'
 
 
+# Items of a binary or multi-string value that list mode shows before an
+# ellipsis. Format-List shows 4 by default; get mode returns the whole value.
+_LIST_ITEM_LIMIT = 256
+
+
 def list_key(path: str) -> str:
     """List values and sub-keys under *path*."""
     q_path = ps_quote(path)
+    # Exclude only the five provider properties Get-ItemProperty adds ("PS*"
+    # also hid values such as PSModulePath), show up to _LIST_ITEM_LIMIT items of
+    # binary and multi-string values instead of 4, and keep Windows PowerShell
+    # 5.1 from wrapping long values at the console width.
     command = (
+        f"$FormatEnumerationLimit = {_LIST_ITEM_LIMIT}; "
         f"$values = (Get-ItemProperty -LiteralPath {q_path} -ErrorAction Stop | "
-        f"Select-Object * -ExcludeProperty PS* | Format-List | Out-String).Trim(); "
+        f"Select-Object * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSDrive, PSProvider "
+        f"| Format-List | Out-String -Width ([int]::MaxValue)).Trim(); "
         f"$subkeys = (Get-ChildItem -LiteralPath {q_path} -ErrorAction SilentlyContinue | "
         f"Select-Object -ExpandProperty PSChildName) -join \"`n\"; "
         f"if ($values) {{ Write-Output \"Values:`n$values\" }}; "
