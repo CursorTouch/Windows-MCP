@@ -837,7 +837,10 @@ MCP Client can access the following tools to interact with Windows:
 - `Move`: Move mouse pointer or drag (set drag=True) to coordinates. For deterministic
   drag, set `from_loc=[x, y]` with `drag=True` to press at an explicit start point and
   release at `loc` in one tool call. Optional `duration` adds bounded intermediate
-  movement.
+  movement. Drag is not supported on XAML shell surfaces such as Start menu tiles and
+  pinned taskbar buttons: they ignore synthesized mouse input, so the drag silently does
+  nothing while the call still succeeds. Use their context-menu commands (`Move to front`,
+  `Move left`, `Move right` on Start menu tiles) instead.
 - `Shortcut`: Press keyboard shortcuts (`Ctrl+c`, `Alt+Tab`, etc).
 - `Wait`: Pause for a defined duration.
 - `WaitFor`: Wait until text, an active window, an element, or a focused element appears by polling UI state inside one tool call.
