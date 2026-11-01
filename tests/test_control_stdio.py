@@ -19,7 +19,14 @@ from fastmcp.client.transports import StdioTransport
 async def test_disabled_stdio_background_command_and_status(tmp_path, policy):
     root = Path(__file__).resolve().parents[1]
     config = tmp_path / "config.toml"
-    config.write_text("[control]\nenabled = true\nidle_timeout_seconds = 25\n", encoding="utf-8")
+    # This test exercises the control opt-out, not the safety layer: let PowerShell run
+    # without the local confirmation dialog.
+    config.write_text(
+        "[control]\nenabled = true\nidle_timeout_seconds = 25\n\n"
+        '[safety.powershell]\nmode = "unrestricted"\n\n'
+        "[safety.confirm]\nenabled = false\n",
+        encoding="utf-8",
+    )
     before = {p.pid for p in psutil.Process().children(recursive=True)}
     transport = StdioTransport(
         command=sys.executable,

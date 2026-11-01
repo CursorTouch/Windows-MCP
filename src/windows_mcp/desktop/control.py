@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 import queue
 import threading
@@ -25,6 +26,8 @@ from windows_mcp.desktop.control_win32 import (
     _interactive_desktop,
     run_input_monitor,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ControlBlocked(RuntimeError):
@@ -88,6 +91,82 @@ class ControlCoordinator:
         self._rotate = False
         self._fault_token = object()
         self._rehook_completed = None
+        # Input given to a windows-mcp safety confirmation dialog (start, end), monotonic.
+        self._excused: tuple[float, float] | None = None
+        # Safety kill-switch chord seen by the keyboard hook: (generic modifier VKs, VK).
+        # RegisterHotKey never fires for keys this hook swallows during AI control,
+        # so the hook recognizes the chord itself.
+        self._kill_chord: tuple[frozenset[int], int] | None = None
+        self._kill_callback: Callable[[], None] | None = None
+
+    def set_kill_hotkey(self, modifiers: int, vk: int, callback: Callable[[], None]) -> None:
+        """Recognize the kill-switch hotkey in the keyboard hook (RegisterHotKey flags)."""
+        mods = {0x12} if modifiers & 0x1 else set()
+        if modifiers & 0x2:
+            mods.add(0x11)
+        if modifiers & 0x4:
+            mods.add(0x10)
+        if modifiers & 0x8:
+            mods.add(0x5B)  # Either Windows key, normalized by the hook.
+        self._kill_callback = callback
+        self._kill_chord = (frozenset(mods), int(vk))
+
+    # -- safety confirmation dialogs -----------------------------------------
+    def begin_confirmation(self) -> tuple[float, bool]:
+        """Mark the start of a local confirmation dialog.
+
+        Returns ``(start, user_was_active)``. Input already seen before the dialog keeps
+        counting as user activity; only the clicks/keys answering the dialog are excused.
+        """
+        now = time.monotonic()
+        changed = False
+        with self._lock:
+            stamp = self._last_physical_event
+            active = (
+                self._state == "user"
+                or bool(self._pressed or self._mouse_down)
+                or (stamp > 0 and now - stamp < self.idle_timeout_seconds)
+            )
+            if self._state == "ai" and not self._active_calls:
+                # No AI action runs while the dialog is open: stop swallowing physical
+                # keys so the user's keyboard answer reaches the dialog.
+                changed = self._set_locked("ready")
+            result = self._snapshot_locked(now)
+        if changed:
+            self._notify(result)
+        return now, active
+
+    def end_confirmation(
+        self, start: float, user_was_active: bool, release_timeout: float = 1.0
+    ) -> None:
+        """Excuse the input that answered an approved confirmation dialog.
+
+        Waits (up to *release_timeout*) for the answering key or button to be released,
+        then treats physical input stamped between *start* and now as not being user
+        activity. Anything stamped later counts as usual. No-op if the user was already
+        active before the dialog opened.
+        """
+        if not self.enabled or user_was_active:
+            return
+        deadline = time.monotonic() + release_timeout
+        while (self._pressed or self._mouse_down) and time.monotonic() < deadline:
+            time.sleep(0.02)  # Enter/Space release arrives after the dialog returns.
+        now = time.monotonic()
+        changed = False
+        with self._lock:
+            if self._pressed or self._mouse_down:
+                return  # Still held: real input, keep normal handling.
+            self._excused = (start, now)
+            if self._state == "user" and self._is_excused(self._last_physical_event):
+                self._last_user = 0.0
+                changed = self._set_locked("ready")
+            result = self._snapshot_locked(now)
+        if changed:
+            self._notify(result)
+
+    def _is_excused(self, stamp: float) -> bool:
+        window = self._excused
+        return window is not None and window[0] <= stamp <= window[1]
 
     def subscribe(self, callback: Callable[[dict], None]) -> None:
         with self._lock:
@@ -231,7 +310,8 @@ class ControlCoordinator:
     def _tick_locked(self, now: float) -> bool:
         # Zero means no input has been observed, even with a timeout longer than uptime.
         stamp = self._last_physical_event
-        recent = stamp > 0 and now - stamp < self.idle_timeout_seconds
+        excused = self._is_excused(stamp)
+        recent = stamp > 0 and now - stamp < self.idle_timeout_seconds and not excused
         if self._state == "ready" and recent:
             self._last_user = self._last_physical_event
             return self._set_locked("user")
@@ -239,7 +319,7 @@ class ControlCoordinator:
             self._state == "user"
             and not self._pressed
             and not self._mouse_down
-            and now - max(self._last_user, self._last_physical_event) >= self.idle_timeout_seconds
+            and now - max(self._last_user, 0.0 if excused else stamp) >= self.idle_timeout_seconds
         ):
             return self._set_locked("ready")
         if self._state == "ai" and not self._active_calls and now >= self._lease_until:
@@ -516,6 +596,14 @@ class ControlCoordinator:
         control_hooks.raw_input(self, lparam)
 
     def _handle(self, event: tuple) -> None:
+        if event[0] == "kill":
+            callback = self._kill_callback
+            if callback is not None:
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("Kill-switch callback failed")
+            return
         now = time.monotonic()
         with self._lock:
             if self._emergency:
@@ -523,6 +611,11 @@ class ControlCoordinator:
             else:
                 changed = self._tick_locked(now)
                 kind = event[0]
+                if kind in ("key", "point", "raw") and self._is_excused(
+                    event[4] if kind == "raw" and len(event) > 4 else self._last_physical_event
+                ):
+                    # Answer to a windows-mcp confirmation dialog, not the user taking over.
+                    kind = "excused"
                 if (
                     kind in ("key", "point", "raw")
                     and self._state == "ai"
