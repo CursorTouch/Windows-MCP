@@ -80,6 +80,20 @@ class TestWriteFile:
         assert "Written to" in result
         assert f.read_text(encoding="utf-8") == "deep"
 
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+    def test_write_uses_crlf_line_endings(self, tmp_path, newline):
+        f = tmp_path / "out.txt"
+        write_file(str(f), f"first{newline}second{newline}")
+        assert f.read_bytes() == b"first\r\nsecond\r\n"
+        assert read_file(str(f)).endswith("\nfirst\nsecond\n")
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+    def test_append_uses_crlf_line_endings(self, tmp_path, newline):
+        f = tmp_path / "out.txt"
+        f.write_bytes(b"first\r\n")
+        write_file(str(f), f"second{newline}", append=True)
+        assert f.read_bytes() == b"first\r\nsecond\r\n"
+
 
 class TestCopyPath:
     def test_copy_file(self, tmp_path):

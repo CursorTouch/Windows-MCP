@@ -106,7 +106,8 @@ def write_file(path: str, content: str, append: bool = False, encoding: str = 'u
 
         mode = 'a' if append else 'w'
         with open(file_path, mode, encoding=encoding) as f:
-            f.write(content)
+            # Text mode turns '\n' into '\r\n', so CRLF content would be saved as '\r\r\n'.
+            f.write(content.replace('\r\n', '\n'))
 
         action = 'Appended to' if append else 'Written to'
         size = file_path.stat().st_size
