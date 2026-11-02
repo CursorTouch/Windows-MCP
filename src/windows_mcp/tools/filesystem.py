@@ -10,6 +10,18 @@ from windows_mcp import filesystem
 from fastmcp import Context
 
 
+def _resolve_path(path: str, default_dir: str) -> str:
+    """Expand a leading ~ to the home folder; resolve other relative paths from *default_dir*."""
+    # Only '~' alone or followed by a separator, as in PowerShell. expanduser() also
+    # expands '~name', which would turn '~$report.docx' (an Office lock file) into a
+    # '$report.docx' next to the profile folder.
+    if path == '~' or path.startswith(('~/', '~\\')):
+        path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        path = os.path.join(default_dir, path)
+    return path
+
+
 def register(mcp, *, get_desktop, get_analytics):
     @mcp.tool(
         name='FileSystem',
@@ -41,10 +53,9 @@ def register(mcp, *, get_desktop, get_analytics):
         try:
             from platformdirs import user_desktop_dir
             default_dir = user_desktop_dir()
-            if not os.path.isabs(path):
-                path = os.path.join(default_dir, path)
-            if destination and not os.path.isabs(destination):
-                destination = os.path.join(default_dir, destination)
+            path = _resolve_path(path, default_dir)
+            if destination:
+                destination = _resolve_path(destination, default_dir)
 
             recursive = _as_bool(recursive, 'recursive')
             append = _as_bool(append, 'append')
