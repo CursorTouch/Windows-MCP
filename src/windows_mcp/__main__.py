@@ -266,7 +266,7 @@ def _build_mcp() -> FastMCP:
     except ModuleNotFoundError as exc:
         _exit_missing_dependency(exc)
     from windows_mcp.tools.control_notifications import ControlNotifier, ControlToolGate
-    from windows_mcp.desktop.control import get_controller
+    from windows_mcp.desktop.control import describe_failure, get_controller
     from windows_mcp.desktop import control_overlay
 
     controller = get_controller()
@@ -291,10 +291,19 @@ def _build_mcp() -> FastMCP:
                 control_overlay.set_pending(True, generation=generation)
             else:
                 control_overlay.set_active(False, generation=generation)
-        except Exception:
+        except Exception as exc:
             # A missing visual indicator invalidates the AI control lease.
-            controller._fail_open()
+            release_control(f"AI control indicator failed: {describe_failure(exc)}")
             logger.exception("AI control indicator failed; releasing physical input")
+
+    def release_control(reason: str) -> None:
+        # Fail open without letting the reason plumbing raise or block.
+        # Controllers without fail_open_with_reason keep the plain fail-open.
+        fail_with_reason = getattr(controller, "fail_open_with_reason", None)
+        if callable(fail_with_reason):
+            fail_with_reason(reason)
+        else:
+            controller._fail_open()
 
     def show_control_state(status: dict) -> None:
         if threading.current_thread() is controller._thread or not (
@@ -312,8 +321,8 @@ def _build_mcp() -> FastMCP:
                         asyncio.to_thread(apply_control_state, status.copy())
                     )
                 )
-            except RuntimeError:
-                controller._fail_open()
+            except RuntimeError as exc:
+                release_control(f"Could not schedule AI control indicator: {describe_failure(exc)}")
                 logger.exception("Could not schedule AI control indicator update")
         else:
             # begin_call waits for the visible AI indicator before any tool runs.
