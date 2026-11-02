@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import re
 from pathlib import Path
 
@@ -111,3 +112,11 @@ def test_empty_server_section_loads_defaults(tmp_path: Path) -> None:
     cfg = load_config(path)
 
     assert cfg.server == ServerConfig()
+
+
+def test_load_config_accepts_a_utf8_bom(tmp_path: Path) -> None:
+    # Set-Content -Encoding UTF8 in Windows PowerShell 5.1 starts the file with this BOM.
+    path = tmp_path / "config.toml"
+    path.write_bytes(codecs.BOM_UTF8 + b'[control]\npolicy = "strict"\n')
+
+    assert load_config(path).control.policy == "strict"

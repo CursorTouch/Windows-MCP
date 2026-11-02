@@ -1,3 +1,4 @@
+import codecs
 from pathlib import Path
 
 import pytest
@@ -40,3 +41,15 @@ def test_auth_force_keeps_a_config_with_cert_files_loadable(config_dir: Path) ->
     assert cfg.server.auth_key != "old"
     assert cfg.server.ssl_certfile == str(config_dir / "cert.pem")
     assert cfg.server.ssl_keyfile == str(config_dir / "key.pem")
+
+
+def test_auth_reads_a_config_saved_with_a_utf8_bom(config_dir: Path) -> None:
+    config_file = config_dir / "config.toml"
+    config_file.write_bytes(codecs.BOM_UTF8 + b'[control]\npolicy = "strict"\n')
+
+    result = CliRunner().invoke(main, ["auth", "--transport", "streamable-http"])
+
+    assert result.exit_code == 0, result.output
+    cfg = load_config(config_file)
+    assert cfg.server.auth_key
+    assert cfg.control.policy == "strict"
