@@ -1,4 +1,5 @@
 import codecs
+import ctypes
 import os
 import stat
 
@@ -316,6 +317,12 @@ class TestDeletePath:
         assert "Error: Path not found" in result
 
 
+def _hide(path):
+    """Set the Windows hidden attribute on *path*."""
+    attributes = os.stat(path).st_file_attributes | stat.FILE_ATTRIBUTE_HIDDEN
+    assert ctypes.windll.kernel32.SetFileAttributesW(str(path), attributes)
+
+
 class TestListDirectory:
     @pytest.mark.parametrize("pattern", [None, "*.txt"])
     @pytest.mark.parametrize("show_hidden", [False, True])
@@ -342,6 +349,47 @@ class TestListDirectory:
         (root / "settings.txt").write_text("visible", encoding="utf-8")
 
         assert "settings.txt" in list_directory(str(root), recursive=True)
+
+    @pytest.fixture
+    def hidden_attribute_tree(self, tmp_path):
+        # Windows gives desktop.ini, AppData and NTUSER.DAT the hidden attribute, not a dot name.
+        (tmp_path / "report.txt").write_text("report", encoding="utf-8")
+        ini = tmp_path / "desktop.ini"
+        ini.write_text("[.ShellClassInfo]", encoding="utf-8")
+        _hide(ini)
+        folder = tmp_path / "Hidden Folder"
+        (folder / "nested").mkdir(parents=True)
+        (folder / "nested" / "inside.txt").write_text("inside", encoding="utf-8")
+        _hide(folder)
+        return tmp_path
+
+    @pytest.mark.parametrize("pattern", [None, "*.*"])
+    @pytest.mark.parametrize("recursive", [False, True])
+    def test_hidden_attribute_entries_are_not_listed(
+        self, hidden_attribute_tree, recursive, pattern
+    ):
+        result = list_directory(str(hidden_attribute_tree), pattern=pattern, recursive=recursive)
+
+        assert "report.txt" in result
+        assert "desktop.ini" not in result
+        assert "Hidden Folder" not in result
+        assert "inside.txt" not in result
+
+    @pytest.mark.parametrize("recursive", [False, True])
+    def test_hidden_attribute_entries_listed_with_show_hidden(
+        self, hidden_attribute_tree, recursive
+    ):
+        result = list_directory(str(hidden_attribute_tree), recursive=recursive, show_hidden=True)
+
+        assert "report.txt" in result
+        assert "desktop.ini" in result
+        assert "Hidden Folder" in result
+        assert ("inside.txt" in result) is recursive
+
+    def test_recursive_listing_inside_explicit_hidden_attribute_root(self, hidden_attribute_tree):
+        result = list_directory(str(hidden_attribute_tree / "Hidden Folder"), recursive=True)
+
+        assert "inside.txt" in result
 
     def test_list_basic(self, tmp_path):
         (tmp_path / "a.txt").write_text("a", encoding="utf-8")
