@@ -58,7 +58,7 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
 
     monkeypatch.setattr(control_overlay, "_monitor_rects", lambda: ((0, 0, 800, 600),))
     monkeypatch.setattr(
-        control_overlay, "_build_layers", lambda rects, pending: ([FakeLayer()], FakeLayer())
+        control_overlay, "_build_layers", lambda rects, pending, beat=None: ([FakeLayer()], FakeLayer())
     )
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
     monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: None)
