@@ -340,6 +340,10 @@ def register(
             "to the target coordinates, or provide from_loc=[x, y] to make the drag explicit-start "
             "and atomic in one tool call. Optional duration controls bounded intermediate movement. "
             "Default (drag=False) is a simple cursor move (hover). "
+            "Drag uses synthesized mouse input, which XAML shell surfaces such as Start menu "
+            "tiles and pinned taskbar buttons ignore: there the drag does nothing even though "
+            "the call succeeds, so use their context-menu commands (for example Move to front) "
+            "instead and check the result with a Screenshot. "
             "Provide either loc or label."
         ),
         annotations=ToolAnnotations(
