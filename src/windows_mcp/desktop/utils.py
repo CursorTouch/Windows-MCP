@@ -1,5 +1,6 @@
 """Desktop utilities. Input sanitization and text processing helpers."""
 
+import json
 import os
 import re
 
@@ -12,6 +13,7 @@ __all__ = [
     "repair_surrogates",
     "is_elevated",
     "as_bool",
+    "as_int_list",
 ]
 
 
@@ -42,6 +44,37 @@ def as_bool(value: bool | str, name: str) -> bool:
         if normalized == "false":
             return False
     raise ValueError(f"{name} must be true or false")
+
+
+def as_int_list(value: list[int] | str | None, name: str) -> list[int] | None:
+    """Parse a tool argument declared as ``array | string`` into a list of ints.
+
+    Some MCP clients strip anyOf schemas, so a caller may send "[0, 1]" where
+    the schema says [0, 1]. A string must hold a JSON array of integers:
+    anything else raises rather than reaching the tool as a string, a number
+    or a list of other values. JSON true and false do not count as integers
+    here.
+
+    Args:
+        value: The raw argument value.
+        name: Parameter name, used in the error message.
+
+    Returns:
+        The list, or None when the argument was omitted.
+
+    Raises:
+        ValueError: If *value* is a string that is not a JSON array of integers.
+    """
+    if value is None or isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list) and all(type(item) is int for item in parsed):
+            return parsed
+    raise ValueError(f"{name} must be a JSON array of integers")
 
 
 def is_elevated() -> bool:

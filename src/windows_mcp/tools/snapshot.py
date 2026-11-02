@@ -3,6 +3,7 @@
 import logging
 
 from mcp.types import ToolAnnotations
+from windows_mcp.desktop.utils import as_int_list as _as_int_list
 from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
 
@@ -42,7 +43,7 @@ def register(mcp, *, get_desktop, get_analytics):
         use_ui_tree: bool | str = True,
         width_reference_line: int | None = None,
         height_reference_line: int | None = None,
-        display: list[int] | None = None,
+        display: list[int] | str | None = None,
         region: list[int] | str | None = None,
         save_path: str | None = None,
         ctx: Context = None,
@@ -56,7 +57,7 @@ def register(mcp, *, get_desktop, get_analytics):
                 use_ui_tree=_as_bool(use_ui_tree),
                 width_reference_line=width_reference_line,
                 height_reference_line=height_reference_line,
-                display=display,
+                display=_as_int_list(display, "display"),
                 region=_as_region(region),
                 tool_name="Snapshot tool",
             )
@@ -98,7 +99,7 @@ def register(mcp, *, get_desktop, get_analytics):
         use_annotation: bool | str = False,
         width_reference_line: int | None = None,
         height_reference_line: int | None = None,
-        display: list[int] | None = None,
+        display: list[int] | str | None = None,
         region: list[int] | str | None = None,
         save_path: str | None = None,
         ctx: Context = None,
@@ -112,7 +113,7 @@ def register(mcp, *, get_desktop, get_analytics):
                 use_ui_tree=False,
                 width_reference_line=width_reference_line,
                 height_reference_line=height_reference_line,
-                display=display,
+                display=_as_int_list(display, "display"),
                 region=_as_region(region),
                 tool_name="Screenshot tool",
             )
