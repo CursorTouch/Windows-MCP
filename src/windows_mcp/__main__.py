@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from windows_mcp.config import enable_debug
+from windows_mcp.config import enable_debug, is_debug
 from windows_mcp.infrastructure.config import ControlConfig, validate_idle_timeout
 from windows_mcp.infrastructure import (
     AuthKeyMiddleware,
@@ -733,8 +733,13 @@ def serve(
     install_selfpipe_guard()
     if transport == Transport.STDIO.value:
         os.environ.setdefault("NO_COLOR", "1")
+    debug = debug or is_debug()
     if debug:
         enable_debug()
+        # fastmcp and uvicorn set up only their own loggers. With no handler on the
+        # root logger, Python prints WARNING and above only. basicConfig() adds one
+        # on stderr (stdout carries the stdio protocol) unless root already has one.
+        logging.basicConfig()
         logging.getLogger().setLevel(logging.DEBUG)
         for name in ["uvicorn", "uvicorn.error", "uvicorn.access", "fastmcp"]:
             logging.getLogger(name).setLevel(logging.DEBUG)
