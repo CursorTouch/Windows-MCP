@@ -274,6 +274,36 @@ def delete_path(path: str, recursive: bool = False) -> str:
         return f'Error deleting: {e}'
 
 
+def _is_hidden(path: Path) -> bool:
+    """Return whether *path* has a dot name or the Windows hidden attribute.
+
+    Windows hides desktop.ini, AppData and NTUSER.DAT with the attribute, not a dot name.
+    lstat() reads a junction's own attribute, so the hidden legacy junctions in a profile
+    folder, such as My Documents, count as hidden although their targets are not.
+    """
+    if path.name.startswith('.'):
+        return True
+    try:
+        return bool(path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_HIDDEN)
+    except OSError:
+        return False
+
+
+def _is_hidden_below(root: Path, entry: Path, cache: dict[Path, bool]) -> bool:
+    """Return whether *entry* or a directory between *root* and *entry* is hidden.
+
+    *root* itself is not checked, so a hidden directory can still be listed explicitly.
+    """
+    path = root
+    for part in entry.relative_to(root).parts:
+        path = path / part
+        if path not in cache:
+            cache[path] = _is_hidden(path)
+        if cache[path]:
+            return True
+    return False
+
+
 def list_directory(path: str, pattern: str | None = None, recursive: bool = False, show_hidden: bool = False) -> str:
     """List contents of a directory."""
     dir_path = Path(path).resolve()
@@ -286,6 +316,7 @@ def list_directory(path: str, pattern: str | None = None, recursive: bool = Fals
     try:
         entries: list[str] = []
         count = 0
+        hidden: dict[Path, bool] = {}
 
         if recursive:
             iterator = dir_path.rglob(pattern or '*')
@@ -293,11 +324,9 @@ def list_directory(path: str, pattern: str | None = None, recursive: bool = Fals
             iterator = dir_path.iterdir()
 
         for entry in sorted(iterator, key=lambda e: (not e.is_dir(), e.name.lower())):
-            if not show_hidden and any(
-                part.startswith('.') for part in entry.relative_to(dir_path).parts
-            ):
-                continue
             if pattern and not recursive and not fnmatch.fnmatch(entry.name, pattern):
+                continue
+            if not show_hidden and _is_hidden_below(dir_path, entry, hidden):
                 continue
 
             count += 1
