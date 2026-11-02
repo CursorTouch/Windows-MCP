@@ -9,6 +9,7 @@ from windows_mcp.tree.cache_utils import (
 )
 from windows_mcp.tree.budget import TreeElementBudget, resolve_max_tree_elements
 from windows_mcp.tree.utils import random_point_within_bounding_box
+from windows_mcp.tree.word_runs import merge_word_nodes_enabled, merge_word_runs
 from windows_mcp.tree import ia2 as ia2_traversal
 from typing import TYPE_CHECKING,Optional,Any
 from time import sleep,perf_counter
@@ -335,6 +336,8 @@ class Tree:
     def _append_word_nodes(self, word_elements:list[tuple[str,Rect]], reference_box:Rect, window_name:str,
                             target_nodes:list[TreeElementNode], current_semantic_node:'Optional[SemanticNode]'=None):
         """Append one interactive `TreeElementNode` (control_type='Word') per (word, rect) pair."""
+        if merge_word_nodes_enabled():
+            word_elements = merge_word_runs(word_elements)
         for word, rect in word_elements:
             if not self.element_budget.try_consume():
                 break
