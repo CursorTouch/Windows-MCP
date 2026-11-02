@@ -240,8 +240,13 @@ class Desktop:
                     for window in windows
                     if self._filter_window_to_region(window, screenshot_region) is not None
                 )
+            # controls_handles is in z-order, front first. Keep that order: the tree walks the
+            # windows in the order given and skips the rest once the element limit is reached.
+            z_order = {handle: index for index, handle in enumerate(controls_handles)}
             tree_state = self.tree.get_state(
-                tree_active_window_handle, list(other_windows_handles), use_dom=use_dom
+                tree_active_window_handle,
+                sorted(other_windows_handles, key=lambda h: z_order.get(h, len(z_order))),
+                use_dom=use_dom,
             )
         else:
             root_box = screenshot_region or self.tree.screen_box
