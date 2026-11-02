@@ -252,7 +252,11 @@ class PowerShellExecutor:
                 stdout = stdout.decode("utf-8", errors="replace")
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", errors="replace")
-            output = stdout or stderr
+            # Both streams can contain useful information, even on success.
+            # Do not discard diagnostics just because the command wrote stdout.
+            output = stdout
+            if stderr:
+                output += ("\n[stderr]\n" if stdout else "") + stderr
             # If the command failed with "Access is denied" and we aren't elevated, add a helpful hint
             if result.returncode != 0 and "Access is denied" in output and not is_elevated():
                 output += (
