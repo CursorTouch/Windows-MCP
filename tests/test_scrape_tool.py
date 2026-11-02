@@ -1,6 +1,12 @@
-"""Scrape(use_dom=True) must report the page's real scroll position."""
+"""Scrape tool behaviour.
+
+Scrape(use_dom=True) must report the page's real scroll position, and
+Scrape(use_dom=False) must fetch the page off the event loop: a slow site must
+not hold up every other request to the server while it loads.
+"""
 
 import asyncio
+import threading
 from collections.abc import Callable
 from types import SimpleNamespace
 
@@ -64,3 +70,31 @@ def test_dom_scrape_reports_scroll_position(
     )
 
     assert result == f"URL: https://example.com\nContent:\n{header}\nPage text\n{footer}"
+
+
+class SlowFetchDesktop:
+    """Desktop stand-in whose fetch finishes only if the event loop keeps running."""
+
+    def __init__(self) -> None:
+        self.loop_ran = threading.Event()
+
+    def scrape(self, url: str) -> str:
+        # Only the event loop sets loop_ran. If scrape() runs on the loop thread,
+        # nothing can set it before the wait times out.
+        if self.loop_ran.wait(timeout=5):
+            return "page text"
+        return "event loop was blocked"
+
+
+async def test_http_scrape_does_not_block_the_event_loop() -> None:
+    mcp = FakeMCP()
+    desktop = SlowFetchDesktop()
+    scrape_tool_module.register(mcp, get_desktop=lambda: desktop, get_analytics=lambda: None)
+
+    scrape_call = asyncio.create_task(
+        mcp.tools["Scrape"](url="https://example.com", use_sampling=False)
+    )
+    await asyncio.sleep(0.05)  # stands in for another request served meanwhile
+    desktop.loop_ran.set()
+
+    assert await scrape_call == "URL: https://example.com\nContent:\npage text"
