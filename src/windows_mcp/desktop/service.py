@@ -197,7 +197,7 @@ class Desktop:
             active_window = self.get_active_window(windows=windows)  # Active Window
             active_window_handle = active_window.handle if active_window else None
         else:
-            controls_handles = set()
+            controls_handles = []
             windows = []
             windows_handles = set()
             active_window = None
@@ -224,7 +224,7 @@ class Desktop:
         logger.debug(f"Windows: {windows}")
 
         if use_ui_tree:
-            other_windows_handles = set(controls_handles - windows_handles)
+            other_windows_handles = set(controls_handles) - windows_handles
             if active_window_handle is not None:
                 other_windows_handles.discard(active_window_handle)
             tree_active_window_handle = active_window_handle
@@ -1125,8 +1125,8 @@ class Desktop:
             return True
         return not name and len(element.GetChildren()) == 0
 
-    def get_controls_handles(self, optimized: bool = False):
-        handles = set()
+    def get_controls_handles(self, optimized: bool = False) -> list[int]:
+        handles = []
         own_pid = os.getpid()
 
         def owned_by_this_server(hwnd) -> bool:
@@ -1149,7 +1149,7 @@ class Desktop:
                     and is_window_on_current_desktop(hwnd)
                     and not owned_by_this_server(hwnd)
                 ):
-                    handles.add(hwnd)
+                    handles.append(hwnd)
             except Exception:
                 # Skip invalid handles without logging (common during window enumeration)
                 pass
@@ -1157,12 +1157,15 @@ class Desktop:
         win32gui.EnumWindows(callback, None)
 
         if desktop_hwnd := win32gui.FindWindow("Progman", None):
-            handles.add(desktop_hwnd)
+            handles.append(desktop_hwnd)
         if taskbar_hwnd := win32gui.FindWindow("Shell_TrayWnd", None):
-            handles.add(taskbar_hwnd)
+            handles.append(taskbar_hwnd)
         if secondary_taskbar_hwnd := win32gui.FindWindow("Shell_SecondaryTrayWnd", None):
-            handles.add(secondary_taskbar_hwnd)
-        return handles
+            handles.append(secondary_taskbar_hwnd)
+        # EnumWindows reports the windows in z-order (front first), and get_windows() takes the
+        # position as each window's depth. The shell windows are usually reported by EnumWindows
+        # too, so keep each handle at its first position only.
+        return list(dict.fromkeys(handles))
 
     # Tuned retry envelope for transient UIA empty results. The OS
     # briefly returns NULL from GetForegroundWindow during focus
@@ -1254,7 +1257,7 @@ class Desktop:
             current = parent
 
     def get_windows(
-        self, controls_handles: set[int] | None = None
+        self, controls_handles: list[int] | None = None
     ) -> tuple[list[Window], set[int]]:
         try:
             windows = []
