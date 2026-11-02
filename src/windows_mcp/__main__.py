@@ -893,6 +893,21 @@ def serve(
         raise
 
 
+def _client_host(host: str) -> str:
+    """Return the URL host for reaching a server bound to ``host`` from this machine.
+
+    A wildcard bind address is not one to connect to (Winsock rejects 0.0.0.0 with
+    WinError 10049), so use the loopback address of the same family, one of the
+    names ``_gen_tls`` asks mkcert for. IPv6 literals need brackets in a URL; an
+    address that already has them is kept as it is.
+    """
+    if host in ("0.0.0.0", ""):
+        return "127.0.0.1"
+    if host == "::":
+        return "[::1]"
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
 def _gen_tls(host: str, cert_path, key_path) -> None:
     """Generate a TLS cert/key pair, preferring mkcert over openssl."""
     from pathlib import Path
@@ -908,7 +923,7 @@ def _gen_tls(host: str, cert_path, key_path) -> None:
         if install.returncode != 0:
             raise click.ClickException(f"mkcert -install failed:\n{install.stderr.strip()}")
 
-        sans = [host] if host not in ("0.0.0.0", "") else ["localhost", "127.0.0.1", "::1"]
+        sans = [host] if host not in ("0.0.0.0", "::", "") else ["localhost", "127.0.0.1", "::1"]
         result = subprocess.run(
             [
                 "mkcert",
@@ -1162,8 +1177,9 @@ def auth(transport: str, host: str, port: int, with_tls: bool, force: bool) -> N
         return
 
     scheme = "https" if with_tls else "http"
-    mcp_url = f"{scheme}://{host}:{port}/mcp/"
-    sse_url = f"{scheme}://{host}:{port}/sse"
+    url_host = _client_host(host)
+    mcp_url = f"{scheme}://{url_host}:{port}/mcp/"
+    sse_url = f"{scheme}://{url_host}:{port}/sse"
 
     _echo_section("Start the server")
     click.echo("  windows-mcp serve")
