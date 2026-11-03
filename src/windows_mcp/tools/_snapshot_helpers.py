@@ -49,6 +49,9 @@ def _as_region(value: list | str | None) -> list | None:
     return json.loads(value)
 
 
+WINDOWS_NOT_LISTED = "Not listed: Screenshot skips window enumeration. Call Snapshot for windows."
+
+
 def capture_desktop_state(
     desktop: Desktop,
     *,
@@ -97,8 +100,13 @@ def capture_desktop_state(
     interactive_elements = desktop_state.tree_state.interactive_elements_to_string()
     scrollable_elements = desktop_state.tree_state.scrollable_elements_to_string()
     semantic_tree = desktop_state.tree_state.semantic_tree_to_string()
-    windows = desktop_state.windows_to_string()
-    active_window = desktop_state.active_window_to_string()
+    if use_ui_tree:
+        windows = desktop_state.windows_to_string()
+        active_window = desktop_state.active_window_to_string()
+    else:
+        # The fast path never enumerates windows (see Desktop.get_state), so an empty
+        # list here means "not looked at", not "there are none".
+        windows = active_window = WINDOWS_NOT_LISTED
     active_desktop = desktop_state.active_desktop_to_string()
     all_desktops = desktop_state.desktops_to_string()
     if profile_enabled:
