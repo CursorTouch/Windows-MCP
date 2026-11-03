@@ -639,7 +639,8 @@ input, so shortening it does not allow gated calls while you keep using the comp
 
 Before AI starts a new control period, the screen edges turn amber and a dialog
 counts down from `consent_countdown_seconds`. **Allow now** starts control at once,
-**Deny** (or closing the dialog) rejects the call with `CONTROL_DENIED`, and an
+and input in the first second after it (your hand leaving the mouse) does not take the
+desktop back; the takeover hotkey still does. **Deny** (or closing the dialog) rejects the call with `CONTROL_DENIED`, and an
 unanswered countdown starts control, so unattended runs keep working. If you use the
 mouse or keyboard during the countdown without answering, you stay in control and the
 call returns `USER_CONTROL`. Consent lasts until you take the desktop back; later AI

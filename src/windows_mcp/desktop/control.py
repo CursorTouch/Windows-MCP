@@ -26,6 +26,9 @@ from windows_mcp.desktop.control_win32 import (
     run_input_monitor,
 )
 
+# The hand leaving the mouse right after clicking Allow must not take the desktop back.
+_CONSENT_GRACE_SECONDS = 1.0
+
 
 def describe_failure(exc: BaseException) -> str:
     """Return ``Type: message`` for the innermost cause of *exc*."""
@@ -320,8 +323,14 @@ class ControlCoordinator:
         with self._lock:
             touched = self._last_physical_event > self._consent_started
             granted = answer == "allow" or (answer == "timeout" and not touched)
-            # Input that answered the prompt is consent, not a takeover.
-            self._input_floor = now if granted else 0.0
+            # Input that answered the prompt, or follows a click on Allow within the grace,
+            # is not a takeover. Input after an unattended countdown still is.
+            if not granted:
+                self._input_floor = 0.0
+            elif answer == "allow":
+                self._input_floor = now + _CONSENT_GRACE_SECONDS
+            else:
+                self._input_floor = now
             if granted and self._state == "user":
                 changed = self._set_locked("ready")  # The person at the desk handed it over.
             elif touched and not granted and self._state == "ready":
@@ -637,7 +646,7 @@ class ControlCoordinator:
                 elif kind == "raw" and self._state == "ai":
                     device, dx, dy = event[1:4]
                     stamp = event[4] if len(event) > 4 else now
-                    if (dx or dy) and stamp >= self._motion_since:
+                    if (dx or dy) and stamp >= max(self._motion_since, self._input_floor):
                         if device != self._raw_device or stamp - self._last_move >= 0.5:
                             self._raw_distance = 0.0
                         self._raw_device = device

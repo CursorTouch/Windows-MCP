@@ -33,7 +33,21 @@ def test_allowed_prompt_ignores_the_answering_input():
     assert owner.status()["state"] == "ai"
 
 
-def test_input_after_allow_is_still_user_activity():
+def test_input_within_the_grace_after_allow_is_not_a_takeover():
+    owner = _ready_owner()
+    assert owner.open_consent()
+    owner.close_consent("allow")
+    _physical_input(owner)  # The hand leaving the mouse.
+    assert owner.status()["state"] == "ready"
+    owner.begin_call("Click")
+    owner._visual_armed = False  # Before the indicator confirms it is visible.
+    _physical_input(owner)
+    owner._handle(("raw", 1, 900, 0, control.time.monotonic()))
+    assert owner.status()["state"] == "ai"
+
+
+def test_input_after_the_grace_is_still_user_activity(monkeypatch):
+    monkeypatch.setattr(control, "_CONSENT_GRACE_SECONDS", 0.0)
     owner = _ready_owner()
     assert owner.open_consent()
     owner.close_consent("allow")
