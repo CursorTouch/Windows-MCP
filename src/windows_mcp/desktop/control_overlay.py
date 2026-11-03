@@ -17,17 +17,21 @@ from windows_mcp.desktop.control_overlay_art import (
     _BORDER,
     _CURSOR_SIZE,
     _NOTICE_GLOW_PAD,
+    _RIPPLE_FRAMES,
+    _RIPPLE_SIZE,
     _breath_opacity,
     _cursor_bitmap,
     _edge_bitmap,
     _notice_bitmap,
     _notice_glow_bitmap,
+    _ripple_frames,
 )
 from windows_mcp import uia
 
 logger = logging.getLogger(__name__)
 
 _REFRESH_SECONDS = 0.05
+_RIPPLE_SECONDS = 0.45
 _SW_HIDE = 0
 _WDA_EXCLUDEFROMCAPTURE = 0x00000011
 _BLUE = (45, 145, 255)
@@ -103,6 +107,11 @@ class _Layer:
             | flash_overlay._SWP_SHOWWINDOW,
         ) or not _user32.IsWindowVisible(self.hwnd):
             raise RuntimeError("AI control indicator window could not be shown")
+
+    def draw(self, bgra: bytes, x: int, y: int) -> None:
+        """Replace the bitmap and position in one update, for animation frames."""
+        flash_overlay._push_bitmap(self.hwnd, x, y, self.width, self.height, bgra)
+        self.x, self.y, self.bgra, self.opacity = x, y, bgra, 255
 
     def hide(self) -> None:
         _user32.ShowWindow(self.hwnd, _SW_HIDE)
@@ -233,6 +242,7 @@ class _Indicator:
         self.active = False
         self.pending = False
         self.consent = False
+        self.ripple: tuple[int, int] | None = None
         self.suspended = 0
         self.stopping = False
         self.version = 0
@@ -321,6 +331,11 @@ class _Indicator:
     def _run(self) -> None:
         layers: list[_Layer] = []
         ring: _Layer | None = None
+        ripple_layer: _Layer | None = None
+        ripple_frames: list[bytes] = []
+        ripple_point = (0, 0)
+        ripple_start: float | None = None
+        ripple_shown = False
         rects: tuple[tuple[int, int, int, int], ...] = ()
         mode: tuple[bool, bool] | None = None
         visible = False
@@ -339,6 +354,7 @@ class _Indicator:
                     # A consent prompt shows amber edges alone; its dialog explains them.
                     shown = active or self.consent
                     amber = pending or not active
+                    ripple, self.ripple = self.ripple, None
                 if shown:
                     if not was_shown:
                         breath_started = time.monotonic()
@@ -386,12 +402,39 @@ class _Indicator:
                     if ring:
                         ring.hide()
                     visible = False
+                if ripple is not None:
+                    ripple_point, ripple_start = ripple, time.monotonic()
+                frame = -1
+                if ripple_start is not None and visible and not amber:
+                    elapsed = time.monotonic() - ripple_start
+                    frame = int(elapsed / _RIPPLE_SECONDS * _RIPPLE_FRAMES)
+                if 0 <= frame < _RIPPLE_FRAMES:
+                    if ripple_layer is None:
+                        ripple_frames = _ripple_frames(_BLUE)
+                        ripple_layer = _Layer(
+                            0, 0, _RIPPLE_SIZE, _RIPPLE_SIZE, ripple_frames[0], "ripple"
+                        )
+                    ripple_layer.draw(
+                        ripple_frames[frame],
+                        ripple_point[0] - _RIPPLE_SIZE // 2,
+                        ripple_point[1] - _RIPPLE_SIZE // 2,
+                    )
+                    if not ripple_shown:
+                        ripple_layer.show()
+                        ripple_shown = True
+                else:
+                    ripple_start = None
+                    if ripple_shown:
+                        ripple_layer.hide()
+                        ripple_shown = False
                 was_shown = shown
                 # Pump messages on the owning thread, including display events.
                 for layer in layers:
                     flash_overlay._pump_messages(layer.hwnd)
                 if ring:
                     flash_overlay._pump_messages(ring.hwnd)
+                if ripple_layer:
+                    flash_overlay._pump_messages(ripple_layer.hwnd)
                 with self.condition:
                     self.heartbeat = time.monotonic()
                     self.applied = version
@@ -407,6 +450,8 @@ class _Indicator:
                 layer.close()
             if ring:
                 ring.close()
+            if ripple_layer:
+                ripple_layer.close()
 
 
 _lock = threading.Lock()
@@ -501,6 +546,16 @@ def set_consent(consent: bool) -> bool:
         if indicator:
             return indicator.change(consent=consent)
     return True
+
+
+def ripple(x: int, y: int) -> None:
+    """Mark an AI click; never waits, and does nothing unless AI control shows."""
+    with _lock:
+        indicator = _instance
+    if indicator:
+        with indicator.condition:
+            indicator.ripple = (x, y)
+            indicator.condition.notify_all()
 
 
 def is_healthy() -> bool:

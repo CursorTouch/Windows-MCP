@@ -10,6 +10,10 @@ from windows_mcp.desktop.overlay_bitmap import premultiplied_bgra
 
 _BORDER = 56
 _CURSOR_SIZE = 88
+_CURSOR_LABEL = "AI"
+_RIPPLE_SIZE = 96
+_RIPPLE_FRAMES = 9
+_FONT_DIR = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
 _NOTICE_GLOW_PAD = 32
 _BREATH_PERIOD_SECONDS = 3.0
 _BREATH_MIN_ALPHA = 140
@@ -73,7 +77,48 @@ def _cursor_bitmap(color: tuple[int, int, int]) -> bytes:
             pixels.append((*color, alpha))
     image = Image.new("RGBA", (_CURSOR_SIZE, _CURSOR_SIZE))
     image.putdata(pixels)
+    _draw_cursor_label(image, color)
     return premultiplied_bgra(image, 1.0)
+
+
+def _draw_cursor_label(image: Image.Image, color: tuple[int, int, int]) -> None:
+    """Tag the glow above and right of the hotspot, clear of the arrow body."""
+    try:
+        font = ImageFont.truetype(str(_FONT_DIR / "seguisb.ttf"), 13)
+    except OSError:
+        font = ImageFont.load_default()
+    draw = ImageDraw.Draw(image)
+    box = draw.textbbox((0, 0), _CURSOR_LABEL, font=font)
+    width, height = box[2] - box[0] + 12, box[3] - box[1] + 8
+    left, bottom = _CURSOR_SIZE // 2 + 8, _CURSOR_SIZE // 2 - 8
+    draw.rounded_rectangle(
+        (left, bottom - height, left + width, bottom), radius=height // 2, fill=(*color, 255)
+    )
+    draw.text(
+        (left + 6 - box[0], bottom - height + 4 - box[1]),
+        _CURSOR_LABEL,
+        font=font,
+        fill=(255, 255, 255, 255),
+    )
+
+
+def _ripple_frames(color: tuple[int, int, int]) -> list[bytes]:
+    """Render an expanding, fading ring that marks where AI clicked."""
+    scale = 4  # Supersample so the thin ring stays smooth after downsizing.
+    size = _RIPPLE_SIZE * scale
+    frames = []
+    for index in range(_RIPPLE_FRAMES):
+        progress = (index + 1) / _RIPPLE_FRAMES
+        radius = (6 + progress * (_RIPPLE_SIZE / 2 - 9)) * scale
+        image = Image.new("RGBA", (size, size), (*color, 0))
+        ImageDraw.Draw(image).ellipse(
+            (size / 2 - radius, size / 2 - radius, size / 2 + radius, size / 2 + radius),
+            outline=(*color, round(240 * (1 - progress) ** 0.7)),
+            width=3 * scale,
+        )
+        image = image.resize((_RIPPLE_SIZE, _RIPPLE_SIZE), Image.Resampling.LANCZOS)
+        frames.append(premultiplied_bgra(image, 1.0))
+    return frames
 
 
 def _notice_shape_mask(width: int, height: int, radius: int = 22) -> Image.Image:
@@ -106,12 +151,11 @@ def _notice_bitmap(screen_width: int) -> tuple[int, int, bytes] | None:
     if available_width < 200:
         return None
     horizontal_padding = 32 if screen_width >= 640 else 20
-    font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     # Prefer presentation-sized text, then shrink only when a monitor is narrow.
     for hint_size in range(24, 7, -1):
         try:
-            title_font = ImageFont.truetype(str(font_dir / "seguisb.ttf"), hint_size + 8)
-            hint_font = ImageFont.truetype(str(font_dir / "segoeui.ttf"), hint_size)
+            title_font = ImageFont.truetype(str(_FONT_DIR / "seguisb.ttf"), hint_size + 8)
+            hint_font = ImageFont.truetype(str(_FONT_DIR / "segoeui.ttf"), hint_size)
         except OSError:
             title_font = hint_font = ImageFont.load_default()
         measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
