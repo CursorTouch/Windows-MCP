@@ -787,6 +787,7 @@ class Desktop:
             owner.checkpoint_current()
             uia.SetCursorPos(x, y)
             return
+        control_overlay.ripple(x, y)
         match button:
             case "left":
                 if clicks >= 2:
