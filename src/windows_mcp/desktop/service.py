@@ -930,6 +930,24 @@ class Desktop:
         style = self._edit_style(control)
         return bool(style is not None and style & self._ES_MULTILINE)
 
+    def _is_text_field(self, control) -> bool:
+        """Whether the element takes text: an edit, a document, or anything with a writable value."""
+        try:
+            if control.ControlType in (
+                uia.ControlType.EditControl,
+                uia.ControlType.DocumentControl,
+            ):
+                return True
+        except Exception:
+            pass
+        if self._edit_style(control) is not None:
+            return True
+        try:
+            pattern = control.GetPattern(uia.PatternId.ValuePattern)
+            return pattern is not None and not pattern.IsReadOnly
+        except Exception:
+            return False
+
     def _read_value(self, control) -> str | None:
         """The field's text through UIA ValuePattern, else WM_GETTEXT for a native Edit."""
         if control is None or self._is_password(control):
@@ -957,6 +975,13 @@ class Desktop:
         exposes a writable UIA ValuePattern, the value is set to "" directly.
         """
         owner = get_controller()
+        if control is not None and not self._is_text_field(control):
+            # Home, Shift+End and Backspace would move or extend a selection in a grid
+            # or list and might delete from whatever the app routes them to.
+            return (
+                f"Warning: did not clear: the focused element is {self._describe(control)},"
+                " not a text field. The text was typed there; check where it landed."
+            )
         if control is not None and self._is_multiline(control):
             keys = ("{Ctrl}{Home}", "{Ctrl}{Shift}{End}", "{Back}")
             how = "Ctrl+Home, Ctrl+Shift+End, Backspace"
@@ -1010,7 +1035,11 @@ class Desktop:
             return ""
         value = self._read_value(control)
         if value is None:
-            return ""
+            if clear or self._is_text_field(control):
+                return ""
+            return (
+                f"Could not read the text back: the focused element is {self._describe(control)}."
+            )
         limit = self._READ_BACK_LIMIT
         shown = value if len(value) <= limit else value[:limit] + "…"
         if has_control_chars:

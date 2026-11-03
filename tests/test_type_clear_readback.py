@@ -122,6 +122,37 @@ def test_clear_never_sends_ctrl_a(desktop: Desktop, focus: Callable[..., list[st
     assert keys[:3] == ["{Home}", "{Shift}{End}", "{Back}"]
 
 
+def test_clear_sends_no_keys_to_a_grid_and_warns(
+    desktop: Desktop, focus: Callable[..., list[str]]
+) -> None:
+    # A click that lands on a list or grid (e.g. a lookup popup that opened over
+    # the field) must not get Home/Shift+End/Backspace: they move the selection.
+    grid = FakeField(
+        control_type=service.uia.ControlType.DataGridControl,
+        type_name="DataGridControl",
+        name="Grid",
+        value_pattern=False,
+    )
+    keys = focus(grid)
+
+    note = desktop.type(loc=(100, 100), text="640000014", clear=True)
+
+    assert "{Home}" not in keys and "{Back}" not in keys and "{Ctrl}a" not in keys
+    assert note.startswith(
+        "Warning: did not clear: the focused element is DataGridControl 'Grid', not a text field."
+    )
+
+
+def test_append_into_a_non_text_element_says_it_cannot_read_back(
+    desktop: Desktop, focus: Callable[..., list[str]]
+) -> None:
+    focus(FakeField(type_name="PaneControl", control_type=50033, value_pattern=False))
+
+    note = desktop.type(loc=(100, 100), text="x")
+
+    assert note == "Could not read the text back: the focused element is PaneControl."
+
+
 def test_clear_uses_ctrl_home_and_ctrl_shift_end_in_a_document(
     desktop: Desktop, focus: Callable[..., list[str]]
 ) -> None:
