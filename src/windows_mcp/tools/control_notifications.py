@@ -163,9 +163,16 @@ class ControlNotifier:
 class ControlToolGate(Middleware):
     """Apply one configured ownership policy at the MCP boundary."""
 
-    def __init__(self, controller: Any, notifier: ControlNotifier) -> None:
+    def __init__(
+        self,
+        controller: Any,
+        notifier: ControlNotifier,
+        ask_consent: Callable[[int], str] | None = None,
+    ) -> None:
         self.controller = controller
         self.notifier = notifier
+        # Blocking prompt returning allow, deny, timeout or error; None never asks.
+        self.ask_consent = ask_consent
         self._call_lock = asyncio.Lock()
 
     @staticmethod
@@ -200,6 +207,26 @@ class ControlToolGate(Middleware):
                 else:
                     self.controller.end_call(token)
             raise
+
+    async def _request_consent(self) -> None:
+        """Ask the person before a new control period; raise unless allowed."""
+        if self.ask_consent is None or not self.controller.open_consent():
+            return
+        answer = "error"
+        try:
+            answer = await asyncio.to_thread(
+                self.ask_consent, self.controller.consent_countdown_seconds
+            )
+        except Exception:
+            logger.exception("AI control consent prompt failed")
+        finally:
+            self.controller.close_consent(answer)
+        # An ignored prompt that saw input returns timeout; begin_call reports USER_CONTROL.
+        if answer not in ("allow", "timeout"):
+            from windows_mcp.desktop.control import ControlBlocked
+
+            code = "CONTROL_DENIED" if answer == "deny" else "CONTROL_UNAVAILABLE"
+            raise self._blocked(ControlBlocked(code, self.controller.status()))
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: Callable) -> Any:
         self.notifier.remember(context)
@@ -243,6 +270,7 @@ class ControlToolGate(Middleware):
             except asyncio.TimeoutError:
                 reject_user_state()
         try:
+            await self._request_consent()
             try:
                 token = await self._begin_call(name)
             except Exception as exc:

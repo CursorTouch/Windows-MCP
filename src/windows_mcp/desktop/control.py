@@ -61,7 +61,14 @@ class ControlCoordinator:
         self.enabled = True
         self.idle_timeout_seconds = 10.0
         self.policy = "relaxed"
+        self.consent_countdown_seconds = 10
         self._lock = threading.Lock()
+        # Granted by the consent prompt; revoked whenever the person takes the desktop.
+        self._consented = False
+        self._consent_started = 0.0
+        # Physical input stamped before this moment is not user activity: inf
+        # while the prompt is open, then the moment the person allowed control.
+        self._input_floor = 0.0
         self._state = "unavailable"
         self._generation = 0
         self._active_calls = 0
@@ -237,6 +244,8 @@ class ControlCoordinator:
         self._state = state
         if state != "ai":
             self.input_ledger.block_new()
+        if state in ("user", "unavailable"):
+            self._consented = False
         self._generation += 1
         self._visual_armed = state == "ai" and self._health_probe is None
         self._visual_paused = False
@@ -257,7 +266,9 @@ class ControlCoordinator:
     def _tick_locked(self, now: float) -> bool:
         # Zero means no input has been observed, even with a timeout longer than uptime.
         stamp = self._last_physical_event
-        recent = stamp > 0 and now - stamp < self.idle_timeout_seconds
+        recent = (
+            stamp > 0 and stamp >= self._input_floor and now - stamp < self.idle_timeout_seconds
+        )
         if self._state == "ready" and recent:
             self._last_user = self._last_physical_event
             return self._set_locked("user")
@@ -274,6 +285,35 @@ class ControlCoordinator:
                 return self._set_locked("user")
             return self._set_locked("ready")
         return False
+
+    def open_consent(self) -> bool:
+        """Start a consent prompt if this call would begin a new AI control period."""
+        if self.status()["state"] != "ready":
+            return False  # Within a lease, or blocked anyway by begin_call.
+        with self._lock:
+            if self._consented or self.consent_countdown_seconds <= 0 or self._state != "ready":
+                return False
+            # Moving the mouse to the prompt must not count as taking the desktop.
+            self._input_floor = math.inf
+            self._consent_started = time.monotonic()
+            return True
+
+    def close_consent(self, answer: str) -> None:
+        """Apply allow, deny, timeout or error; an ignored prompt with input denies."""
+        now = time.monotonic()
+        changed = False
+        with self._lock:
+            touched = self._last_physical_event > self._consent_started
+            granted = answer == "allow" or (answer == "timeout" and not touched)
+            # Input that answered the prompt is consent, not a takeover.
+            self._input_floor = now if granted else 0.0
+            if touched and not granted and self._state == "ready":
+                self._last_user = now
+                changed = self._set_locked("user")
+            self._consented = granted
+            result = self._snapshot_locked(now)
+        if changed:
+            self._notify(result)
 
     def begin_call(self, name: str) -> int:
         if self._emergency:
@@ -557,11 +597,13 @@ class ControlCoordinator:
             else:
                 changed = self._tick_locked(now)
                 kind = event[0]
-                if (
+                # Queued events carry no stamp; if the newest input predates the
+                # consent floor, so does every event still waiting in the queue.
+                user_input = (
                     kind in ("key", "point", "raw")
-                    and self._state == "ai"
-                    and not self._visual_armed
-                ):
+                    and self._last_physical_event >= self._input_floor
+                )
+                if user_input and self._state == "ai" and not self._visual_armed:
                     # Physical input was delivered while the indicator was not armed.
                     self._last_user = now
                     changed = self._set_locked("user") or changed
@@ -571,7 +613,7 @@ class ControlCoordinator:
                     self._last_user = now
                     changed = self._set_locked("user") or changed
                     self._fast_takeover = False
-                elif kind in ("key", "point", "raw") and self._state in ("ready", "user"):
+                elif user_input and self._state in ("ready", "user"):
                     self._last_user = now
                     changed = self._set_locked("user") or changed
                 elif kind == "raw" and self._state == "ai":

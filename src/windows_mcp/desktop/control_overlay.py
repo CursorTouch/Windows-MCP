@@ -139,6 +139,7 @@ def _build_layers(
     rects: tuple[tuple[int, int, int, int], ...],
     pending: bool,
     beat: Callable[[], None] | None = None,
+    notice: bool = True,
 ) -> tuple[list[_Layer], _Layer]:
     """Build the indicator layers; *beat* is called after each layer is made.
 
@@ -173,9 +174,9 @@ def _build_layers(
                     )
                     if beat is not None:
                         beat()
-            notice = _notice_bitmap(width)
-            if notice is not None:
-                notice_width, notice_height, bitmap = notice
+            banner = _notice_bitmap(width) if notice else None
+            if banner is not None:
+                notice_width, notice_height, bitmap = banner
                 # Narrow monitors retain the aura without letting its window spill onto a neighbor.
                 glow_pad = min(_NOTICE_GLOW_PAD, (width - notice_width) // 2)
                 if height <= border + notice_height + 2 * glow_pad:
@@ -231,6 +232,7 @@ class _Indicator:
         )
         self.active = False
         self.pending = False
+        self.consent = False
         self.suspended = 0
         self.stopping = False
         self.version = 0
@@ -252,6 +254,7 @@ class _Indicator:
         *,
         active: bool | None = None,
         pending: bool | None = None,
+        consent: bool | None = None,
         suspended: int = 0,
         generation: int | None = None,
     ) -> bool:
@@ -272,6 +275,8 @@ class _Indicator:
                 self.active = active
             if pending is not None:
                 self.pending = pending
+            if consent is not None:
+                self.consent = consent
             self.suspended += suspended
             if self.suspended < 0:
                 self.suspended = 0
@@ -317,9 +322,9 @@ class _Indicator:
         layers: list[_Layer] = []
         ring: _Layer | None = None
         rects: tuple[tuple[int, int, int, int], ...] = ()
-        mode: bool | None = None
+        mode: tuple[bool, bool] | None = None
         visible = False
-        was_active = False
+        was_shown = False
         breath_started = 0.0
         try:
             self.heartbeat = time.monotonic()
@@ -331,19 +336,24 @@ class _Indicator:
                         return
                     active, pending = self.active, self.pending
                     suspended, version = self.suspended, self.version
-                if active:
-                    if not was_active:
+                    # A consent prompt shows amber edges alone; its dialog explains them.
+                    shown = active or self.consent
+                    amber = pending or not active
+                if shown:
+                    if not was_shown:
                         breath_started = time.monotonic()
                     current_rects = _monitor_rects()
-                    if ring is None or current_rects != rects or mode != pending:
+                    if ring is None or current_rects != rects or mode != (amber, active):
                         for layer in reversed(layers):
                             layer.close()
                         layers = []
                         if ring:
                             ring.close()
                             ring = None
-                        layers, ring = _build_layers(current_rects, pending, beat=self._beat)
-                        rects, mode = current_rects, pending
+                        layers, ring = _build_layers(
+                            current_rects, amber, beat=self._beat, notice=active
+                        )
+                        rects, mode = current_rects, (amber, active)
                         visible = False
                     if suspended:
                         if visible:
@@ -356,15 +366,15 @@ class _Indicator:
                         for layer in layers:
                             if layer.breathes:
                                 layer.set_opacity(opacity)
-                        if not pending:
+                        if not amber:
                             ring.set_opacity(opacity)
                         if not visible:
                             for layer in layers:
                                 layer.show()
-                            if not pending:
+                            if not amber:
                                 ring.show()
                             visible = True
-                        if not pending:
+                        if not amber:
                             point = wintypes.POINT()
                             if _user32.GetCursorPos(ctypes.byref(point)):
                                 ring.move(point.x - _CURSOR_SIZE // 2, point.y - _CURSOR_SIZE // 2)
@@ -376,7 +386,7 @@ class _Indicator:
                     if ring:
                         ring.hide()
                     visible = False
-                was_active = active
+                was_shown = shown
                 # Pump messages on the owning thread, including display events.
                 for layer in layers:
                     flash_overlay._pump_messages(layer.hwnd)
@@ -480,6 +490,16 @@ def set_pending(pending: bool, *, generation: int | None = None) -> bool:
             indicator = _instance
         if indicator:
             return indicator.change(pending=pending, generation=generation)
+    return True
+
+
+def set_consent(consent: bool) -> bool:
+    """Show amber edges, without notice or cursor glow, while consent is asked."""
+    with _capture_lock:
+        with _lock:
+            indicator = _instance
+        if indicator:
+            return indicator.change(consent=consent)
     return True
 
 

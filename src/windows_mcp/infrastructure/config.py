@@ -47,6 +47,8 @@ class ControlConfig:
     enabled: bool = True
     idle_timeout_seconds: float = 10.0
     policy: str = "relaxed"
+    # Countdown before AI starts a new control period; 0 disables the prompt.
+    consent_countdown_seconds: int = 10
 
 
 @dataclass
@@ -191,6 +193,14 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
     if "idle_timeout_seconds" in control:
         cfg.control.idle_timeout_seconds = validate_idle_timeout(control["idle_timeout_seconds"])
 
+    if "consent_countdown_seconds" in control:
+        value = _strict_int(
+            control["consent_countdown_seconds"], "control.consent_countdown_seconds"
+        )
+        if not 0 <= value <= 60:
+            raise ValueError("control.consent_countdown_seconds must be between 0 and 60")
+        cfg.control.consent_countdown_seconds = value
+
     for key in ("mouse_takeover_units", "mouse_takeover_pixels"):
         if key in control:
             value = _strict_int(control[key], f"control.{key}")
@@ -263,7 +273,7 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
     ctrl, default_ctrl = cfg.control, ControlConfig()
     control_lines = [
         f"{key} = {getattr(ctrl, key)}"
-        for key in ("mouse_takeover_units", "mouse_takeover_pixels")
+        for key in ("mouse_takeover_units", "mouse_takeover_pixels", "consent_countdown_seconds")
         if getattr(ctrl, key) != getattr(default_ctrl, key)
     ]
     if ctrl.policy != default_ctrl.policy:
