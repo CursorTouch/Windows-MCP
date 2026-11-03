@@ -65,14 +65,69 @@ def test_unattended_timeout_grants_until_the_user_takes_over():
     assert owner.open_consent()
 
 
-def test_prompt_only_starts_a_new_period_and_can_be_disabled():
+def test_prompt_can_be_disabled_and_never_interrupts_a_lease():
     owner = _ready_owner()
     owner.consent_countdown_seconds = 0
     assert not owner.open_consent()
     owner.consent_countdown_seconds = 10
-    owner._state = "user"
-    owner._last_user = control.time.monotonic()
+    owner._state = "ai"
+    owner._lease_until = control.time.monotonic() + 60
     assert not owner.open_consent()
+
+
+def test_active_user_is_asked_and_allow_hands_over():
+    owner = _ready_owner()
+    _physical_input(owner)
+    assert owner.status()["state"] == "user"
+    assert owner.open_consent()
+    _physical_input(owner)  # Still working, then clicking Allow.
+    owner.close_consent("allow")
+    assert owner.status()["state"] == "ready"
+    owner.end_call(owner.begin_call("Click"))
+    assert owner.status()["state"] == "ai"
+
+
+@pytest.mark.parametrize("answer", ["timeout", "deny"])
+def test_declining_while_active_is_not_asked_again_until_idle(answer):
+    owner = _ready_owner()
+    _physical_input(owner)
+    assert owner.open_consent()
+    _physical_input(owner)
+    owner.close_consent(answer)
+    assert owner.status()["state"] == "user"
+    assert not owner.would_ask() and not owner.open_consent()
+    owner._last_physical_event = owner._last_user = control.time.monotonic() - 60
+    assert owner.status()["state"] == "ready"
+    assert owner.open_consent()
+
+
+def test_taking_the_desktop_back_is_not_asked_again_until_idle():
+    owner = _ready_owner()
+    owner.end_call(owner.begin_call("Click"))
+    owner._handle(("hotkey",))
+    assert owner.status()["state"] == "user"
+    assert not owner.would_ask() and not owner.open_consent()
+
+
+@pytest.mark.asyncio
+async def test_gate_asks_an_active_user_instead_of_refusing():
+    owner = _ready_owner()
+    _physical_input(owner)
+    asked, effects = [], []
+    mcp = FastMCP("consent")
+    mcp.add_middleware(
+        ControlToolGate(
+            owner, ControlNotifier(owner), ask_consent=lambda s: asked.append(s) or "allow"
+        )
+    )
+
+    @mcp.tool(name="Click")
+    def click():
+        effects.append("clicked")
+
+    async with Client(mcp) as client:
+        await client.call_tool("Click")
+    assert asked == [10] and effects == ["clicked"]
 
 
 @pytest.mark.asyncio

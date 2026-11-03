@@ -643,8 +643,11 @@ counts down from `consent_countdown_seconds`. **Allow now** starts control at on
 unanswered countdown starts control, so unattended runs keep working. If you use the
 mouse or keyboard during the countdown without answering, you stay in control and the
 call returns `USER_CONTROL`. Consent lasts until you take the desktop back; later AI
-calls do not ask again, even after the lease expires. Set `consent_countdown_seconds = 0`
-(0–60) to start control without asking.
+calls do not ask again, even after the lease expires. The prompt also appears while you
+are using the computer, instead of a silent `USER_CONTROL`. After you deny, ignore it
+while working, or take the desktop back from AI, calls return `USER_CONTROL` without
+asking until you have been idle for `idle_timeout_seconds`. Set
+`consent_countdown_seconds = 0` (0–60) to start control without asking.
 
 During AI control, small mouse movements remain blocked without pausing the current
 tool. Mouse takeover adds up the length of each relative raw-input movement,

@@ -65,6 +65,8 @@ class ControlCoordinator:
         self._lock = threading.Lock()
         # Granted by the consent prompt; revoked whenever the person takes the desktop.
         self._consented = False
+        # Refused, ignored while working, or took the desktop back: do not ask again until idle.
+        self._declined = False
         self._consent_started = 0.0
         # Physical input stamped before this moment is not user activity: inf
         # while the prompt is open, then the moment the person allowed control.
@@ -241,11 +243,15 @@ class ControlCoordinator:
     def _set_locked(self, state: str) -> bool:
         if state == self._state:
             return False
-        self._state = state
+        previous, self._state = self._state, state
         if state != "ai":
             self.input_ledger.block_new()
         if state in ("user", "unavailable"):
             self._consented = False
+        if state == "ready":
+            self._declined = False
+        elif state == "user" and previous == "ai":
+            self._declined = True
         self._generation += 1
         self._visual_armed = state == "ai" and self._health_probe is None
         self._visual_paused = False
@@ -286,12 +292,21 @@ class ControlCoordinator:
             return self._set_locked("ready")
         return False
 
+    def would_ask(self) -> bool:
+        """Whether a call while the person uses the desktop should ask instead of failing."""
+        return self.consent_countdown_seconds > 0 and not self._declined
+
     def open_consent(self) -> bool:
         """Start a consent prompt if this call would begin a new AI control period."""
-        if self.status()["state"] != "ready":
+        if self.status()["state"] not in ("ready", "user"):
             return False  # Within a lease, or blocked anyway by begin_call.
         with self._lock:
-            if self._consented or self.consent_countdown_seconds <= 0 or self._state != "ready":
+            if (
+                self._consented
+                or self._declined
+                or self.consent_countdown_seconds <= 0
+                or self._state not in ("ready", "user")
+            ):
                 return False
             # Moving the mouse to the prompt must not count as taking the desktop.
             self._input_floor = math.inf
@@ -307,10 +322,13 @@ class ControlCoordinator:
             granted = answer == "allow" or (answer == "timeout" and not touched)
             # Input that answered the prompt is consent, not a takeover.
             self._input_floor = now if granted else 0.0
-            if touched and not granted and self._state == "ready":
+            if granted and self._state == "user":
+                changed = self._set_locked("ready")  # The person at the desk handed it over.
+            elif touched and not granted and self._state == "ready":
                 self._last_user = now
                 changed = self._set_locked("user")
             self._consented = granted
+            self._declined = touched and not granted
             result = self._snapshot_locked(now)
         if changed:
             self._notify(result)

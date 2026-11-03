@@ -252,6 +252,8 @@ class ControlToolGate(Middleware):
 
         def reject_user_state() -> None:
             status = self.controller.status()
+            if status["state"] == "user" and self.ask_consent and self.controller.would_ask():
+                return  # Ask the person at the desk instead of refusing silently.
             if status["state"] not in ("ready", "ai"):
                 raise self._blocked(
                     ControlBlocked(
