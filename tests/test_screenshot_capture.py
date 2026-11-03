@@ -217,24 +217,25 @@ class TestDxcamBackend:
         )
 
     def test_capture_uses_output_relative_region_for_sub_region(self, monkeypatch):
+        import numpy as np
+
+        # The backend grabs the whole output and crops the output-relative region.
+        full = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        full[100, 80] = (9, 8, 7)
         fake_camera = MagicMock()
-        fake_camera.grab.return_value = [[[255, 0, 0]]]
+        fake_camera.grab.return_value = full
         fake_dxcam = MagicMock()
         fake_dxcam.create.return_value = fake_camera
         monkeypatch.setattr(screenshot, "dxcam", fake_dxcam)
+        monkeypatch.setattr(screenshot, "_dwm_flush", lambda: None)
         monkeypatch.setattr(_DxcamBackend, "_iter_outputs", staticmethod(lambda: DXGI_OUTPUTS))
 
-        fake_image = Image.new("RGB", (100, 100), "red")
-        with patch.object(Image, "fromarray", return_value=fake_image):
-            backend = _DxcamBackend()
-            result = backend.capture(Rect(2000, 100, 2500, 500))
+        backend = _DxcamBackend()
+        result = backend.capture(Rect(2000, 100, 2500, 500))
 
-        assert result.size == (100, 100)
-        fake_camera.grab.assert_called_once_with(
-            region=(80, 100, 580, 500),
-            copy=True,
-            new_frame_only=False,
-        )
+        assert result.size == (500, 400)
+        assert result.getpixel((0, 0)) == (9, 8, 7)
+        fake_camera.grab.assert_called_once_with(copy=True, new_frame_only=True)
 
     def test_capture_raises_on_none_frame(self, monkeypatch):
         fake_camera = MagicMock()
