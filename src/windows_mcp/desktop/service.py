@@ -828,7 +828,12 @@ class Desktop:
         caret_position: Literal["start", "idle", "end"] = "idle",
         clear: bool | str = False,
         press_enter: bool | str = False,
-    ):
+    ) -> str:
+        """Click a field, optionally empty it, type the text and report what landed.
+
+        Returns a short note for the tool's answer: how the field was cleared and
+        what it reads back, when the focused element exposes its text.
+        """
         clear = as_bool(clear, "clear")
         press_enter = as_bool(press_enter, "press_enter")
         owner = get_controller()
@@ -845,14 +850,12 @@ class Desktop:
             owner.checkpoint_current()
             uia.SendKeys("{End}", waitTime=0.05)
             owner.record_step_current()
+        notes: list[str] = []
+        target = None
         if clear:
             sleep(0.5)
-            owner.checkpoint_current()
-            uia.SendKeys("{Ctrl}a", waitTime=0.05)
-            owner.record_step_current()
-            owner.checkpoint_current()
-            uia.SendKeys("{Back}", waitTime=0.05)
-            owner.record_step_current()
+            target = self._focused_control()
+            notes.append(self._clear_field(target))
         # Per-key SendKeys for short text (so escape sequences keep working);
         # clipboard paste for long text (so the scan-code queue can't race).
         has_control_chars = any(c in text for c in ("\n", "\t", "{", "}"))
@@ -865,10 +868,156 @@ class Desktop:
                 owner.checkpoint_current()
                 uia.SendKeys(_escape_text_for_sendkeys(ch), interval=0.04, waitTime=0.05)
                 owner.record_step_current()
+        if clear or text:
+            notes.append(self._read_back(target, text, clear, has_control_chars))
         if press_enter:
             owner.checkpoint_current()
             uia.SendKeys("{Enter}", waitTime=0.05)
             owner.record_step_current()
+        return " ".join(note for note in notes if note)
+
+    # Win32 Edit styles (WinUser.h) used to tell multi-line and password fields apart.
+    _ES_MULTILINE = 0x0004
+    _ES_PASSWORD = 0x0020
+    _READ_BACK_LIMIT = 200
+
+    @staticmethod
+    def _focused_control():
+        """The element with keyboard focus, or None when UIA cannot say."""
+        try:
+            return uia.GetFocusedControl()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _describe(control) -> str:
+        try:
+            kind = control.ControlTypeName
+            name = control.Name
+        except Exception:
+            return "an unknown element"
+        return f"{kind} '{name[:40]}'" if name else kind
+
+    def _edit_style(self, control) -> int | None:
+        """Window style of a native Win32 Edit (any class name containing 'Edit'), else None."""
+        try:
+            handle = control.NativeWindowHandle
+            class_name = control.ClassName
+        except Exception:
+            return None
+        if not handle or "edit" not in (class_name or "").lower():
+            return None
+        try:
+            return uia.GetWindowLong(handle, win32con.GWL_STYLE)
+        except Exception:
+            return None
+
+    def _is_password(self, control) -> bool:
+        try:
+            if control.IsPassword:
+                return True
+        except Exception:
+            pass
+        style = self._edit_style(control)
+        return bool(style is not None and style & self._ES_PASSWORD)
+
+    def _is_multiline(self, control) -> bool:
+        try:
+            if control.ControlType == uia.ControlType.DocumentControl:
+                return True
+        except Exception:
+            pass
+        style = self._edit_style(control)
+        return bool(style is not None and style & self._ES_MULTILINE)
+
+    def _read_value(self, control) -> str | None:
+        """The field's text through UIA ValuePattern, else WM_GETTEXT for a native Edit."""
+        if control is None or self._is_password(control):
+            return None
+        try:
+            pattern = control.GetPattern(uia.PatternId.ValuePattern)
+            if pattern is not None:
+                return pattern.Value
+        except Exception:
+            pass
+        if self._edit_style(control) is not None:
+            try:
+                return uia.GetEditText(control.NativeWindowHandle)
+            except Exception:
+                return None
+        return None
+
+    def _clear_field(self, control) -> str:
+        """Empty the focused field without Ctrl+A.
+
+        Ctrl+A is an application shortcut in many programs (in list views it often
+        means "mark every record"), so it is never sent. The caret goes to the start,
+        Shift+End (Ctrl+Shift+End for multi-line fields) selects to the end, and
+        Backspace deletes the selection. If the field still holds text afterwards and
+        exposes a writable UIA ValuePattern, the value is set to "" directly.
+        """
+        owner = get_controller()
+        if control is not None and self._is_multiline(control):
+            keys = ("{Ctrl}{Home}", "{Ctrl}{Shift}{End}", "{Back}")
+            how = "Ctrl+Home, Ctrl+Shift+End, Backspace"
+        else:
+            keys = ("{Home}", "{Shift}{End}", "{Back}")
+            how = "Home, Shift+End, Backspace"
+        for key in keys:
+            owner.checkpoint_current()
+            uia.SendKeys(key, waitTime=0.05)
+            owner.record_step_current()
+        if control is None:
+            return f"Cleared with {how} (focused element unknown)."
+        remaining = self._read_value(control)
+        if remaining:
+            try:
+                pattern = control.GetPattern(uia.PatternId.ValuePattern)
+                if pattern is not None and not pattern.IsReadOnly:
+                    owner.checkpoint_current()
+                    pattern.SetValue("", waitTime=0.05)
+                    owner.record_step_current()
+                    remaining = self._read_value(control)
+                    how += ", then UIA ValuePattern"
+            except Exception:
+                pass
+        if remaining:
+            return f"Warning: {self._describe(control)} still held text after clearing ({how})."
+        return f"Cleared {self._describe(control)} with {how}."
+
+    def _read_back(self, control, text: str, clear: bool, has_control_chars: bool) -> str:
+        """Say what the field holds after typing, and whether focus moved away.
+
+        control is the element focused before typing (known only after a clear, which
+        waits for focus to settle); without it the element focused now is read.
+        """
+        now = self._focused_control()
+        if control is None:
+            control = now
+            if control is None:
+                return ""
+        elif now is not None:
+            try:
+                moved = not uia.ControlsAreSame(control, now)
+            except Exception:
+                moved = False
+            if moved:
+                return (
+                    f"Warning: focus moved to {self._describe(now)} while typing;"
+                    " some keystrokes may have gone there."
+                )
+        if self._is_password(control) or (not clear and self._is_multiline(control)):
+            return ""
+        value = self._read_value(control)
+        if value is None:
+            return ""
+        limit = self._READ_BACK_LIMIT
+        shown = value if len(value) <= limit else value[:limit] + "…"
+        if has_control_chars:
+            return f"Field reads back '{shown}'."
+        if (clear and value != text) or (not clear and text not in value):
+            return f"Warning: the field reads back '{shown}', not the typed text."
+        return f"Field reads back '{shown}'."
 
     def _paste_text(self, text: str):
         """Stash text on the clipboard, Ctrl+V, restore prior clipboard.
@@ -1075,11 +1224,14 @@ class Desktop:
             if press_ctrl:
                 owner.input_ledger.release("key:ctrl")
 
-    def multi_edit(self, locs: list[tuple[int, int, str]]):
+    def multi_edit(self, locs: list[tuple[int, int, str]]) -> list[str]:
+        notes = []
         for loc in locs:
             get_controller().checkpoint_current()
             x, y, text = loc
-            self.type((x, y), text=text, clear=True)
+            note = self.type((x, y), text=text, clear=True)
+            notes.append(note.replace("Warning:", f"Warning at ({x},{y}):"))
+        return notes
 
     def scrape(self, url: str) -> str:
         current_url = url

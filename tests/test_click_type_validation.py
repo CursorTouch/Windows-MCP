@@ -78,6 +78,8 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple]]:
 
     for name in ("Click", "RightClick", "MiddleClick", "SetCursorPos", "SendKeys"):
         monkeypatch.setattr(service.uia, name, record(name))
+    # No focused element: keeps the tests off the real desktop's UIA tree.
+    monkeypatch.setattr(service.uia, "GetFocusedControl", lambda: None)
     return calls
 
 
@@ -178,14 +180,15 @@ def test_type_honors_every_accepted_false_literal(
     assert ("SendKeys", ("{Enter}",)) not in recorder
 
 
-def test_type_clear_sends_select_all_and_delete(
+def test_type_clear_selects_the_line_and_deletes_it_without_ctrl_a(
     desktop: Desktop,
     recorder: list[tuple[str, tuple]],
 ) -> None:
     desktop.type(loc=(100, 100), text="EF", clear="true")
 
-    assert ("SendKeys", ("{Ctrl}a",)) in recorder
-    assert ("SendKeys", ("{Back}",)) in recorder
+    assert ("SendKeys", ("{Ctrl}a",)) not in recorder
+    keys = [args[0] for name, args in recorder if name == "SendKeys"]
+    assert keys[:3] == ["{Home}", "{Shift}{End}", "{Back}"]
 
 
 def test_type_tool_rejects_a_non_boolean_flag_before_calling_the_desktop() -> None:
