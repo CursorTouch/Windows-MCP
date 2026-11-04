@@ -10,7 +10,7 @@ import shutil
 import subprocess
 
 from windows_mcp.desktop.utils import is_elevated
-from windows_mcp.powershell.utils import run_with_graceful_timeout
+from windows_mcp.powershell.utils import decode_clixml, run_with_graceful_timeout
 
 __all__ = ["PowerShellExecutor"]
 
@@ -252,6 +252,7 @@ class PowerShellExecutor:
                 stdout = stdout.decode("utf-8", errors="replace")
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", errors="replace")
+            stderr = decode_clixml(stderr or "")
             output = stdout or stderr
             # If the command failed with "Access is denied" and we aren't elevated, add a helpful hint
             if result.returncode != 0 and "Access is denied" in output and not is_elevated():
