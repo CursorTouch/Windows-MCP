@@ -12,8 +12,8 @@ from windows_mcp.tree.service import (
     _is_comtypes_variant_ord_typeerror,
     _window_process_name,
 )
-from windows_mcp.tree.views import BoundingBox, SemanticNode
-from windows_mcp.uia import PropertyId, Rect
+from windows_mcp.tree.views import BoundingBox, SemanticNode, TreeState
+from windows_mcp.uia import EditControl, PropertyId, Rect
 
 
 @pytest.fixture
@@ -210,6 +210,71 @@ class TestTreeTraversal:
             [],
             [],
             [],
+        )
+
+    @pytest.mark.parametrize(
+        ("selected_text", "endpoint_comparison", "expected_token"),
+        [("wor", 1, '[selected:"wor"]'), ("hello world", 0, "[selected:all]")],
+    )
+    def test_text_selection_reaches_the_semantic_tree(
+        self, tree_instance, monkeypatch, selected_text, endpoint_comparison, expected_token
+    ):
+        """The walk records an edit's text selection; the rendered UI tree must show it."""
+        selected_range = MagicMock()
+        selected_range.GetText.return_value = selected_text
+        # Compared with DocumentRange, 0 means the selection reaches that end of the document.
+        selected_range.CompareEndpoints.return_value = endpoint_comparison
+        text_pattern = MagicMock()
+        text_pattern.GetSelection.return_value = [selected_range]
+
+        edit = MagicMock(spec=EditControl)
+        edit.CachedIsOffscreen = False
+        edit.CachedControlTypeName = "EditControl"
+        edit.CachedIsControlElement = True
+        edit.CachedBoundingRectangle = Rect(10, 10, 410, 50)
+        edit.CachedIsEnabled = True
+        edit.CachedHasKeyboardFocus = True
+        edit.CachedName = "Search"
+        edit.CachedLocalizedControlType = "edit"
+        edit.CachedAcceleratorKey = ""
+        edit.CachedHelpText = ""
+        edit.CachedIsPassword = False
+        edit.GetAllWordBoundingBoxes.return_value = []
+        edit.GetPattern.return_value = text_pattern
+        cached_values = {
+            PropertyId.LegacyIAccessibleRoleProperty: 42,
+            PropertyId.LegacyIAccessibleValueProperty: "hello world",
+        }
+        edit.GetCachedPropertyValue.side_effect = cached_values.get
+
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(
+            control_type="Window", element_type="window", name="Notepad", window_name="Notepad"
+        )
+        root.add_child(window)
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            lambda node, cache_request: [],
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {42: "Text"})
+
+        tree_instance.tree_traversal(
+            edit,
+            Rect(0, 0, 500, 100),
+            "Notepad",
+            False,
+            [],
+            [],
+            [],
+            [],
+            current_semantic_node=window,
+        )
+
+        line = TreeState(semantic_tree_root=root).semantic_tree_to_string().splitlines()[-1]
+        assert line.endswith(
+            '(210,30) edit "Search"  [action: fill]  [focused]  [value:"hello world"]  '
+            + expected_token
         )
 
 
