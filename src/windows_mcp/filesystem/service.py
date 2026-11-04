@@ -44,6 +44,27 @@ def _bom_encoding(file_path: Path, encoding: str) -> str:
     return encoding
 
 
+# Codecs that continue a file after its BOM: appended text must not repeat the
+# BOM, and must keep the byte order the file already uses.
+_BOM_APPEND_ENCODINGS = (
+    (codecs.BOM_UTF8, 'utf-8'),
+    (codecs.BOM_UTF16_LE, 'utf-16-le'),
+    (codecs.BOM_UTF16_BE, 'utf-16-be'),
+)
+
+
+def _append_encoding(file_path: Path, encoding: str) -> str:
+    """Return the encoding to append to *file_path* with: its BOM's, when appending as UTF-8."""
+    if codecs.lookup(encoding).name != 'utf-8' or not file_path.is_file():
+        return encoding
+    with open(file_path, 'rb') as f:
+        head = f.read(3)
+    for bom, bom_encoding in _BOM_APPEND_ENCODINGS:
+        if head.startswith(bom):
+            return bom_encoding
+    return encoding
+
+
 def _rmtree(path: Path) -> None:
     """Remove a directory tree, including read-only entries, as `rd /s` does.
 
@@ -119,6 +140,10 @@ def write_file(path: str, content: str, append: bool = False, encoding: str = 'u
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
         mode = 'a' if append else 'w'
+        if append:
+            # Appending UTF-8 to a UTF-16 file (what Windows PowerShell's `>` writes)
+            # would corrupt it, so continue in the encoding its BOM names.
+            encoding = _append_encoding(file_path, encoding)
         with open(file_path, mode, encoding=encoding) as f:
             # Text mode turns '\n' into '\r\n', so CRLF content would be saved as '\r\r\n'.
             f.write(content.replace('\r\n', '\n'))

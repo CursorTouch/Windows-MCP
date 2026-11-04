@@ -145,6 +145,30 @@ class TestWriteFile:
         write_file(str(f), f"second{newline}", append=True)
         assert f.read_bytes() == b"first\r\nsecond\r\n"
 
+    @pytest.mark.parametrize(
+        "bom, codec",
+        [
+            (codecs.BOM_UTF8, "utf-8"),
+            (codecs.BOM_UTF16_LE, "utf-16-le"),
+            (codecs.BOM_UTF16_BE, "utf-16-be"),
+        ],
+        ids=["utf-8-sig", "utf-16-le", "utf-16-be"],
+    )
+    def test_append_keeps_bom_encoding(self, tmp_path, bom, codec):
+        # Windows PowerShell 5.1's `>` and Out-File write UTF-16 LE; appending
+        # UTF-8 bytes to such a file turned the new text into CJK mojibake.
+        f = tmp_path / "bom.txt"
+        f.write_bytes(bom + "héllo\r\n".encode(codec))
+        write_file(str(f), "wörld\n", append=True)
+        assert f.read_bytes() == bom + "héllo\r\nwörld\r\n".encode(codec)
+        assert read_file(str(f)).endswith("\nhéllo\nwörld\n")
+
+    def test_append_keeps_explicit_encoding_over_bom(self, tmp_path):
+        f = tmp_path / "bom.txt"
+        f.write_bytes(codecs.BOM_UTF16_LE + "a".encode("utf-16-le"))
+        write_file(str(f), "b", append=True, encoding="latin-1")
+        assert f.read_bytes() == codecs.BOM_UTF16_LE + b"a\x00b"
+
 
 class TestCopyPath:
     def test_copy_file(self, tmp_path):
