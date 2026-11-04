@@ -1,6 +1,8 @@
 import logging
+import re
 import signal
 import subprocess
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
 
 import psutil
@@ -9,6 +11,7 @@ __all__ = [
     "run_with_graceful_timeout",
     "ps_quote",
     "ps_quote_for_xml",
+    "decode_clixml",
 ]
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,48 @@ def ps_quote_for_xml(value: str) -> str:
     """XML-escape then ps_quote. Use for values in XML passed to PowerShell."""
     escaped = xml_escape(value, {'"': '&quot;', "'": '&apos;'})
     return ps_quote(escaped)
+
+
+# Windows PowerShell 5.1 started with -EncodedCommand writes its error, warning,
+# verbose and debug streams to stderr as CLIXML (a serialized object stream)
+# rather than text, whatever -OutputFormat says. Native programs the script runs
+# write to the same handle in plain text, so their output can sit between the
+# "#< CLIXML" marker and the <Objs> document.
+_CLIXML_MARKER = "#< CLIXML"
+_CLIXML_DOCUMENT = re.compile(r"<Objs\b.*?</Objs>", re.DOTALL)
+_CLIXML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def _clixml_unescape(text: str) -> str:
+    # PowerShell writes characters XML cannot hold (CR, LF, other controls) as
+    # _xHHHH_, and a literal "_x" as _x005F_x.
+    return _CLIXML_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+def decode_clixml(text: str) -> str:
+    """Return the text of PowerShell stream records in *text* if it is CLIXML.
+
+    Keeps the string records (error, warning, verbose, debug) in order, drops
+    progress records such as "Preparing modules for first use.", and keeps any
+    plain text around the documents. Text that is not CLIXML, or a document
+    that does not parse, is returned unchanged.
+    """
+    if _CLIXML_MARKER not in text:
+        return text
+
+    def records(match: re.Match) -> str:
+        try:
+            root = ElementTree.fromstring(match.group(0))
+        except ElementTree.ParseError:
+            return match.group(0)
+        return "".join(
+            _clixml_unescape(node.text or "")
+            for node in root
+            if node.tag.rpartition("}")[2] == "S"
+        )
+
+    text = text.replace(_CLIXML_MARKER + "\r\n", "", 1).replace(_CLIXML_MARKER, "", 1)
+    return _CLIXML_DOCUMENT.sub(records, text)
 
 
 def check_pid_exists(pid: int) -> bool:
