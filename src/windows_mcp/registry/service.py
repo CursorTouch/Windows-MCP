@@ -11,6 +11,7 @@ the path as written, and Windows PowerShell 5.1's New-Item has no -LiteralPath.
 """
 
 import logging
+import re
 
 from windows_mcp.powershell import PowerShellExecutor
 from windows_mcp.powershell.utils import ps_quote
@@ -34,6 +35,48 @@ def get_value(path: str, name: str) -> str:
     return f'Registry value [{path}] "{name}" = {response.strip()}'
 
 
+def _parse_binary(value: str) -> list[int]:
+    """Parse the bytes of a Binary value.
+
+    Bytes are separated by commas or whitespace and written in decimal or with
+    a 0x prefix ("1, 2, 0xff"). A leading "hex:" switches to the .reg file
+    notation, where every byte is hexadecimal ("hex:01,00,ff").
+    """
+    text = value.strip()
+    base = 10
+    if text.lower().startswith("hex:"):
+        text, base = text[4:], 16
+    result = []
+    for token in re.split(r"[\s,]+", text):
+        if not token:
+            continue
+        digits, token_base = token, base
+        if token.lower().startswith("0x"):
+            digits, token_base = token[2:], 16
+        try:
+            byte = int(digits, token_base)
+        except ValueError:
+            raise ValueError(f"{token!r} is not a byte") from None
+        if not 0 <= byte <= 255:
+            raise ValueError(f"{token!r} is outside 0-255")
+        result.append(byte)
+    return result
+
+
+def _value_expression(value: str, reg_type: RegistryType) -> str:
+    """Return the PowerShell expression Set-ItemProperty receives as -Value.
+
+    Binary and MultiString values are arrays. Passed as one string, PowerShell
+    converts "1,2,3" to the single byte 123 (it reads the commas as thousands
+    separators) and stores a multi-line string as one item.
+    """
+    if reg_type == "Binary":
+        return "([byte[]]@(" + ",".join(str(b) for b in _parse_binary(value)) + "))"
+    if reg_type == "MultiString":
+        return "([string[]]@(" + ",".join(ps_quote(s) for s in value.splitlines()) + "))"
+    return ps_quote(value)
+
+
 def set_value(path: str, name: str, value: str, reg_type: RegistryType = 'String') -> str:
     """Create or update a registry value, creating the key if it does not exist."""
     if reg_type not in ALLOWED_REGISTRY_TYPES:
@@ -43,7 +86,10 @@ def set_value(path: str, name: str, value: str, reg_type: RegistryType = 'String
         )
     q_path = ps_quote(path)
     q_name = ps_quote(name)
-    q_value = ps_quote(value)
+    try:
+        q_value = _value_expression(value, reg_type)
+    except ValueError as e:
+        return f"Error: invalid {reg_type} value {value!r}: {e}"
     command = (
         f"if (-not (Test-Path -LiteralPath {q_path})) {{ New-Item -Path {q_path} -Force | Out-Null }}; "
         f"Set-ItemProperty -LiteralPath {q_path} -Name {q_name} -Value {q_value} -Type {reg_type} -Force"
