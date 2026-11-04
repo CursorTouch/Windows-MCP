@@ -647,6 +647,17 @@ input, including some touchpads and remote-input devices, must use
 `Ctrl+Alt+Shift+Backspace` to take over. The legacy `mouse_takeover_pixels` setting
 is still accepted for compatibility but no longer affects takeover.
 
+The control indicator runs on its own window thread, and a watchdog treats it as
+stalled when its heartbeat is older than `indicator_stall_seconds` (1 second by
+default). A stalled indicator fails open: the AI lease ends and `ControlStatus`
+reports `unavailable`. On slow machines, or with a customized indicator that takes
+longer than a second to draw, raise the window in TOML (`indicator_stall_seconds = 15`),
+with `--control-indicator-stall 15`, or with `WINDOWS_MCP_CONTROL_INDICATOR_STALL=15`.
+Values must be finite, greater than 0 and at most 60 seconds. A larger value means a
+frozen indicator is detected later, so the AI may keep control for up to that long
+without a working on-screen indication. Keep the default unless you see spurious
+`unavailable` states.
+
 ### Desktop gate policies
 
 | Policy | Operations that require desktop ownership |
@@ -755,6 +766,7 @@ sampling filters transient readings but cannot distinguish persistent query fail
 | `WINDOWS_MCP_CONTROL` | `true` | Enable desktop control coordination. Set to `false` to disable. Equivalent to `--control/--no-control`; restart required. |
 | `WINDOWS_MCP_CONTROL_POLICY` | `relaxed` | Gate policy: `relaxed`, `balanced`, or `strict`. Equivalent to `--control-policy`; restart required. |
 | `WINDOWS_MCP_CONTROL_IDLE_TIMEOUT` | `10.0` | Finite positive idle wait in seconds. Equivalent to `--control-idle-timeout`; restart required. |
+| `WINDOWS_MCP_CONTROL_INDICATOR_STALL` | `1.0` | Seconds (greater than 0, at most 60) the control indicator may go without a heartbeat before control fails open. Equivalent to `--control-indicator-stall`; restart required. |
 
 ### Security
 

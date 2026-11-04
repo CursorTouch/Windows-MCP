@@ -21,6 +21,7 @@ def test_control_thresholds_round_trip(tmp_path: Path):
     config.control.mouse_takeover_pixels = 180
     config.control.enabled = False
     config.control.idle_timeout_seconds = 2.5
+    config.control.indicator_stall_seconds = 15.0
     path = tmp_path / "config.toml"
     write_config(config, path)
     assert load_config(path).control == config.control
@@ -72,3 +73,30 @@ def test_invalid_policy(tmp_path, value):
     path.write_text("[control]\npolicy = " + value, encoding="utf-8")
     with pytest.raises(ValueError, match="control.policy"):
         load_config(path)
+
+
+def test_indicator_stall_default_keeps_one_second():
+    assert load_config(None).control.indicator_stall_seconds == 1.0
+
+
+@pytest.mark.parametrize("value,expected", [("15", 15.0), ("0.5", 0.5), ("60", 60.0)])
+def test_indicator_stall_accepts_valid(tmp_path, value, expected):
+    path = tmp_path / "config.toml"
+    path.write_text(f"[control]\nindicator_stall_seconds = {value}\n", encoding="utf-8")
+    assert load_config(path).control.indicator_stall_seconds == expected
+
+
+@pytest.mark.parametrize("value", ["true", '"15"', "0", "-1", "60.5", "nan", "inf", "-inf"])
+def test_indicator_stall_rejects_invalid(tmp_path, value):
+    path = tmp_path / "config.toml"
+    path.write_text(f"[control]\nindicator_stall_seconds = {value}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="control.indicator_stall_seconds"):
+        load_config(path)
+
+
+def test_indicator_stall_default_omitted_on_write(tmp_path):
+    cfg = WindowsMCPConfig()
+    cfg.control.indicator_stall_seconds = 1.0
+    path = tmp_path / "config.toml"
+    write_config(cfg, path)
+    assert "indicator_stall_seconds" not in path.read_text(encoding="utf-8")
