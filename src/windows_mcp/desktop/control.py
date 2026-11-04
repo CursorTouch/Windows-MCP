@@ -61,6 +61,7 @@ class ControlCoordinator:
         self.enabled = True
         self.idle_timeout_seconds = 10.0
         self.policy = "relaxed"
+        self.takeover = "any"  # "hotkey": only the takeover chord counts as a person.
         self._lock = threading.Lock()
         self._state = "unavailable"
         self._generation = 0
@@ -190,6 +191,7 @@ class ControlCoordinator:
             "wait_seconds": wait,
             "enabled": self.enabled,
             "policy": self.policy,
+            "takeover": self.takeover,
             "idle_timeout_seconds": self.idle_timeout_seconds,
             **(
                 {"reason": self._fail_reason}
@@ -557,6 +559,8 @@ class ControlCoordinator:
             else:
                 changed = self._tick_locked(now)
                 kind = event[0]
+                if self.takeover == "hotkey" and kind != "hotkey":
+                    kind = "ignored"  # Only the takeover chord counts as a person.
                 if (
                     kind in ("key", "point", "raw")
                     and self._state == "ai"

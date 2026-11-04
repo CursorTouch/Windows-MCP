@@ -25,6 +25,7 @@ def invoke(monkeypatch, tmp_path):
             env={
                 "WINDOWS_MCP_CONTROL": None,
                 "WINDOWS_MCP_CONTROL_POLICY": None,
+                "WINDOWS_MCP_CONTROL_TAKEOVER": None,
                 "WINDOWS_MCP_CONTROL_IDLE_TIMEOUT": None,
                 **(env or {}),
             },
@@ -100,6 +101,50 @@ def test_invalid_policy_never_starts(invoke, source):
     result, captured = invoke(
         ["--control-policy", "unknown"] if source == "cli" else [],
         {"WINDOWS_MCP_CONTROL_POLICY": "unknown"} if source == "env" else {},
+    )
+    assert result.exit_code != 0
+    assert not captured
+
+
+@pytest.mark.parametrize(
+    "args,env,expected",
+    [
+        ([], {}, "any"),
+        ([], {"WINDOWS_MCP_CONTROL_TAKEOVER": "hotkey"}, "hotkey"),
+        (["--control-takeover", "any"], {"WINDOWS_MCP_CONTROL_TAKEOVER": "hotkey"}, "any"),
+        (["--control-takeover", "hotkey"], {}, "hotkey"),
+    ],
+)
+def test_takeover_startup_precedence(invoke, args, env, expected):
+    result, captured = invoke(args, env)
+    assert result.exit_code == 0, result.output
+    assert captured[0].takeover == expected
+
+
+def test_takeover_from_config_file(monkeypatch, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[control]\ntakeover = "hotkey"\n', encoding="utf-8")
+    captured = []
+    monkeypatch.setattr(cli, "_control_config", ControlConfig())
+    monkeypatch.setattr(cli, "install_selfpipe_guard", lambda: None)
+    monkeypatch.setattr(cli.asyncio, "set_event_loop_policy", lambda _: None)
+    monkeypatch.setattr(cli, "_run_server", lambda **kw: captured.append(cli._control_config))
+    env = {"WINDOWS_MCP_CONTROL_TAKEOVER": None}
+    result = CliRunner().invoke(cli.main, ["serve", "--config", str(path)], env=env)
+    assert result.exit_code == 0, result.output
+    assert captured[0].takeover == "hotkey"
+    result = CliRunner().invoke(
+        cli.main, ["serve", "--config", str(path), "--control-takeover", "any"], env=env
+    )
+    assert result.exit_code == 0, result.output
+    assert captured[1].takeover == "any"
+
+
+@pytest.mark.parametrize("source", ["cli", "env"])
+def test_invalid_takeover_never_starts(invoke, source):
+    result, captured = invoke(
+        ["--control-takeover", "unknown"] if source == "cli" else [],
+        {"WINDOWS_MCP_CONTROL_TAKEOVER": "unknown"} if source == "env" else {},
     )
     assert result.exit_code != 0
     assert not captured

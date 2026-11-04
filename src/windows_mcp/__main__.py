@@ -349,6 +349,7 @@ def _build_mcp() -> FastMCP:
         controller.mouse_takeover_pixels = _control_config.mouse_takeover_pixels
         controller.enabled = _control_config.enabled
         controller.policy = _control_config.policy
+        controller.takeover = _control_config.takeover
         controller.idle_timeout_seconds = _control_config.idle_timeout_seconds
 
         try:
@@ -423,6 +424,7 @@ _LEGACY_SERVE_FLAGS = {
     "--no-control",
     "--control-idle-timeout",
     "--control-policy",
+    "--control-takeover",
 }
 
 
@@ -706,6 +708,14 @@ def main():
     show_default=True,
     help="Desktop gate: relaxed (direct actions), balanced (also possible interference), strict (all tools). Restart required.",
 )
+@click.option(
+    "--control-takeover",
+    type=click.Choice(["any", "hotkey"]),
+    default="any",
+    envvar="WINDOWS_MCP_CONTROL_TAKEOVER",
+    show_default=True,
+    help="What counts as a person taking over: any (physical input) or hotkey (only Ctrl+Alt+Shift+Backspace; for dedicated machines). Restart required.",
+)
 def serve(
     ctx,
     transport,
@@ -727,6 +737,7 @@ def serve(
     control,
     control_idle_timeout,
     control_policy,
+    control_takeover,
 ):
     global _control_config
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -753,6 +764,9 @@ def serve(
     _control_config = cfg.control
     _control_config.policy = _choose_value(
         ctx, "control_policy", control_policy, cfg.control.policy, "relaxed"
+    )
+    _control_config.takeover = _choose_value(
+        ctx, "control_takeover", control_takeover, cfg.control.takeover, "any"
     )
     _control_config.enabled = _choose_value(ctx, "control", control, cfg.control.enabled, True)
     _control_config.idle_timeout_seconds = _choose_value(

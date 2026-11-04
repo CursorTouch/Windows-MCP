@@ -609,6 +609,7 @@ Configure it in `~/.windows-mcp/config.toml` (or disable it entirely with `enabl
 [control]
 enabled = true
 policy = "relaxed"
+takeover = "any"
 idle_timeout_seconds = 10.0
 ```
 
@@ -618,6 +619,7 @@ Or override it for one MCP server launch:
 windows-mcp serve --no-control
 windows-mcp serve --control --control-idle-timeout 3
 windows-mcp serve --control-policy strict
+windows-mcp serve --control-takeover hotkey
 ```
 
 In your MCP client's launch arguments, put these options after `serve`.
@@ -626,8 +628,8 @@ explicitly override `enabled = false`. The timeout accepts finite positive secon
 (including fractions); zero does not disable control. The default remains 10 seconds.
 
 Restart the Windows-MCP server process after changing these settings. There is no
-hot reload or AI configuration tool. `ControlStatus` reports the effective `enabled`
-`policy`, and `idle_timeout_seconds` values, with state `disabled` when control is off.
+hot reload or AI configuration tool. `ControlStatus` reports the effective `enabled`,
+`policy`, `takeover`, and `idle_timeout_seconds` values, with state `disabled` when control is off.
 
 Disabling control turns off ownership gating, physical input protection, takeover
 monitoring, and the control indicator. Tools remain available and serialized, with
@@ -646,6 +648,20 @@ units, not screen pixels. Devices that do not provide identifiable relative raw
 input, including some touchpads and remote-input devices, must use
 `Ctrl+Alt+Shift+Backspace` to take over. The legacy `mouse_takeover_pixels` setting
 is still accepted for compatibility but no longer affects takeover.
+
+`takeover` chooses what counts as a person taking over. The default, `"any"`, is the
+behavior described above: physical keyboard or mouse input pauses the AI. With
+`takeover = "hotkey"` only `Ctrl+Alt+Shift+Backspace` counts. Every other physical key,
+mouse move, click or raw input is ignored: it does not change the owner to `user`, is
+never reported as `USER_CONTROL`, does not pause the AI, and does not restart the idle
+timer. Use it on a dedicated machine that nobody works on, where stray input (a wireless
+receiver, a KVM switch, a touch of the mouse) would otherwise keep interrupting the AI.
+Physical input is still swallowed while the AI holds control, and a key or button that is
+physically held still blocks gated calls with `PHYSICAL_INPUT_HELD`. In this mode an
+accidental key press or click no longer stops the AI, so do not use it on a computer you
+also work on; the takeover chord is then your only way to interrupt it. The chord is
+recognized while the AI holds control. Set it with `--control-takeover`,
+`WINDOWS_MCP_CONTROL_TAKEOVER` or the TOML key; the usual CLI > environment > TOML priority applies.
 
 ### Desktop gate policies
 
@@ -754,6 +770,7 @@ sampling filters transient readings but cannot distinguish persistent query fail
 |---|---|---|
 | `WINDOWS_MCP_CONTROL` | `true` | Enable desktop control coordination. Set to `false` to disable. Equivalent to `--control/--no-control`; restart required. |
 | `WINDOWS_MCP_CONTROL_POLICY` | `relaxed` | Gate policy: `relaxed`, `balanced`, or `strict`. Equivalent to `--control-policy`; restart required. |
+| `WINDOWS_MCP_CONTROL_TAKEOVER` | `any` | What counts as a person taking over: `any` physical input, or `hotkey` (only `Ctrl+Alt+Shift+Backspace`). Equivalent to `--control-takeover`; restart required. |
 | `WINDOWS_MCP_CONTROL_IDLE_TIMEOUT` | `10.0` | Finite positive idle wait in seconds. Equivalent to `--control-idle-timeout`; restart required. |
 
 ### Security
