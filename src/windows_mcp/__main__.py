@@ -1,6 +1,10 @@
 from contextlib import asynccontextmanager
 from windows_mcp.config import enable_debug, is_debug
-from windows_mcp.infrastructure.config import ControlConfig, validate_idle_timeout
+from windows_mcp.infrastructure.config import (
+    ControlConfig,
+    validate_idle_timeout,
+    validate_indicator_stall,
+)
 from windows_mcp.infrastructure import (
     AuthKeyMiddleware,
     OAuthOnlyMiddleware,
@@ -136,6 +140,13 @@ def _choose_value(ctx: click.Context, name: str, cli_value, config_value, defaul
 def _control_timeout_option(ctx, param, value):
     try:
         return validate_idle_timeout(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), ctx=ctx, param=param) from exc
+
+
+def _indicator_stall_option(ctx, param, value):
+    try:
+        return validate_indicator_stall(value)
     except ValueError as exc:
         raise click.BadParameter(str(exc), ctx=ctx, param=param) from exc
 
@@ -353,6 +364,7 @@ def _build_mcp() -> FastMCP:
 
         try:
             if controller.enabled:
+                control_overlay.set_stall_seconds(_control_config.indicator_stall_seconds)
                 control_overlay.start()
                 controller.set_health_probe(control_overlay.is_healthy)
             controller.start()
@@ -423,6 +435,7 @@ _LEGACY_SERVE_FLAGS = {
     "--no-control",
     "--control-idle-timeout",
     "--control-policy",
+    "--control-indicator-stall",
 }
 
 
@@ -706,6 +719,15 @@ def main():
     show_default=True,
     help="Desktop gate: relaxed (direct actions), balanced (also possible interference), strict (all tools). Restart required.",
 )
+@click.option(
+    "--control-indicator-stall",
+    type=float,
+    default=1.0,
+    show_default=True,
+    envvar="WINDOWS_MCP_CONTROL_INDICATOR_STALL",
+    callback=_indicator_stall_option,
+    help="Seconds (0-60] the control indicator may go without a heartbeat before control fails open as unavailable. Restart required.",
+)
 def serve(
     ctx,
     transport,
@@ -727,6 +749,7 @@ def serve(
     control,
     control_idle_timeout,
     control_policy,
+    control_indicator_stall,
 ):
     global _control_config
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -757,6 +780,13 @@ def serve(
     _control_config.enabled = _choose_value(ctx, "control", control, cfg.control.enabled, True)
     _control_config.idle_timeout_seconds = _choose_value(
         ctx, "control_idle_timeout", control_idle_timeout, cfg.control.idle_timeout_seconds, 10.0
+    )
+    _control_config.indicator_stall_seconds = _choose_value(
+        ctx,
+        "control_indicator_stall",
+        control_indicator_stall,
+        cfg.control.indicator_stall_seconds,
+        1.0,
     )
 
     transport = _choose_value(ctx, "transport", transport, cfg.server.transport, "stdio")

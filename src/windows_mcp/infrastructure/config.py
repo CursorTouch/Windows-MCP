@@ -47,6 +47,7 @@ class ControlConfig:
     enabled: bool = True
     idle_timeout_seconds: float = 10.0
     policy: str = "relaxed"
+    indicator_stall_seconds: float = 1.0
 
 
 @dataclass
@@ -112,6 +113,26 @@ def validate_idle_timeout(raw: object) -> float:
         raise ValueError("control.idle_timeout_seconds must be a finite positive number") from None
     if not math.isfinite(value) or value <= 0:
         raise ValueError("control.idle_timeout_seconds must be a finite positive number")
+    return value
+
+
+MAX_INDICATOR_STALL_SECONDS = 60.0
+
+
+def validate_indicator_stall(raw: object) -> float:
+    """Share indicator heartbeat window validation between TOML and CLI inputs."""
+    message = (
+        "control.indicator_stall_seconds must be a finite number greater than 0 "
+        f"and at most {MAX_INDICATOR_STALL_SECONDS:g}"
+    )
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(message)
+    try:
+        value = float(raw)
+    except OverflowError:
+        raise ValueError(message) from None
+    if not math.isfinite(value) or not 0 < value <= MAX_INDICATOR_STALL_SECONDS:
+        raise ValueError(message)
     return value
 
 
@@ -190,6 +211,10 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
         cfg.control.enabled = _strict_bool(control["enabled"], "control.enabled")
     if "idle_timeout_seconds" in control:
         cfg.control.idle_timeout_seconds = validate_idle_timeout(control["idle_timeout_seconds"])
+    if "indicator_stall_seconds" in control:
+        cfg.control.indicator_stall_seconds = validate_indicator_stall(
+            control["indicator_stall_seconds"]
+        )
 
     for key in ("mouse_takeover_units", "mouse_takeover_pixels"):
         if key in control:
@@ -272,6 +297,8 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
         control_lines.append(f"enabled = {str(ctrl.enabled).lower()}")
     if ctrl.idle_timeout_seconds != default_ctrl.idle_timeout_seconds:
         control_lines.append(f"idle_timeout_seconds = {ctrl.idle_timeout_seconds}")
+    if ctrl.indicator_stall_seconds != default_ctrl.indicator_stall_seconds:
+        control_lines.append(f"indicator_stall_seconds = {ctrl.indicator_stall_seconds}")
     if control_lines:
         lines += ["[control]", *control_lines, ""]
 

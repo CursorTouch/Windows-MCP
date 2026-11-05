@@ -152,8 +152,8 @@ def _build_layers(
     """Build the indicator layers; *beat* is called after each layer is made.
 
     Rendering the bitmaps for very wide desktops can take longer than the
-    watchdog's one-second heartbeat window, so the caller passes a heartbeat
-    refresh to show the thread is still making progress.
+    watchdog's heartbeat window (one second by default), so the caller passes
+    a heartbeat refresh to show the thread is still making progress.
     """
     if not rects:
         raise RuntimeError("no display available for AI control indicator")
@@ -447,6 +447,15 @@ class _Indicator:
 _lock = threading.Lock()
 _capture_lock = threading.RLock()
 _instance: _Indicator | None = None
+# How long the window owner thread may go without a heartbeat before it is
+# treated as stalled; set from control.indicator_stall_seconds at startup.
+_stall_seconds = 1.0
+
+
+def set_stall_seconds(seconds: float) -> None:
+    """Set the heartbeat window used by is_healthy(); validated by the caller."""
+    global _stall_seconds
+    _stall_seconds = float(seconds)
 
 
 def start() -> None:
@@ -539,7 +548,7 @@ def ripple(x: int, y: int) -> None:
 
 
 def is_healthy() -> bool:
-    """Reject an alive but stalled window owner after one second."""
+    """Reject an alive but stalled window owner after the heartbeat window."""
     with _lock:
         indicator = _instance
     return bool(
@@ -547,7 +556,7 @@ def is_healthy() -> bool:
         and indicator.thread.is_alive()
         and not indicator.stopping
         and indicator.error is None
-        and 0 <= time.monotonic() - indicator.heartbeat <= 1.0
+        and 0 <= time.monotonic() - indicator.heartbeat <= _stall_seconds
     )
 
 

@@ -58,7 +58,9 @@ def test_indicator_lifecycle_and_no_restore_after_takeover(monkeypatch):
 
     monkeypatch.setattr(control_overlay, "_monitor_rects", lambda: ((0, 0, 800, 600),))
     monkeypatch.setattr(
-        control_overlay, "_build_layers", lambda rects, pending, beat=None: ([FakeLayer()], FakeLayer())
+        control_overlay,
+        "_build_layers",
+        lambda rects, pending, beat=None: ([FakeLayer()], FakeLayer()),
     )
     monkeypatch.setattr(control_overlay._user32, "GetCursorPos", lambda ptr: True)
     monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: None)
@@ -187,6 +189,38 @@ def test_actual_owner_thread_stall_expires_heartbeat(monkeypatch):
     finally:
         release.set()
         control_overlay.stop()
+
+
+@pytest.mark.parametrize("stall_seconds,expected", [(1.0, False), (15.0, True)])
+def test_heartbeat_window_follows_configured_stall(monkeypatch, stall_seconds, expected):
+    class SlowIndicator:
+        thread = threading.current_thread()
+        stopping = False
+        error = None
+        heartbeat = time.monotonic() - 2.0  # e.g. a slow layer build
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(control_overlay, "_stall_seconds", 1.0)
+    control_overlay.set_stall_seconds(stall_seconds)
+    monkeypatch.setattr(control_overlay, "_instance", SlowIndicator())
+    assert control_overlay.is_healthy() is expected
+
+
+def test_configured_stall_still_rejects_older_heartbeat(monkeypatch):
+    class StalledIndicator:
+        thread = threading.current_thread()
+        stopping = False
+        error = None
+        heartbeat = time.monotonic() - 20.0
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(control_overlay, "_stall_seconds", 15.0)
+    monkeypatch.setattr(control_overlay, "_instance", StalledIndicator())
+    assert control_overlay.is_healthy() is False
 
 
 def test_fresh_indicator_heartbeat_reports_healthy(monkeypatch):

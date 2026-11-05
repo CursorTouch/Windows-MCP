@@ -26,6 +26,7 @@ def invoke(monkeypatch, tmp_path):
                 "WINDOWS_MCP_CONTROL": None,
                 "WINDOWS_MCP_CONTROL_POLICY": None,
                 "WINDOWS_MCP_CONTROL_IDLE_TIMEOUT": None,
+                "WINDOWS_MCP_CONTROL_INDICATOR_STALL": None,
                 **(env or {}),
             },
         )
@@ -100,6 +101,53 @@ def test_invalid_policy_never_starts(invoke, source):
     result, captured = invoke(
         ["--control-policy", "unknown"] if source == "cli" else [],
         {"WINDOWS_MCP_CONTROL_POLICY": "unknown"} if source == "env" else {},
+    )
+    assert result.exit_code != 0
+    assert not captured
+
+
+@pytest.mark.parametrize(
+    "toml,args,env,expected",
+    [
+        ("", [], {}, 1.0),
+        ("indicator_stall_seconds = 15\n", [], {}, 15.0),
+        (
+            "indicator_stall_seconds = 15\n",
+            [],
+            {"WINDOWS_MCP_CONTROL_INDICATOR_STALL": "5"},
+            5.0,
+        ),
+        (
+            "indicator_stall_seconds = 15\n",
+            ["--control-indicator-stall", "2.5"],
+            {"WINDOWS_MCP_CONTROL_INDICATOR_STALL": "5"},
+            2.5,
+        ),
+    ],
+)
+def test_indicator_stall_startup_precedence(monkeypatch, tmp_path, toml, args, env, expected):
+    path = tmp_path / "config.toml"
+    path.write_text("[control]\n" + toml, encoding="utf-8")
+    captured = []
+    monkeypatch.setattr(cli, "_control_config", ControlConfig())
+    monkeypatch.setattr(cli, "install_selfpipe_guard", lambda: None)
+    monkeypatch.setattr(cli.asyncio, "set_event_loop_policy", lambda _: None)
+    monkeypatch.setattr(cli, "_run_server", lambda **kw: captured.append(cli._control_config))
+    result = CliRunner().invoke(
+        cli.main,
+        ["serve", "--config", str(path), *args],
+        env={"WINDOWS_MCP_CONTROL_INDICATOR_STALL": None, **env},
+    )
+    assert result.exit_code == 0, result.output
+    assert captured[0].indicator_stall_seconds == expected
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "61", "nan", "inf", "garbage"])
+@pytest.mark.parametrize("source", ["cli", "env"])
+def test_invalid_indicator_stall_never_starts_server(invoke, value, source):
+    result, captured = invoke(
+        ["--control-indicator-stall", value] if source == "cli" else [],
+        {"WINDOWS_MCP_CONTROL_INDICATOR_STALL": value} if source == "env" else {},
     )
     assert result.exit_code != 0
     assert not captured
