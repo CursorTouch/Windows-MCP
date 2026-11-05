@@ -12,7 +12,7 @@ from windows_mcp.vdm.core import (
 from windows_mcp.desktop.views import DesktopState, Window, Browser, Status, Size, Display
 from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState, SemanticNode
 from PIL import ImageFont, ImageDraw, Image
-from windows_mcp.tree.service import Tree
+from windows_mcp.tree.service import Tree, _excluded_process_names, _window_process_name
 from windows_mcp.desktop import screenshot as screenshot_capture
 from windows_mcp.desktop.control import get_controller
 from windows_mcp.desktop import flash_overlay
@@ -1250,6 +1250,11 @@ class Desktop:
         # don't pass that into ControlFromHandle, which would raise.
         if not handle:
             return None
+        excluded_processes = _excluded_process_names()
+        if excluded_processes:
+            process_name = _window_process_name(handle)
+            if process_name and process_name.casefold() in excluded_processes:
+                return None
         return self.get_window_from_element_handle(handle)
 
     def get_window_from_element_handle(self, element_handle: int) -> uia.Control:
@@ -1268,8 +1273,14 @@ class Desktop:
         try:
             windows = []
             window_handles = set()
-            controls_handles = controls_handles or self.get_controls_handles()
+            if controls_handles is None:
+                controls_handles = self.get_controls_handles()
+            excluded_processes = _excluded_process_names()
             for depth, hwnd in enumerate(controls_handles):
+                if excluded_processes:
+                    process_name = _window_process_name(hwnd)
+                    if process_name and process_name.casefold() in excluded_processes:
+                        continue
                 try:
                     child = uia.ControlFromHandle(hwnd)
                 except Exception:

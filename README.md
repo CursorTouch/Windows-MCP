@@ -716,7 +716,7 @@ All variables are optional unless noted. Set them via the `env` key in `claude_d
 
 | Variable | Default | Description |
 |---|---|---|
-| `WINDOWS_MCP_EXCLUDE_PROCESSES` | _(none)_ | Comma-separated process basenames whose windows are excluded from UI Automation tree traversal, e.g. `Code.exe,Cursor.exe`. Matching is case-insensitive and exact — no wildcards or regular expressions. Unset or empty preserves current behaviour. |
+| `WINDOWS_MCP_EXCLUDE_PROCESSES` | _(none)_ | Comma-separated process basenames whose windows are excluded from UI Automation window metadata and tree traversal, e.g. `Code.exe,Cursor.exe`. Matching is case-insensitive and exact — no wildcards or regular expressions. Unset or empty preserves current behaviour. |
 
 Some applications expose accessibility trees that can become slow or unresponsive during UI Automation traversal. `Snapshot` and `WaitFor` may traverse the active window and other top-level handles selected for tree capture, so one pathological accessibility provider can stall the capture.
 
@@ -728,7 +728,7 @@ WINDOWS_MCP_EXCLUDE_PROCESSES=Code.exe,Cursor.exe
 
 Process names are comma-separated executable basenames. They are matched case-insensitively after surrounding whitespace is stripped; empty entries are ignored and duplicates are harmless.
 
-A window is excluded *before* any UI Automation call is made against it, so its accessibility provider is never entered. Excluded applications may still appear in the window list, but Windows-MCP will not traverse their accessibility trees, and they are not reported as failed captures. If the owning process of a window cannot be resolved, the window is traversed as usual.
+A window is excluded *before* any UI Automation call is made against it, so its accessibility provider is never entered during Snapshot collection. Excluded windows are omitted from the window list and active-window metadata as well as the accessibility tree, and they are not reported as failed captures. If the foreground window belongs to an excluded process, no active window is reported. If the owning process of a window cannot be resolved, the window is queried and traversed as usual.
 
 This is an exclusion mechanism — a mitigation, not a complete fix for every form of [#383](https://github.com/CursorTouch/Windows-MCP/issues/383). It only skips the processes you name; a pathological window you have not listed can still stall a capture.
 
