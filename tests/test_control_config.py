@@ -72,3 +72,28 @@ def test_invalid_policy(tmp_path, value):
     path.write_text("[control]\npolicy = " + value, encoding="utf-8")
     with pytest.raises(ValueError, match="control.policy"):
         load_config(path)
+
+
+def test_default_takeover_is_any(tmp_path):
+    assert load_config(None).control.takeover == "any"
+    path = tmp_path / "takeover.toml"
+    path.write_text("[control]\nenabled = true\n", encoding="utf-8")
+    assert load_config(path).control.takeover == "any"
+
+
+@pytest.mark.parametrize("takeover", ["any", "hotkey"])
+def test_takeover_round_trip(tmp_path, takeover):
+    cfg = WindowsMCPConfig()
+    cfg.control.takeover = takeover
+    path = tmp_path / "takeover.toml"
+    write_config(cfg, path)
+    assert load_config(path).control.takeover == takeover
+    assert ("takeover" in path.read_text(encoding="utf-8")) is (takeover != "any")
+
+
+@pytest.mark.parametrize("value", ['"unknown"', '"Hotkey"', "true", "3", "[]", "{}"])
+def test_invalid_takeover(tmp_path, value):
+    path = tmp_path / "takeover.toml"
+    path.write_text("[control]\ntakeover = " + value, encoding="utf-8")
+    with pytest.raises(ValueError, match="control.takeover"):
+        load_config(path)

@@ -38,14 +38,15 @@ def physical_mouse(owner: Any, code: int, wparam: int, lparam: int) -> int:
         # AI until the raw accumulator confirms a deliberate takeover.
         active = button is not None or point != owner._last_point
         owner._last_point = point
-        if active:
+        hotkey_only = owner.takeover == "hotkey"
+        if active and not hotkey_only:
             owner._last_physical_event = time.monotonic()
         if button:
             if button[1]:
                 owner._mouse_down.add(button[0])
             else:
                 owner._mouse_down.discard(button[0])
-        if active:
+        if active and not hotkey_only:
             owner._queue(("point", data.pt.x, data.pt.y, int(wparam)))
         if owner._suppress and not owner._emergency:
             if time.monotonic() <= owner._deadline:
@@ -74,7 +75,9 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
         data = ctypes.cast(lparam, ctypes.POINTER(_KeyHookData)).contents
         if data.flags & 0x10:  # LLKHF_INJECTED: AI SendInput stays usable.
             return _user32.CallNextHookEx(owner._key_hook, code, wparam, lparam)
-        owner._last_physical_event = time.monotonic()
+        hotkey_only = owner.takeover == "hotkey"
+        if not hotkey_only:
+            owner._last_physical_event = time.monotonic()
         vk = int(data.vkCode)
         down = wparam in (0x100, 0x104)
         # Japanese Hankaku/Zenkaku emits VK_DBE_SBCSCHAR / VK_DBE_DBCSCHAR
@@ -90,6 +93,8 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
         if vk in owner._quarantine:
             if not down:
                 owner._quarantine.discard(vk)
+                if hotkey_only:
+                    owner._last_physical_event = time.monotonic()  # Chord keys still count.
                 owner._queue(("key",))  # Idle starts after the last chord key is released.
             return 1
         if (
@@ -104,9 +109,12 @@ def physical_key(owner: Any, code: int, wparam: int, lparam: int) -> int:
             owner._fast_takeover = True
             owner._suppress = False  # Release first, then tell the coordinator.
             owner.input_ledger.block_new()
+            if hotkey_only:
+                owner._last_physical_event = time.monotonic()
             owner._queue(("hotkey",))
             return 1
-        owner._queue(("key",))
+        if not hotkey_only:
+            owner._queue(("key",))
         if owner._suppress and not owner._emergency:
             if time.monotonic() <= owner._deadline:
                 return 1
@@ -130,6 +138,8 @@ def raw_input(owner: Any, lparam: int) -> None:
         return  # Null devices can be touchpads; do not infer source.
     if not raw[1] and not raw[2]:
         return  # A zero-delta report is device chatter, not user activity.
+    if owner.takeover == "hotkey":
+        return  # Pointer motion is not a takeover in hotkey mode.
     owner._last_physical_event = time.monotonic()
     # Preserve arrival time: queue latency must not join separate gestures.
     owner._queue(("raw", *raw, owner._last_physical_event))
