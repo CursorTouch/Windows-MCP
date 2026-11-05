@@ -63,6 +63,9 @@ def test_clipboard_tool_error_is_error_true(monkeypatch, mcp):
     def _raise(*args, **kwargs):
         raise RuntimeError(error_msg)
 
+    # Keep the test independent of whoever holds the real clipboard.
+    for name in ("OpenClipboard", "EmptyClipboard", "CloseClipboard"):
+        monkeypatch.setattr(win32clipboard, name, lambda *a, **k: None)
     monkeypatch.setattr(win32clipboard, "SetClipboardText", _raise)
     with pytest.raises(ToolError) as exc_info:
         asyncio.run(mcp.call_tool("Clipboard", {"mode": "set", "text": "x"}))
