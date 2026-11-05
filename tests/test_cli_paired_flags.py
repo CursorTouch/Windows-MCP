@@ -90,7 +90,7 @@ def test_both_ssl_and_both_oauth_accepted(monkeypatch, tmp_path):
             "--transport",
             "sse",
             "--host",
-            "0.0.0.0",
+            "localhost",
             "--port",
             "9123",
             "--auth-key",
