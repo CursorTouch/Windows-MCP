@@ -93,9 +93,13 @@ def kill_process(
         except psutil.AccessDenied:
             return f"Access denied to kill PID {pid}. Try running as administrator."
     else:
+        # psutil reports image names with their extension ("notepad.exe"). Also accept
+        # the name without it ("notepad"), as Get-Process and Stop-Process take it.
+        wanted = name.lower()
+        targets = {wanted} if wanted.endswith(".exe") else {wanted, f"{wanted}.exe"}
         for p in psutil.process_iter(["pid", "name"]):
             try:
-                if p.info["name"] and p.info["name"].lower() == name.lower():
+                if p.info["name"] and p.info["name"].lower() in targets:
                     if force:
                         p.kill()
                     else:
