@@ -171,7 +171,7 @@ def test_launch_executable_requires_executable() -> None:
 
 
 def test_launch_executable_rejects_missing_executable(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="Executable does not exist"):
+    with pytest.raises(ValueError, match=r"Executable not found \(as a path or on PATH\)"):
         asyncio.run(
             _mcp().tools["App"](
                 mode="launch_executable",
