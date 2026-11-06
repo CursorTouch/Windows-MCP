@@ -330,6 +330,15 @@ def _build_mcp() -> FastMCP:
 
     controller.subscribe(show_control_state)
 
+    def ask_consent(seconds: int) -> str:
+        from windows_mcp.desktop import control_consent
+
+        control_overlay.set_consent(True)
+        try:
+            return control_consent.ask(seconds)
+        finally:
+            control_overlay.set_consent(False)
+
     @asynccontextmanager
     async def lifespan(app: FastMCP):
         """Runs initialization code before the server starts and cleanup code after it shuts down."""
@@ -350,6 +359,7 @@ def _build_mcp() -> FastMCP:
         controller.enabled = _control_config.enabled
         controller.policy = _control_config.policy
         controller.idle_timeout_seconds = _control_config.idle_timeout_seconds
+        controller.consent_countdown_seconds = _control_config.consent_countdown_seconds
 
         try:
             if controller.enabled:
@@ -377,7 +387,7 @@ def _build_mcp() -> FastMCP:
                     control_loop = None
 
     _mcp = FastMCP(name="windows-mcp", instructions=instructions, lifespan=lifespan)
-    _mcp.add_middleware(ControlToolGate(controller, notifier))
+    _mcp.add_middleware(ControlToolGate(controller, notifier, ask_consent=ask_consent))
     register_all(_mcp, get_desktop=_get_desktop, get_analytics=_get_analytics)
     return _mcp
 

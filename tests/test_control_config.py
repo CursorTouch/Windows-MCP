@@ -21,6 +21,7 @@ def test_control_thresholds_round_trip(tmp_path: Path):
     config.control.mouse_takeover_pixels = 180
     config.control.enabled = False
     config.control.idle_timeout_seconds = 2.5
+    config.control.consent_countdown_seconds = 0
     path = tmp_path / "config.toml"
     write_config(config, path)
     assert load_config(path).control == config.control
@@ -40,6 +41,14 @@ def test_idle_timeout_rejects_invalid(tmp_path, value):
     path = tmp_path / "config.toml"
     path.write_text(f"[control]\nidle_timeout_seconds = {value}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="control.idle_timeout_seconds"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ["true", '"10"', "-1", "61", "2.5"])
+def test_consent_countdown_rejects_invalid(tmp_path, value):
+    path = tmp_path / "config.toml"
+    path.write_text(f"[control]\nconsent_countdown_seconds = {value}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="control.consent_countdown_seconds"):
         load_config(path)
 
 

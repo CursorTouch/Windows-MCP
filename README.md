@@ -610,6 +610,7 @@ Configure it in `~/.windows-mcp/config.toml` (or disable it entirely with `enabl
 enabled = true
 policy = "relaxed"
 idle_timeout_seconds = 10.0
+consent_countdown_seconds = 10
 ```
 
 Or override it for one MCP server launch:
@@ -635,6 +636,19 @@ injected key/button cleanup retained. AI desktop actions can then interfere with
 own input; PowerShell scripts can also operate the UI. The separate screenshot flash
 setting is unchanged. When control is enabled, the idle timer restarts with physical
 input, so shortening it does not allow gated calls while you keep using the computer.
+
+Before AI starts a new control period, the screen edges turn amber and a dialog
+counts down from `consent_countdown_seconds`. **Allow now** starts control at once,
+and input in the first second after it (your hand leaving the mouse) does not take the
+desktop back; the takeover hotkey still does. **Deny** (or closing the dialog) rejects the call with `CONTROL_DENIED`, and an
+unanswered countdown starts control, so unattended runs keep working. If you use the
+mouse or keyboard during the countdown without answering, you stay in control and the
+call returns `USER_CONTROL`. Consent lasts until you take the desktop back; later AI
+calls do not ask again, even after the lease expires. The prompt also appears while you
+are using the computer, instead of a silent `USER_CONTROL`. After you deny, ignore it
+while working, or take the desktop back from AI, calls return `USER_CONTROL` without
+asking until you have been idle for `idle_timeout_seconds`. Set
+`consent_countdown_seconds = 0` (0–60) to start control without asking.
 
 During AI control, small mouse movements remain blocked without pausing the current
 tool. Mouse takeover adds up the length of each relative raw-input movement,
