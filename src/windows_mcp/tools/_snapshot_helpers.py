@@ -39,10 +39,6 @@ def _snapshot_profile_enabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _as_bool(value: bool | str) -> bool:
-    return value is True or (isinstance(value, str) and value.lower() == "true")
-
-
 def _as_region(value: list | str | None) -> list | None:
     if value is None or isinstance(value, list):
         return value

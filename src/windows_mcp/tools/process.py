@@ -3,6 +3,7 @@
 from typing import Literal
 
 from mcp.types import ToolAnnotations
+from windows_mcp.desktop.utils import as_bool
 from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
 from windows_mcp import process
@@ -34,7 +35,7 @@ def register(mcp, *, get_desktop, get_analytics):
             if mode == "list":
                 return process.list_processes(name=name, sort_by=sort_by, limit=limit)
             elif mode == "kill":
-                force = force is True or (isinstance(force, str) and force.lower() == "true")
+                force = as_bool(force, "force")
                 return process.kill_process(name=name, pid=pid, force=force)
             else:
                 return 'Error: mode must be either "list" or "kill".'
