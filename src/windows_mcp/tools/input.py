@@ -246,14 +246,18 @@ def register(
         loc = _as_loc(loc)
         if loc is None and label is None:
             raise ValueError("Either loc or label must be provided.")
+        # For a negative count Desktop.click() made one left click, or no right or
+        # middle click, and the reply began with "None".
+        if clicks < 0:
+            raise ValueError("clicks must be 0 or more")
         if label is not None:
             loc = _resolve_label(desktop, label)
         if len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
         desktop.click(loc=loc, button=button, clicks=clicks)
-        num_clicks = {0: "Hover", 1: "Single", 2: "Double"}
-        return f"{num_clicks.get(clicks)} {button} clicked at ({x},{y})."
+        num_clicks = {0: "Hover", 1: "Single", 2: "Double", 3: "Triple"}
+        return f"{num_clicks.get(clicks, f'{clicks}x')} {button} clicked at ({x},{y})."
 
     @mcp.tool(
         name="Type",
@@ -325,12 +329,10 @@ def register(
         response = desktop.scroll(loc, type, direction, wheel_times)
         if response:
             return response
-        return (
-            f"Scrolled {type} {direction} by {wheel_times} wheel times"
-            + f" at ({loc[0]},{loc[1]})."
-            if loc
-            else ""
-        )
+        # The conditional used to cover the whole message, so a scroll at the
+        # mouse position (loc=None) answered with an empty string.
+        where = f"({loc[0]},{loc[1]})" if loc else "the current mouse position"
+        return f"Scrolled {type} {direction} by {wheel_times} wheel times at {where}."
 
     @mcp.tool(
         name="Move",
