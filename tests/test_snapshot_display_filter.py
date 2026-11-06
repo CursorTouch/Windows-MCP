@@ -327,7 +327,7 @@ class TestDisplayFiltering:
             output_idx=1,
             processor_backend="numpy",
         )
-        fake_camera.grab.assert_called_once_with(region=None, copy=True, new_frame_only=False)
+        fake_camera.grab.assert_called_once_with(copy=True, new_frame_only=True)
         mock_fromarray.assert_called_once()
 
     def test_get_screenshot_falls_back_to_pillow_when_dxcam_region_is_unsupported(

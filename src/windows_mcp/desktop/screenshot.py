@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+import ctypes
 import logging
 import os
+import time
 from _ctypes import COMError
 
 from PIL import Image, ImageGrab
@@ -16,6 +18,18 @@ except ImportError:
     mss = None
 
 import windows_mcp.uia as uia
+
+#: How long a DXGI capture waits for a frame newer than the last one it saw.
+_NEW_FRAME_WAIT_SECONDS = 0.25
+
+
+def _dwm_flush() -> None:
+    """Wait for the next desktop composition pass, so hidden windows are gone."""
+    try:
+        ctypes.windll.dwmapi.DwmFlush()
+    except (AttributeError, OSError):
+        pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +123,10 @@ class _DxcamBackend(_ScreenshotBackend):
 
     def __init__(self) -> None:
         self._camera_cache: dict[tuple[int, int], object] = {}
+        # Last full output frame each camera returned. DXGI only hands out a frame
+        # when the desktop changed since the previous acquire, so this is the
+        # current picture whenever no new frame arrives.
+        self._last_frames: dict[tuple[int, int], object] = {}
 
     @staticmethod
     def _iter_outputs() -> list[DxcamOutput]:
@@ -203,11 +221,33 @@ class _DxcamBackend(_ScreenshotBackend):
                 "DXGI capture supports only regions fully contained within one display"
             )
         device_idx, output_idx, region = resolved
+        camera_key = (device_idx, output_idx)
         camera = self._get_camera(device_idx, output_idx)
-        frame = camera.grab(region=region, copy=True, new_frame_only=False)
-        if frame is None:
+        # dxcam's DXGI path polls AcquireNextFrame with a zero timeout. Right after
+        # the AI indicator is hidden (or any click), the newest composed frame may
+        # not have reached the duplication output yet, and new_frame_only=False then
+        # returns dxcam's cached frame: the screen as it was before the change.
+        # Flush composition and wait briefly for a new frame instead.
+        _dwm_flush()
+        full = None
+        deadline = time.monotonic() + _NEW_FRAME_WAIT_SECONDS
+        while True:
+            full = camera.grab(copy=True, new_frame_only=True)
+            if full is not None or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        if full is None:
+            # Nothing changed since the last frame this camera returned.
+            full = self._last_frames.get(camera_key)
+        if full is None:
+            full = camera.grab(copy=True, new_frame_only=False)
+        if full is None:
             raise RuntimeError("DXGI capture returned no frame")
-        return Image.fromarray(frame)
+        self._last_frames[camera_key] = full
+        if region is None:
+            return Image.fromarray(full)
+        left, top, right, bottom = region
+        return Image.fromarray(full[top:bottom, left:right])
 
 
 class _PillowBackend(_ScreenshotBackend):
