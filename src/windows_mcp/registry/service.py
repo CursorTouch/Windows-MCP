@@ -25,9 +25,15 @@ def get_value(path: str, name: str) -> str:
     """Read a registry value at *path* with the given *name*."""
     q_path = ps_quote(path)
     q_name = ps_quote(name)
+    # Value names may contain wildcard characters; file paths such as
+    # "setup[1].exe" are common value names. Select-Object -ExpandProperty reads
+    # the name as a pattern, so look the property up by its literal name.
     command = (
-        f"Get-ItemProperty -LiteralPath {q_path} -Name {q_name} | "
-        f"Select-Object -ExpandProperty {q_name}"
+        f"$property = (Get-ItemProperty -LiteralPath {q_path} -Name {q_name} -ErrorAction Stop)"
+        f".PSObject.Properties[{q_name}]; "
+        f"if (-not $property) {{ throw ('Property ' + {q_name} + ' does not exist at path ' + "
+        f"{q_path} + '.') }}; "
+        f"$property.Value"
     )
     response, status = PowerShellExecutor.execute_command(command)
     if status != 0:
