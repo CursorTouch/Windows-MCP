@@ -3,6 +3,7 @@
 import asyncio
 
 from mcp.types import ToolAnnotations
+from windows_mcp.desktop.utils import as_bool
 from windows_mcp.infrastructure import run_uia_affine, with_analytics
 from fastmcp import Context
 
@@ -28,10 +29,8 @@ def register(mcp, *, get_desktop, get_analytics):
         ctx: Context = None,
     ) -> str:
         desktop = get_desktop()
-        use_dom = use_dom is True or (isinstance(use_dom, str) and use_dom.lower() == "true")
-        use_sampling = use_sampling is True or (
-            isinstance(use_sampling, str) and use_sampling.lower() == "true"
-        )
+        use_dom = as_bool(use_dom, "use_dom")
+        use_sampling = as_bool(use_sampling, "use_sampling")
 
         if not use_dom:
             # The fetch can take seconds and needs no UIA: run it on a generic worker

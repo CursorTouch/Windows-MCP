@@ -3,12 +3,12 @@
 import logging
 
 from mcp.types import ToolAnnotations
+from windows_mcp.desktop.utils import as_bool as _as_bool
 from windows_mcp.desktop.utils import as_int_list as _as_int_list
 from windows_mcp.infrastructure import with_analytics
 from fastmcp import Context
 
 from windows_mcp.tools._snapshot_helpers import (
-    _as_bool,
     _as_region,
     capture_desktop_state,
     build_snapshot_response,
@@ -51,10 +51,10 @@ def register(mcp, *, get_desktop, get_analytics):
         try:
             capture_result = capture_desktop_state(
                 get_desktop(),
-                use_vision=_as_bool(use_vision) or bool(save_path),
-                use_dom=_as_bool(use_dom),
-                use_annotation=_as_bool(use_annotation),
-                use_ui_tree=_as_bool(use_ui_tree),
+                use_vision=_as_bool(use_vision, "use_vision") or bool(save_path),
+                use_dom=_as_bool(use_dom, "use_dom"),
+                use_annotation=_as_bool(use_annotation, "use_annotation"),
+                use_ui_tree=_as_bool(use_ui_tree, "use_ui_tree"),
                 width_reference_line=width_reference_line,
                 height_reference_line=height_reference_line,
                 display=_as_int_list(display, "display"),
@@ -109,7 +109,7 @@ def register(mcp, *, get_desktop, get_analytics):
                 get_desktop(),
                 use_vision=True,
                 use_dom=False,
-                use_annotation=_as_bool(use_annotation),
+                use_annotation=_as_bool(use_annotation, "use_annotation"),
                 use_ui_tree=False,
                 width_reference_line=width_reference_line,
                 height_reference_line=height_reference_line,
