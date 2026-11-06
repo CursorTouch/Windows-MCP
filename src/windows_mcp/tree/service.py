@@ -160,9 +160,10 @@ class Tree:
                 logger.debug(f"Failed to get DOM scroll pattern: {e}")
                 dom_node=None
         elif self.dom_is_ia2 and self.dom_bounding_box is not None:
-            # Firefox / IA2 path — no UIA scroll pattern, so emit a stub ScrollElementNode
-            # with scrolling disabled. Downstream consumers (Scrape) only need a truthy
-            # dom_node and the bounding box.
+            # Firefox / IA2 path — no UIA scroll pattern, so emit a stub ScrollElementNode.
+            # Downstream consumers (Scrape) only need a truthy dom_node and the bounding
+            # box. The scroll state is unknown, so vertical_scrollable is None: False
+            # would tell Scrape that the page fits on screen.
             dom_node=ScrollElementNode(**{
                 'name':'DOM',
                 'control_type':'DocumentControl',
@@ -173,7 +174,7 @@ class Tree:
                     'has_focused': False,
                     'horizontal_scrollable': False,
                     'horizontal_scroll_percent': 0,
-                    'vertical_scrollable': False,
+                    'vertical_scrollable': None,
                     'vertical_scroll_percent': 0,
                 }
             })

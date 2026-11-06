@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from windows_mcp.tools import scrape as scrape_tool_module
+from windows_mcp.tree.service import Tree
 from windows_mcp.tree.views import BoundingBox, Center, ScrollElementNode, TextElementNode
 
 
@@ -28,16 +29,21 @@ class FakeMCP:
         return decorator
 
 
+DOM_BOX = BoundingBox(left=0, top=0, right=800, bottom=600, width=800, height=600)
+
+
 class FakeDesktop:
-    def __init__(self, vertical_scroll_percent: float) -> None:
+    def __init__(
+        self, vertical_scroll_percent: float, vertical_scrollable: bool | None = True
+    ) -> None:
         self.dom_node = ScrollElementNode(
             name="DOM",
             control_type="DocumentControl",
             window_name="DOM",
-            bounding_box=BoundingBox(left=0, top=0, right=800, bottom=600, width=800, height=600),
+            bounding_box=DOM_BOX,
             center=Center(x=400, y=300),
             metadata={
-                "vertical_scrollable": True,
+                "vertical_scrollable": vertical_scrollable,
                 "vertical_scroll_percent": vertical_scroll_percent,
             },
         )
@@ -70,6 +76,40 @@ def test_dom_scrape_reports_scroll_position(
     )
 
     assert result == f"URL: https://example.com\nContent:\n{header}\nPage text\n{footer}"
+
+
+def _dom_scrape(desktop: FakeDesktop) -> str:
+    mcp = FakeMCP()
+    scrape_tool_module.register(mcp, get_desktop=lambda: desktop, get_analytics=lambda: None)
+    return asyncio.run(
+        mcp.tools["Scrape"](url="https://example.com", use_dom=True, use_sampling=False)
+    )
+
+
+def test_dom_scrape_of_a_page_that_does_not_scroll_reaches_both_ends() -> None:
+    # UIA reports VerticallyScrollable=False and the percent as 0 when the page fits.
+    result = _dom_scrape(FakeDesktop(0, vertical_scrollable=False))
+
+    assert result == "URL: https://example.com\nContent:\nReached top\nPage text\nReached bottom"
+
+
+def test_firefox_dom_scrape_still_offers_to_scroll() -> None:
+    # The IA2 walk has no scroll pattern, so it cannot tell whether more text follows.
+    tree = Tree.__new__(Tree)
+    tree.screen_box = DOM_BOX
+
+    def walk(windows_handles, active_window_flag, use_dom):
+        tree.dom_is_ia2 = True
+        tree.dom_bounding_box = DOM_BOX
+        return [], [], [], [], []
+
+    tree.get_window_wise_nodes = walk
+    desktop = FakeDesktop(0)
+    desktop.dom_node = tree.get_state(None, [1], use_dom=True).dom_node
+
+    result = _dom_scrape(desktop)
+
+    assert result.endswith("Reached top\nPage text\nScroll down to see more")
 
 
 class SlowFetchDesktop:

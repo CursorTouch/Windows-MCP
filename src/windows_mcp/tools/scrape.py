@@ -49,12 +49,19 @@ def register(mcp, *, get_desktop, get_analytics):
             if not tree_state.dom_node:
                 return f"No DOM information found. Please open {url} in browser first."
             dom_node = tree_state.dom_node
-            vertical_scroll_percent = dom_node.metadata.get("vertical_scroll_percent", 0)
             content = "\n".join([node.text for node in tree_state.dom_informative_nodes])
-            header_status = "Reached top" if vertical_scroll_percent <= 0 else "Scroll up to see more"
-            footer_status = (
-                "Reached bottom" if vertical_scroll_percent >= 100 else "Scroll down to see more"
-            )
+            if dom_node.metadata.get("vertical_scrollable") is False:
+                # The page does not scroll, so this text is all of it. The percent is
+                # 0 here, which used to end the content with "Scroll down to see more".
+                header_status, footer_status = "Reached top", "Reached bottom"
+            else:
+                vertical_scroll_percent = dom_node.metadata.get("vertical_scroll_percent", 0)
+                header_status = (
+                    "Reached top" if vertical_scroll_percent <= 0 else "Scroll up to see more"
+                )
+                footer_status = (
+                    "Reached bottom" if vertical_scroll_percent >= 100 else "Scroll down to see more"
+                )
             content = f"{header_status}\n{content}\n{footer_status}"
 
         if use_sampling and ctx is not None:
