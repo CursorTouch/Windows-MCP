@@ -120,7 +120,18 @@ def _prepare_env() -> dict[str, str]:
 
         # Supplement missing vars. User-level (HKCU) takes precedence over
         # system-level (HKLM) for same-named keys, matching Windows' resolution order.
-        for name, value in {**machine_vars, **user_vars}.items():
+        # Names are matched without case, as Windows does. os.environ.copy()
+        # upper-cases them ("ONEDRIVE"), while the registry keeps the case they
+        # were created with ("OneDrive", "PSModulePath"). A second key that
+        # differs only in case also reaches the child, and there the later key
+        # wins, so the registry value would replace the inherited one.
+        names = {name.upper(): name for name in env}
+        registry_vars = {
+            name.upper(): (name, value)
+            for name, value in (*machine_vars.items(), *user_vars.items())
+        }
+        for upper, (name, value) in registry_vars.items():
+            name = names.get(upper, name)
             if not env.get(name):
                 env[name] = value
 
