@@ -151,6 +151,14 @@ class TestRegistryDelete:
             result = registry.delete_entry(path="HKCU:\\Software\\Protected")
         assert 'Error deleting registry key' in result
 
+    def test_empty_value_name_deletes_nothing(self):
+        # An empty name is a value name, not a missing one: it must not fall
+        # through to removing the whole key.
+        with patch(EXECUTE_COMMAND_PATH) as mock_exec:
+            result = registry.delete_entry(path="HKCU:\\Software\\Test", name="")
+        assert result == "Error: name must not be empty. Omit name to delete the whole key."
+        mock_exec.assert_not_called()
+
 
 class TestRegistryList:
     def test_success(self):
@@ -282,3 +290,17 @@ class TestRegistryGetWildcardValueName:
         result = registry.get_value(path=key, name="setup?.exe")
         assert result.startswith("Error reading registry:"), result
         assert "setup?.exe" in result, result
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="writes the Windows registry")
+def test_delete_with_empty_value_name_keeps_the_key():
+    key = f"HKCU:\\Software\\windows-mcp-test-{uuid.uuid4().hex}"
+    assert "set to" in registry.set_value(path=key, name="V", value="kept")
+    assert "set to" in registry.set_value(path=f"{key}\\Child", name="V", value="kept")
+    try:
+        result = registry.delete_entry(path=key, name="")
+        assert result.startswith("Error:"), result
+        assert registry.get_value(path=key, name="V").endswith('"V" = kept')
+        assert registry.get_value(path=f"{key}\\Child", name="V").endswith('"V" = kept')
+    finally:
+        registry.delete_entry(path=key)

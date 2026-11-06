@@ -109,7 +109,12 @@ def set_value(path: str, name: str, value: str, reg_type: RegistryType = 'String
 def delete_entry(path: str, name: str | None = None) -> str:
     """Delete a registry value when *name* is provided, otherwise remove the entire key."""
     q_path = ps_quote(path)
-    if name:
+    if name is not None:
+        if not name:
+            # An empty name used to count as no name, so it removed the whole key
+            # and every sub-key. The PowerShell cmdlets cannot address a value by
+            # an empty name either (get and set fail on it), so refuse it here.
+            return "Error: name must not be empty. Omit name to delete the whole key."
         q_name = ps_quote(name)
         command = f"Remove-ItemProperty -LiteralPath {q_path} -Name {q_name} -Force"
         response, status = PowerShellExecutor.execute_command(command)
