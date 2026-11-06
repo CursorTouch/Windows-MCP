@@ -677,6 +677,15 @@ For contributors: tool categories and the few mode-specific exceptions live in
 registration coverage tests detect omissions. Unknown extensions conservatively
 use the gate. Keep policy decisions out of individual tool implementations.
 
+### Cursor positioning failures
+
+If Windows rejects `SetCursorPos`, input tools return an error instead of reporting
+success or continuing with a click or text entry at the wrong location. Check that
+the server can access the active input desktop and whether the target application
+is running with higher privileges. The error includes the Windows error code when
+available; some failures provide no extended error code. These checks are diagnostic
+suggestions, not a determination of the cause. Windows-MCP does not elevate itself.
+
 ### `auth` Helper
 
 Generate an auth key and save a working config to `~/.windows-mcp/config.toml`:

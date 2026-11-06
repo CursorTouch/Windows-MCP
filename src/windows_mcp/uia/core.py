@@ -245,9 +245,21 @@ def SetCursorPos(x: int, y: int) -> bool:
     Set mouse cursor to point x, y.
     x: int.
     y: int.
-    Return bool, True if succeed otherwise False.
+    Return True on success; raise OSError if Windows rejects the movement.
     """
-    return bool(ctypes.windll.user32.SetCursorPos(x, y))
+    # Some failures do not set an extended error. Clear stale errors first and
+    # read the native last-error value directly: windll does not use_last_error.
+    ctypes.windll.kernel32.SetLastError(0)
+    if not ctypes.windll.user32.SetCursorPos(x, y):
+        error = ctypes.GetLastError()
+        message = (
+            f"SetCursorPos({x}, {y}) failed. Check access to the input desktop "
+            "and whether the foreground application is elevated."
+        )
+        if error:
+            raise ctypes.WinError(error, message)
+        raise OSError(message + " Windows did not provide an error code.")
+    return True
 
 
 def GetDoubleClickTime() -> int:
