@@ -253,3 +253,32 @@ class TestRegistryArrayValuesRoundTrip:
         result = registry.set_value(path=key, name="V", value="a\nb", reg_type="MultiString")
         assert "set to" in result, result
         assert self._stored(key) == "a|b"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="writes the Windows registry")
+class TestRegistryGetWildcardValueName:
+    """Value names may contain [ ] * ?, as file paths such as "setup[1].exe" do.
+    Get mode must return the value with exactly that name."""
+
+    VALUES = {"setup1.exe": "other app", "setup[1].exe": "target", "*": "star"}
+
+    @pytest.fixture
+    def key(self):
+        path = f"HKCU:\\Software\\windows-mcp-test-{uuid.uuid4().hex}"
+        for name, value in self.VALUES.items():
+            result = registry.set_value(path=path, name=name, value=value)
+            assert "set to" in result, result
+        yield path
+        registry.delete_entry(path=path)
+
+    @pytest.mark.parametrize("name", list(VALUES))
+    def test_reads_the_named_value(self, key, name):
+        result = registry.get_value(path=key, name=name)
+        assert result == f'Registry value [{key}] "{name}" = {self.VALUES[name]}'
+
+    def test_missing_name_is_an_error(self, key):
+        # Get-ItemProperty returns no property, and no error, for a missing name
+        # that contains a wildcard character.
+        result = registry.get_value(path=key, name="setup?.exe")
+        assert result.startswith("Error reading registry:"), result
+        assert "setup?.exe" in result, result
