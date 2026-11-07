@@ -112,3 +112,26 @@ async def test_app_tool_reports_switch_failure_as_mcp_error(
 
     assert result.is_error is (not foreground_matches)
     assert ("Switched to" if foreground_matches else "Failed to bring") in result.content[0].text
+
+
+@pytest.mark.parametrize("refresh_state", [False, True])
+def test_find_window_by_name_lists_windows_without_tree_walk(sample_window, refresh_state):
+    desktop = Desktop.__new__(Desktop)
+    desktop.desktop_state = None
+    desktop.get_state = Mock(side_effect=AssertionError("get_state walks the UI tree"))
+    desktop.get_windows = Mock(return_value=([sample_window], {sample_window.handle}))
+
+    assert desktop._find_window_by_name("Notepad", refresh_state=refresh_state) == (
+        sample_window,
+        "",
+    )
+    desktop.get_state.assert_not_called()
+    desktop.get_windows.assert_called_once_with()
+
+
+def test_find_window_by_name_reports_empty_window_list():
+    desktop = Desktop.__new__(Desktop)
+    desktop.desktop_state = None
+    desktop.get_windows = Mock(return_value=([], set()))
+
+    assert desktop._find_window_by_name("Notepad") == (None, "No windows found on the desktop.")
