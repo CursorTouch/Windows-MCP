@@ -255,9 +255,11 @@ def register(
         if len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
         x, y = loc[0], loc[1]
-        desktop.click(loc=loc, button=button, clicks=clicks)
+        warning = desktop.click(loc=loc, button=button, clicks=clicks)
         num_clicks = {0: "Hover", 1: "Single", 2: "Double", 3: "Triple"}
-        return f"{num_clicks.get(clicks, f'{clicks}x')} {button} clicked at ({x},{y})."
+        answer = f"{num_clicks.get(clicks, f'{clicks}x')} {button} clicked at ({x},{y})."
+        # A click at a disabled window is dropped by Windows, so say what blocked it.
+        return f"{answer} {warning}" if warning else answer
 
     @mcp.tool(
         name="Type",

@@ -29,6 +29,8 @@ class FakeMCP:
 def desktop() -> MagicMock:
     fake = MagicMock()
     fake.scroll.return_value = None
+    # A click that landed everywhere it pointed: no warning to pass on.
+    fake.click.return_value = ""
     return fake
 
 

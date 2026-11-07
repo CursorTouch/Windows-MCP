@@ -780,7 +780,21 @@ class Desktop:
                 f"x={left}..{right}, y={top}..{bottom}"
             )
 
-    def click(self, loc: tuple[int, int] | list[int], button: str = "left", clicks: int = 1):
+    @staticmethod
+    def _modal_dialog_warning(x: int, y: int) -> str:
+        """Name the modal dialog that would swallow a click at (x, y), if any (#557)."""
+        try:
+            root = win32gui.GetAncestor(win32gui.WindowFromPoint((x, y)), win32con.GA_ROOT)
+            if not root or win32gui.IsWindowEnabled(root):
+                return ""
+            popup = win32gui.GetWindow(root, win32con.GW_ENABLEDPOPUP)
+            title = win32gui.GetWindowText(popup) if popup != root else ""
+            dialog = f"the modal dialog '{title}'" if title else "an open modal dialog"
+            return f"Warning: the window there is disabled by {dialog}, so the click went nowhere."
+        except Exception:
+            return ""
+
+    def click(self, loc: tuple[int, int] | list[int], button: str = "left", clicks: int = 1) -> str:
         owner = get_controller()
         owner.checkpoint_current()
         if isinstance(loc, list):
@@ -791,7 +805,9 @@ class Desktop:
         if clicks == 0:
             owner.checkpoint_current()
             uia.SetCursorPos(x, y)
-            return
+            return ""
+        # Ask before clicking: a click that opens its own dialog must not look blocked.
+        blocked = self._modal_dialog_warning(x, y)
         control_overlay.ripple(x, y)
         match button:
             case "left":
@@ -815,6 +831,7 @@ class Desktop:
                     owner.checkpoint_current()
                     uia.MiddleClick(x, y)
                     owner.record_step_current()
+        return blocked
 
     # Strings longer than this typed via clipboard paste instead of
     # per-key SendKeys. SendKeys at high cadence loses keystrokes on
