@@ -1,10 +1,20 @@
 """Shared pixel conversion for the control indicator and capture flash."""
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 
 def premultiplied_bgra(rgba_image: Image.Image, intensity: float) -> bytes:
     """Convert a PIL RGBA image to scaled, premultiplied BGRA bytes.
+
+    The work runs in Pillow's C channel operations rather than a Python loop
+    over every pixel. A full-screen halo is over a million pixels; the loop
+    took 250-400 ms per frame while holding the GIL, which stalled screenshot
+    capture and left the previous flash unable to close in time.
+
+    ``ImageChops.multiply`` computes ``a * b // 255``, and the alpha lookup
+    table computes ``a * int(intensity * 255) // 255``, so the bytes are the
+    same as the per-pixel arithmetic this replaces. A pixel with alpha 0 gets
+    zero RGB, which layered windows require.
 
     Args:
         rgba_image: Source RGBA bitmap.
@@ -13,29 +23,9 @@ def premultiplied_bgra(rgba_image: Image.Image, intensity: float) -> bytes:
     Returns:
         Premultiplied BGRA pixels in row-major order.
     """
-    bgra = bytearray(rgba_image.tobytes("raw", "BGRA"))
-    if intensity >= 1.0:
-        for i in range(0, len(bgra), 4):
-            a = bgra[i + 3]
-            if a == 0:
-                # Fully transparent layered pixels must have zero RGB too.
-                bgra[i] = 0
-                bgra[i + 1] = 0
-                bgra[i + 2] = 0
-                continue
-            bgra[i] = (bgra[i] * a) // 255
-            bgra[i + 1] = (bgra[i + 1] * a) // 255
-            bgra[i + 2] = (bgra[i + 2] * a) // 255
-    else:
-        for i in range(0, len(bgra), 4):
-            a = (bgra[i + 3] * int(intensity * 255)) // 255
-            bgra[i + 3] = a
-            if a == 0:
-                bgra[i] = 0
-                bgra[i + 1] = 0
-                bgra[i + 2] = 0
-                continue
-            bgra[i] = (bgra[i] * a) // 255
-            bgra[i + 1] = (bgra[i + 1] * a) // 255
-            bgra[i + 2] = (bgra[i + 2] * a) // 255
-    return bytes(bgra)
+    red, green, blue, alpha = rgba_image.split()
+    if intensity < 1.0:
+        scale = max(0, int(intensity * 255))
+        alpha = alpha.point([(value * scale) // 255 for value in range(256)])
+    red, green, blue = (ImageChops.multiply(channel, alpha) for channel in (red, green, blue))
+    return Image.merge("RGBA", (red, green, blue, alpha)).tobytes("raw", "BGRA")

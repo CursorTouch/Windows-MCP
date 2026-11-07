@@ -139,7 +139,9 @@ class TestShowCaptureFlash:
         )
         monkeypatch.setattr(flash_overlay, "_premultiplied_bgra", lambda image, intensity: b"")
         monkeypatch.setattr(
-            flash_overlay, "_push_bitmap", lambda *args: calls.setdefault("pushed", args)
+            flash_overlay,
+            "_push_bitmap",
+            lambda *args, **kwargs: calls.setdefault("pushed", (args, kwargs)),
         )
         monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: None)
         monkeypatch.setattr(flash_overlay._user32, "DestroyWindow", lambda hwnd: None)
@@ -288,4 +290,45 @@ class TestRunOverlayFallthrough:
         monkeypatch.setitem(sys.modules, "PIL", None)
         overlay = flash_overlay._Overlay()
         flash_overlay._run_overlay([(0, 0, 100, 100)], False, overlay)
+        assert overlay.closed_event.is_set()
+
+
+class TestFadeThroughWindowOpacity:
+    def test_premultiplies_once_and_fades_with_opacity(self, monkeypatch):
+        """Frames reuse one premultiplied bitmap and vary only the window opacity."""
+        premultiplied = []
+        pushes = []
+        monkeypatch.setattr(flash_overlay, "_create_layered_window", lambda *args: (1, 2))
+        monkeypatch.setattr(flash_overlay._user32, "ShowWindow", lambda *args: None)
+        monkeypatch.setattr(flash_overlay._user32, "SetWindowPos", lambda *args: None)
+        monkeypatch.setattr(
+            flash_overlay, "_render_glow_rgba", lambda width, height, rects, *, outward: "glow"
+        )
+        monkeypatch.setattr(
+            flash_overlay,
+            "_premultiplied_bgra",
+            lambda image, intensity: premultiplied.append((image, intensity)) or b"bgra",
+        )
+        monkeypatch.setattr(
+            flash_overlay,
+            "_push_bitmap",
+            lambda *args, **kwargs: pushes.append((args[5], kwargs["opacity"])),
+        )
+        monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: None)
+        monkeypatch.setattr(flash_overlay.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(flash_overlay._user32, "DestroyWindow", lambda hwnd: None)
+        monkeypatch.setattr(flash_overlay._user32, "UnregisterClassW", lambda *args: None)
+        # start, then frames at 0.1 s (fading in), 1.75 s (peak), 3.45 s (nearly gone), end.
+        monkeypatch.setattr(
+            flash_overlay.time, "perf_counter", iter([0.0, 0.1, 1.75, 3.45, 4.0]).__next__
+        )
+
+        overlay = flash_overlay._Overlay()
+        flash_overlay._run_overlay([(0, 0, 1440, 900)], True, overlay)
+
+        assert premultiplied == [("glow", 1.0)]
+        assert [bitmap for bitmap, _ in pushes] == [b"bgra"] * 3
+        opacities = [opacity for _, opacity in pushes]
+        assert 0 < opacities[0] < opacities[1] == 255
+        assert opacities[2] == 0
         assert overlay.closed_event.is_set()
