@@ -22,23 +22,41 @@ logger.setLevel(logging.INFO)
 
 
 def get_value(path: str, name: str) -> str:
-    """Read a registry value at *path* with the given *name*."""
+    """Read a registry value at *path* with the given *name*.
+
+    The answer names the value's type and shows the value as stored, in the form
+    set mode takes back: an ExpandString keeps its %VARIABLES% (Get-ItemProperty
+    expanded them), a Binary value is .reg hex ("hex:01,02,ff") instead of one
+    decimal byte per line, which read the same as a MultiString of numbers, and
+    a DWord or QWord is unsigned.
+    """
     q_path = ps_quote(path)
     q_name = ps_quote(name)
     # Value names may contain wildcard characters; file paths such as
-    # "setup[1].exe" are common value names. Select-Object -ExpandProperty reads
-    # the name as a pattern, so look the property up by its literal name.
+    # "setup[1].exe" are common value names. GetValueNames() and GetValue() take
+    # the name literally. RegistryKey names the default value "", which the
+    # registry provider shows as "(default)".
     command = (
-        f"$property = (Get-ItemProperty -LiteralPath {q_path} -Name {q_name} -ErrorAction Stop)"
-        f".PSObject.Properties[{q_name}]; "
-        f"if (-not $property) {{ throw ('Property ' + {q_name} + ' does not exist at path ' + "
-        f"{q_path} + '.') }}; "
-        f"$property.Value"
+        f"$key = Get-Item -LiteralPath {q_path} -ErrorAction Stop; "
+        f"$name = {q_name}; $names = $key.GetValueNames(); "
+        f"if ($name -eq '(default)' -and $names -notcontains $name) {{ $name = '' }}; "
+        f"if ($names -notcontains $name) {{ throw ('Property ' + {q_name} + "
+        f"' does not exist at path ' + {q_path} + '.') }}; "
+        f"$kind = $key.GetValueKind($name); "
+        f"$value = $key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); "
+        f"switch ($kind) {{ "
+        f"'DWord' {{ $value = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$value), 0) }} "
+        f"'QWord' {{ $value = [BitConverter]::ToUInt64([BitConverter]::GetBytes([long]$value), 0) }} "
+        f"'MultiString' {{ $value = $value -join \"`n\" }} }}; "
+        f"if ($value -is [byte[]]) {{ "
+        f"$value = 'hex:' + (($value | ForEach-Object {{ $_.ToString('x2') }}) -join ',') }}; "
+        f'Write-Output "$kind"; Write-Output "$value"'
     )
     response, status = PowerShellExecutor.execute_command(command)
     if status != 0:
         return f'Error reading registry: {response.strip()}'
-    return f'Registry value [{path}] "{name}" = {response.strip()}'
+    kind, _, value = response.rstrip("\r\n").partition("\n")
+    return f'Registry value [{path}] "{name}" (type: {kind.strip()}) = {value}'
 
 
 def _parse_binary(value: str) -> list[int]:
