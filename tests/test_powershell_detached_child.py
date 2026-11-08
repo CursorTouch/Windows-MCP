@@ -8,6 +8,8 @@ exited. The call ran until then, or hit the timeout and reported a command
 that had already finished as timed out, without its output.
 """
 
+import io
+import os
 import subprocess
 import sys
 import time
@@ -104,3 +106,51 @@ def test_timeout_keeps_output_printed_before_it():
             grace_period=0.5,
         )
     assert caught.value.stdout.strip() == "BEFORE"
+
+
+def test_unbuffered_pipes_are_read():
+    # bufsize=0 gives FileIO pipes, which have no read1().
+    result = run_with_graceful_timeout(
+        [sys.executable, "-c", "print('a')"], capture_output=True, bufsize=0
+    )
+    assert result.stdout == b"a\r\n"
+
+
+def _wait_for(condition, seconds=5.0):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_reader_stops_keeping_output_once_it_was_taken():
+    # A program still holding the pipe may write for hours after the call has
+    # returned. That output must be drained but not stored.
+    from windows_mcp.powershell.utils import _PipeReader
+
+    read_fd, write_fd = os.pipe()
+    reader = _PipeReader(open(read_fd, "rb"))
+    os.write(write_fd, b"before")
+    _wait_for(lambda: reader._chunks)
+
+    assert reader.take_output() == b"before"
+
+    for _ in range(64):
+        os.write(write_fd, b"x" * 65536)
+    os.close(write_fd)
+    reader.join(time.monotonic() + 5)
+    assert reader._chunks == []
+
+
+def test_text_cut_mid_character_by_a_program_still_holding_the_pipe():
+    from windows_mcp.powershell.utils import _PipeReader
+
+    read_fd, write_fd = os.pipe()
+    reader = _PipeReader(io.TextIOWrapper(open(read_fd, "rb"), encoding="utf-8"))
+    try:
+        os.write(write_fd, "ok\r\n中".encode("utf-8")[:-1])  # the last byte is missing
+        _wait_for(lambda: len(b"".join(reader._chunks)) == 6)
+
+        assert reader.take_output() == "ok\n"
+    finally:
+        os.close(write_fd)

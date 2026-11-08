@@ -1,3 +1,4 @@
+import codecs
 import errno
 import io
 import logging
@@ -109,6 +110,7 @@ class _PipeReader:
     def __init__(self, stream):
         self._stream = stream
         self._chunks: list[bytes] = []
+        self._keep = True
         # In text mode, read the bytes and decode at the end, as communicate() does.
         self._encoding = getattr(stream, "encoding", None)
         self._errors = getattr(stream, "errors", None)
@@ -117,9 +119,12 @@ class _PipeReader:
 
     def _read(self):
         raw = getattr(self._stream, "buffer", self._stream)
+        # An unbuffered pipe (bufsize=0) is a FileIO, which has no read1().
+        read = getattr(raw, "read1", raw.read)
         try:
-            while chunk := raw.read1(65536):
-                self._chunks.append(chunk)
+            while chunk := read(65536):
+                if self._keep:
+                    self._chunks.append(chunk)
         except (OSError, ValueError):
             pass
         finally:
@@ -131,13 +136,24 @@ class _PipeReader:
     def join(self, deadline: float) -> None:
         self._thread.join(max(0.0, deadline - time.monotonic()))
 
-    def output(self):
-        data = b"".join(list(self._chunks))
+    def take_output(self):
+        """Return what was read and drop whatever arrives later.
+
+        A program still holding the pipe may write for hours after the call
+        has returned. The reader keeps draining the pipe, so that program does
+        not block on a full pipe, but no longer stores what it reads.
+        """
+        self._keep = False
+        data = b"".join(self._chunks)
+        self._chunks = []
         if self._encoding is None:
             return data
-        return io.TextIOWrapper(
-            io.BytesIO(data), encoding=self._encoding, errors=self._errors
-        ).read()
+        decoder = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder(self._encoding)(self._errors or "strict"),
+            translate=True,
+        )
+        # While another program holds the pipe, the data may end mid-character.
+        return decoder.decode(data, final=not self._thread.is_alive())
 
 
 def _ignore_closed_pipe(action) -> None:
@@ -257,7 +273,7 @@ def run_with_graceful_timeout(
             for reader in readers:
                 if reader is not None:
                     reader.join(deadline)
-            return tuple(reader.output() if reader is not None else None for reader in readers)
+            return tuple(reader.take_output() if reader is not None else None for reader in readers)
 
         try:
             _write_stdin(process, input)
