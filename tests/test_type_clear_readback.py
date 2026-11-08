@@ -55,10 +55,8 @@ class FakeField:
         read_only: bool = False,
         password: bool = False,
         backspace_clears: bool = True,
-        rect: tuple[int, int, int, int] = (0, 0, 1920, 1080),
     ) -> None:
         self.text = text
-        self.BoundingRectangle = service.uia.Rect(*rect)
         self.ControlType = control_type
         self.ControlTypeName = type_name
         self.Name = name
@@ -90,7 +88,12 @@ def desktop(monkeypatch: pytest.MonkeyPatch) -> Desktop:
 def focus(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[str]]:
     """Point keyboard focus at fake fields; returns the keys sent."""
 
-    def install(field: FakeField, after_typing: FakeField | None = None) -> list[str]:
+    def install(
+        field: FakeField,
+        after_typing: FakeField | None = None,
+        at_click: FakeField | None = None,
+    ) -> list[str]:
+        """at_click is the element under the click; by default the focused one."""
         keys: list[str] = []
         state = {"focused": field}
 
@@ -108,6 +111,9 @@ def focus(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[str]]:
         monkeypatch.setattr(service.uia, "SendKeys", send_keys)
         monkeypatch.setattr(service.uia, "GetFocusedControl", lambda: state["focused"])
         monkeypatch.setattr(service.uia, "ControlsAreSame", lambda a, b: a is b)
+        monkeypatch.setattr(
+            service.uia, "ControlFromPoint", lambda x, y: at_click or state["focused"]
+        )
         monkeypatch.setattr(service.uia, "GetWindowLong", lambda handle, index: field.style)
         monkeypatch.setattr(service.uia, "GetEditText", lambda handle: field.text)
         return keys
@@ -216,15 +222,16 @@ def test_caret_position_reaches_the_ends_of_a_multi_line_field(
 def test_caret_position_ignores_a_multi_line_field_away_from_the_click(
     desktop: Desktop, focus: Callable[..., list[str]]
 ) -> None:
-    # UIA can still report the element focused before the click. Ctrl+End
-    # must not go to whatever was clicked because that element is multi-line.
-    elsewhere = FakeField(
+    # UIA can still report the element focused before the click, such as the
+    # web page around a grid. Ctrl+End must not go to the grid because that
+    # page is multi-line.
+    page = FakeField(
         "line 1\nline 2",
         control_type=service.uia.ControlType.DocumentControl,
         type_name="DocumentControl",
-        rect=(500, 500, 900, 900),
     )
-    keys = focus(elsewhere)
+    grid = FakeField(control_type=service.uia.ControlType.DataGridControl, type_name="DataGrid")
+    keys = focus(page, at_click=grid)
 
     desktop.type(loc=(100, 100), text="EF", caret_position="end")
 
