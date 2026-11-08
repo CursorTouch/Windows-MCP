@@ -2119,17 +2119,21 @@ def GetClipboardFormats() -> Dict[int, str]:
 def GetClipboardText() -> str:
     with _ClipboardLock:
         if _OpenClipboard(0):
-            if ctypes.windll.user32.IsClipboardFormatAvailable(ClipboardFormat.CF_UNICODETEXT):
-                hClipboardData = ctypes.windll.user32.GetClipboardData(
-                    ClipboardFormat.CF_UNICODETEXT
-                )
-                hText = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hClipboardData))
-                text = ctypes.c_wchar_p(hText).value
-                ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hClipboardData))
+            # Close the clipboard on every path: it used to stay open when it
+            # held no text, e.g. after the user copied an image.
+            try:
+                if ctypes.windll.user32.IsClipboardFormatAvailable(ClipboardFormat.CF_UNICODETEXT):
+                    hClipboardData = ctypes.windll.user32.GetClipboardData(
+                        ClipboardFormat.CF_UNICODETEXT
+                    )
+                    hText = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hClipboardData))
+                    text = ctypes.c_wchar_p(hText).value
+                    ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hClipboardData))
+                    if text is None:
+                        return ""
+                    return text
+            finally:
                 ctypes.windll.user32.CloseClipboard()
-                if text is None:
-                    return ""
-                return text
     return ""
 
 

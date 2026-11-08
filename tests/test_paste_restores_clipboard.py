@@ -9,9 +9,11 @@ These tests use the real Windows clipboard. The user's clipboard text is put
 back afterwards.
 """
 
+import ctypes
 import struct
 import sys
 import time
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -25,6 +27,7 @@ if sys.platform == "win32":
     from windows_mcp.desktop.service import Desktop
 
 LONG_TEXT = "typed through the clipboard because it is long"
+DIB = struct.pack("<IiiHHIIiiII", 40, 2, 2, 1, 32, 0, 16, 0, 0, 0, 0) + bytes(range(16))
 
 
 def _open() -> None:
@@ -42,7 +45,7 @@ def _open() -> None:
 
 
 @pytest.fixture(autouse=True)
-def keep_user_clipboard_text():
+def keep_user_clipboard_text() -> Iterator[None]:
     _open()
     try:
         saved = (
@@ -58,17 +61,17 @@ def keep_user_clipboard_text():
 
 
 @pytest.fixture
-def pasted(monkeypatch):
+def pasted(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[str]]:
     """Run Type's paste path; return the clipboard text each Ctrl+V saw."""
-    seen = []
+    seen: list[str] = []
 
-    def send_keys(keys, *args, **kwargs):
+    def send_keys(keys: str, *args: object, **kwargs: object) -> None:
         assert keys == "{Ctrl}v"
         seen.append(uia.GetClipboardText())
 
     monkeypatch.setattr(service.uia, "SendKeys", send_keys)
 
-    def paste(text=LONG_TEXT):
+    def paste(text: str = LONG_TEXT) -> list[str]:
         Desktop.__new__(Desktop)._paste_text(text)
         return seen
 
@@ -79,7 +82,7 @@ def _format(name: str) -> int:
     return win32clipboard.RegisterClipboardFormat(name)
 
 
-def _put(formats: dict) -> None:
+def _put(formats: dict[int, object]) -> None:
     _open()
     try:
         win32clipboard.EmptyClipboard()
@@ -89,7 +92,7 @@ def _put(formats: dict) -> None:
         win32clipboard.CloseClipboard()
 
 
-def _read(clipboard_format):
+def _read(clipboard_format: int) -> object:
     _open()
     try:
         if not win32clipboard.IsClipboardFormatAvailable(clipboard_format):
@@ -99,20 +102,19 @@ def _read(clipboard_format):
         win32clipboard.CloseClipboard()
 
 
-def test_copied_image_is_put_back(pasted):
+def test_copied_image_is_put_back(pasted: Callable[..., list[str]]) -> None:
     # A 2x2 32-bit DIB, and a PNG as browsers put next to it.
-    dib = struct.pack("<IiiHHIIiiII", 40, 2, 2, 1, 32, 0, 16, 0, 0, 0, 0) + bytes(range(16))
     png = b"\x89PNG\r\n\x1a\n" + b"not a real png body"
-    _put({win32clipboard.CF_DIB: dib, _format("PNG"): png})
+    _put({win32clipboard.CF_DIB: DIB, _format("PNG"): png})
 
     assert pasted() == [LONG_TEXT]
 
-    assert _read(win32clipboard.CF_DIB) == dib
+    assert _read(win32clipboard.CF_DIB) == DIB
     assert _read(_format("PNG")) == png
     assert _read(win32clipboard.CF_UNICODETEXT) is None
 
 
-def test_copied_files_are_put_back(pasted):
+def test_copied_files_are_put_back(pasted: Callable[..., list[str]]) -> None:
     # What Explorer's Copy puts on the clipboard: a DROPFILES list and the
     # drop effect (1 = copy).
     names = ["C:\\Users\\Public\\a.txt", "C:\\Users\\Public\\b.txt"]
@@ -128,7 +130,7 @@ def test_copied_files_are_put_back(pasted):
     assert _read(_format("Preferred DropEffect")) == effect
 
 
-def test_copied_rich_text_keeps_its_html(pasted):
+def test_copied_rich_text_keeps_its_html(pasted: Callable[..., list[str]]) -> None:
     html = b"Version:0.9\r\nStartHTML:-1\r\nEndHTML:-1\r\n<b>bold</b>"
     _put({win32clipboard.CF_UNICODETEXT: "bold", _format("HTML Format"): html})
 
@@ -138,10 +140,10 @@ def test_copied_rich_text_keeps_its_html(pasted):
     assert _read(_format("HTML Format")).rstrip(b"\0") == html
 
 
-def test_clipboard_changed_during_the_paste_is_kept(monkeypatch):
+def test_clipboard_changed_during_the_paste_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
     _put({win32clipboard.CF_UNICODETEXT: "before"})
 
-    def send_keys(keys, *args, **kwargs):
+    def send_keys(keys: str, *args: object, **kwargs: object) -> None:
         # The user copies something while Type is pasting.
         _put({win32clipboard.CF_UNICODETEXT: "copied meanwhile"})
 
@@ -149,3 +151,14 @@ def test_clipboard_changed_during_the_paste_is_kept(monkeypatch):
     Desktop.__new__(Desktop)._paste_text(LONG_TEXT)
 
     assert _read(win32clipboard.CF_UNICODETEXT) == "copied meanwhile"
+
+
+def test_reading_text_closes_a_clipboard_that_holds_none() -> None:
+    # _paste_text checks the clipboard with GetClipboardText() after the paste.
+    # When the user had copied an image by then, the clipboard stayed open.
+    _put({win32clipboard.CF_DIB: DIB})
+
+    assert uia.GetClipboardText() == ""
+
+    # CloseClipboard fails with ERROR_CLIPBOARD_NOT_OPEN when nothing is open.
+    assert ctypes.windll.user32.CloseClipboard() == 0
