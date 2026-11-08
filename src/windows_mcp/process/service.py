@@ -18,7 +18,7 @@ def list_processes(
     # A slice with limit 0 is empty and a negative one drops processes from the
     # end, so these said "No processes found." or left out the last few.
     if limit < 1:
-        return "Error: limit must be at least 1."
+        raise ValueError(f"limit must be at least 1, got {limit}")
 
     import psutil
     from tabulate import tabulate

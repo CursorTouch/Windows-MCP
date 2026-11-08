@@ -83,13 +83,29 @@ def test_system_idle_process_is_not_listed(processes):
 
 
 @pytest.mark.parametrize("limit", [0, -1, -2])
-def test_limit_below_one_is_refused(processes, limit):
+def test_limit_below_one_is_refused(processes: list[FakeProcess], limit: int) -> None:
     # limit=0 used to say "No processes found." with three processes running,
     # and limit=-1 listed all but the last one.
-    assert list_processes(sort_by="name", limit=limit) == "Error: limit must be at least 1."
+    with pytest.raises(ValueError, match="limit must be at least 1"):
+        list_processes(sort_by="name", limit=limit)
 
 
-def test_limit_one_lists_one_process(processes):
+def test_process_tool_reports_a_bad_limit_as_an_error(processes: list[FakeProcess]) -> None:
+    # Raised, not returned, so the MCP result carries isError=true.
+    import asyncio
+
+    from fastmcp import FastMCP
+    from fastmcp.exceptions import ToolError
+
+    from windows_mcp.tools import process as process_tool
+
+    mcp = FastMCP("t")
+    process_tool.register(mcp, get_desktop=lambda: None, get_analytics=lambda: None)
+    with pytest.raises(ToolError, match="limit must be at least 1"):
+        asyncio.run(mcp.call_tool("Process", {"mode": "list", "limit": 0}))
+
+
+def test_limit_one_lists_one_process(processes: list[FakeProcess]) -> None:
     assert _rows(list_processes(sort_by="name", limit=1)) == [
         ["200", "busy.exe", "97.5%", "10.0", "MB"]
     ]
