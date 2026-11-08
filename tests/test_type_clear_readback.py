@@ -55,8 +55,10 @@ class FakeField:
         read_only: bool = False,
         password: bool = False,
         backspace_clears: bool = True,
+        rect: tuple[int, int, int, int] = (0, 0, 1920, 1080),
     ) -> None:
         self.text = text
+        self.BoundingRectangle = service.uia.Rect(*rect)
         self.ControlType = control_type
         self.ControlTypeName = type_name
         self.Name = name
@@ -209,6 +211,24 @@ def test_caret_position_reaches_the_ends_of_a_multi_line_field(
     desktop.type(loc=(100, 100), text="EF", caret_position=caret_position)
 
     assert keys == [key, "E", "F"]
+
+
+def test_caret_position_ignores_a_multi_line_field_away_from_the_click(
+    desktop: Desktop, focus: Callable[..., list[str]]
+) -> None:
+    # UIA can still report the element focused before the click. Ctrl+End
+    # must not go to whatever was clicked because that element is multi-line.
+    elsewhere = FakeField(
+        "line 1\nline 2",
+        control_type=service.uia.ControlType.DocumentControl,
+        type_name="DocumentControl",
+        rect=(500, 500, 900, 900),
+    )
+    keys = focus(elsewhere)
+
+    desktop.type(loc=(100, 100), text="EF", caret_position="end")
+
+    assert keys[0] == "{End}"
 
 
 @pytest.mark.parametrize(("caret_position", "key"), [("start", "{Home}"), ("end", "{End}")])

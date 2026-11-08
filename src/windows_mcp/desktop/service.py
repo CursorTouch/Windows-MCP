@@ -869,8 +869,15 @@ class Desktop:
             key = "{Home}" if caret_position == "start" else "{End}"
             # In a multi-line field Home and End stop at the ends of the clicked
             # line; Ctrl+Home and Ctrl+End reach the start and end of the text.
+            # UIA may still report the element focused before the click, and
+            # Ctrl+End means something else in a grid or list, so the focused
+            # element must be the one under the click.
             field = self._focused_control()
-            if field is not None and self._is_multiline(field):
+            if (
+                field is not None
+                and self._contains_point(field, x, y)
+                and self._is_multiline(field)
+            ):
                 key = "{Ctrl}" + key
             owner.checkpoint_current()
             uia.SendKeys(key, waitTime=0.05)
@@ -913,6 +920,13 @@ class Desktop:
             return uia.GetFocusedControl()
         except Exception:
             return None
+
+    @staticmethod
+    def _contains_point(control, x: int, y: int) -> bool:
+        try:
+            return bool(control.BoundingRectangle.contains(x, y))
+        except Exception:
+            return False
 
     @staticmethod
     def _describe(control) -> str:
