@@ -1,7 +1,11 @@
+import errno
+import io
 import logging
 import re
 import signal
 import subprocess
+import threading
+import time
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
 
@@ -86,6 +90,78 @@ def check_pid_exists(pid: int) -> bool:
         return False
 
 
+#: How long to keep reading the output pipes after the process has exited. A
+#: program the command started may hold inherited copies of the pipes (#578);
+#: EOF then waits for that program, but what the process itself wrote is
+#: already in the pipe and is read at once.
+PIPE_DRAIN_SECONDS = 0.5
+
+
+class _PipeReader:
+    """Read one output pipe on a thread, keeping what has arrived so far.
+
+    ``Popen.communicate()`` returns only at EOF on every pipe. A program the
+    command started without waiting for it, and that inherited the pipe
+    handles (``Start-Process`` with ``-RedirectStandardOutput`` does this),
+    keeps the pipe open until it exits, so the call waited for that program.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._chunks: list[bytes] = []
+        # In text mode, read the bytes and decode at the end, as communicate() does.
+        self._encoding = getattr(stream, "encoding", None)
+        self._errors = getattr(stream, "errors", None)
+        self._thread = threading.Thread(target=self._read, daemon=True)
+        self._thread.start()
+
+    def _read(self):
+        raw = getattr(self._stream, "buffer", self._stream)
+        try:
+            while chunk := raw.read1(65536):
+                self._chunks.append(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._stream.close()
+            except (OSError, ValueError):
+                pass
+
+    def join(self, deadline: float) -> None:
+        self._thread.join(max(0.0, deadline - time.monotonic()))
+
+    def output(self):
+        data = b"".join(list(self._chunks))
+        if self._encoding is None:
+            return data
+        return io.TextIOWrapper(
+            io.BytesIO(data), encoding=self._encoding, errors=self._errors
+        ).read()
+
+
+def _ignore_closed_pipe(action) -> None:
+    """Run *action*, ignoring the errors ``Popen.communicate()`` ignores when
+    the child stopped reading its stdin."""
+    try:
+        action()
+    except BrokenPipeError:
+        pass
+    except OSError as exc:
+        # Windows reports EINVAL when the child exited or closed the pipe.
+        if exc.errno != errno.EINVAL:
+            raise
+
+
+def _write_stdin(process: subprocess.Popen, input) -> None:
+    """Send *input* and close stdin, as ``Popen.communicate()`` does."""
+    if process.stdin is None:
+        return
+    if input:
+        _ignore_closed_pipe(lambda: process.stdin.write(input))
+    _ignore_closed_pipe(process.stdin.close)
+
+
 def run_with_graceful_timeout(
         *popenargs,
         input=None,
@@ -132,6 +208,12 @@ def run_with_graceful_timeout(
            terminate the whole process tree via ``taskkill /T /F``.
 
         Related issues: #124, #146
+
+        The call returns when the process exits, not when its output pipes
+        reach EOF. A program the command left running (``Start-Process`` with
+        ``-RedirectStandardOutput``) inherits the pipes and holds them open
+        until it exits; the output the process wrote is read for up to
+        ``PIPE_DRAIN_SECONDS`` after it exits (#578).
     """
 
     if input is not None:
@@ -161,9 +243,25 @@ def run_with_graceful_timeout(
     kwargs["creationflags"] = creationflags
 
     with subprocess.Popen(*popenargs, **kwargs) as process:
-        stdout = stderr = None
+        # Wait for the process, not for EOF on its pipes (#578). The readers own
+        # the streams from here on and close them at EOF: Popen.__exit__ would
+        # otherwise block closing a pipe that a reader is still waiting on.
+        readers = []
+        for name in ("stdout", "stderr"):
+            stream = getattr(process, name)
+            readers.append(_PipeReader(stream) if stream is not None else None)
+            setattr(process, name, None)
+
+        def collect_output():
+            deadline = time.monotonic() + PIPE_DRAIN_SECONDS
+            for reader in readers:
+                if reader is not None:
+                    reader.join(deadline)
+            return tuple(reader.output() if reader is not None else None for reader in readers)
+
         try:
-            stdout, stderr = process.communicate(input=input, timeout=timeout)
+            _write_stdin(process, input)
+            process.wait(timeout=timeout)
 
         except subprocess.TimeoutExpired as exc1:
             # Try graceful shutdown first
@@ -174,7 +272,8 @@ def run_with_graceful_timeout(
                 logger.debug('Failed to send CTRL_BREAK_EVENT, attempting to terminate process.')
 
             try:
-                exc1.stdout, exc1.stderr = process.communicate(timeout=grace_period)
+                process.wait(timeout=grace_period)
+                exc1.stdout, exc1.stderr = collect_output()
                 logger.debug("Process exited after CTRL_BREAK, re-raising original TimeoutExpired.")
                 exc1.add_note("Process exited after graceful CTRL_BREAK shutdown.")
                 raise exc1  # (1)
@@ -196,10 +295,11 @@ def run_with_graceful_timeout(
                 )
 
                 try:
-                    exc2.stdout, exc2.stderr = process.communicate(timeout=grace_period)
+                    process.wait(timeout=grace_period)
                 except subprocess.TimeoutExpired:
                     # Do not replace the original timeout exception
                     pass
+                exc2.stdout, exc2.stderr = collect_output()
 
                 exc2.add_note(
                     f"Process killed after failing to exit gracefully within {grace_period} seconds."
@@ -218,6 +318,7 @@ def run_with_graceful_timeout(
             )
             raise
 
+        stdout, stderr = collect_output()
         retcode = process.poll()
         if check and retcode:
             raise subprocess.CalledProcessError(
