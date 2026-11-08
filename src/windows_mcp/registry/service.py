@@ -55,7 +55,9 @@ def get_value(path: str, name: str) -> str:
     response, status = PowerShellExecutor.execute_command(command)
     if status != 0:
         return f'Error reading registry: {response.strip()}'
-    kind, _, value = response.rstrip("\r\n").partition("\n")
+    # Drop only the line break Write-Output adds; the value may end in its own.
+    kind, _, value = response.partition("\n")
+    value = value.removesuffix("\n").removesuffix("\r")
     return f'Registry value [{path}] "{name}" (type: {kind.strip()}) = {value}'
 
 

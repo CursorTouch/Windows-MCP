@@ -9,6 +9,7 @@ read with get and written back with set lost its variables.
 import sys
 import uuid
 import winreg
+from collections.abc import Iterator
 
 import pytest
 
@@ -20,7 +21,7 @@ SUBKEY_PREFIX = r"Software\windows-mcp-test-"
 
 
 @pytest.fixture
-def key():
+def key() -> Iterator[str]:
     subkey = SUBKEY_PREFIX + uuid.uuid4().hex
     yield subkey
     registry.delete_entry(path=f"HKCU:\\{subkey}")
@@ -31,7 +32,7 @@ def _set(subkey: str, name: str, value: str, reg_type: str) -> None:
     assert "set to" in result, result
 
 
-def _stored(subkey: str, name: str):
+def _stored(subkey: str, name: str) -> tuple[object, int]:
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey) as handle:
         return winreg.QueryValueEx(handle, name)
 
@@ -48,7 +49,7 @@ def _stored(subkey: str, name: str):
         ("QWord", "18446744073709551615", "18446744073709551615"),
     ],
 )
-def test_get_shows_type_and_stored_value(key, reg_type, value, shown):
+def test_get_shows_type_and_stored_value(key: str, reg_type: str, value: str, shown: str) -> None:
     _set(key, "V", value, reg_type)
 
     result = registry.get_value(path=f"HKCU:\\{key}", name="V")
@@ -65,7 +66,7 @@ def test_get_shows_type_and_stored_value(key, reg_type, value, shown):
         ("DWord", "3000000000"),
     ],
 )
-def test_get_output_writes_back_unchanged(key, reg_type, value):
+def test_get_output_writes_back_unchanged(key: str, reg_type: str, value: str) -> None:
     _set(key, "V", value, reg_type)
     before = _stored(key, "V")
 
@@ -75,9 +76,19 @@ def test_get_output_writes_back_unchanged(key, reg_type, value):
     assert _stored(key, "V") == before
 
 
-def test_default_value_is_read(key):
+def test_default_value_is_read(key: str) -> None:
     _set(key, "(default)", "dflt", "String")
 
     result = registry.get_value(path=f"HKCU:\\{key}", name="(default)")
 
     assert result == f'Registry value [HKCU:\\{key}] "(default)" (type: String) = dflt'
+
+
+def test_value_ending_in_a_line_break_keeps_it(key: str) -> None:
+    # Only the line break PowerShell adds after the value is dropped.
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
+        winreg.SetValueEx(handle, "V", 0, winreg.REG_SZ, "line\r\n")
+
+    result = registry.get_value(path=f"HKCU:\\{key}", name="V")
+
+    assert result == f'Registry value [HKCU:\\{key}] "V" (type: String) = line\r\n'
