@@ -57,12 +57,19 @@ def test_decode_clixml_keeps_unparseable_document():
     assert decode_clixml(text) == '<Objs Version="1.1.0.1"><S S="Error">a</Objs>'
 
 
+@pytest.mark.parametrize("message", ["Cannot find path", "找不到路径"])
+def test_decode_clixml_preserves_localized_error_text(message):
+    text = f'#< CLIXML\r\n<Objs><S S="Error">{message}</S></Objs>'
+    assert decode_clixml(text) == message
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="runs Windows PowerShell")
-def test_failing_command_returns_readable_error():
+def test_failing_command_returns_text_with_error_id():
     output, status = PowerShellExecutor.execute_command(
         "Get-Item -LiteralPath 'C:\\windows-mcp-no-such-item'", shell="powershell"
     )
     assert status != 0
     assert "CLIXML" not in output
     assert "<Objs" not in output
-    assert "Cannot find path 'C:\\windows-mcp-no-such-item'" in output
+    assert "C:\\windows-mcp-no-such-item" in output
+    assert "PathNotFound" in output
