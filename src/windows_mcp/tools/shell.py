@@ -5,36 +5,39 @@ from windows_mcp.infrastructure import with_analytics
 from windows_mcp.powershell import COMMAND_TIMED_OUT, PowerShellExecutor
 from fastmcp import Context
 
-#: Rough length of the truncation marker inserted between the kept head and
-#: tail, used to keep the capped result near the requested cap.
-_MARKER_RESERVE = 220
-
-
 def cap_output(text: str, max_output: int) -> str:
     """Keep the head and the tail of *text* when it exceeds *max_output* chars.
 
     MCP clients cap the size of a tool result and pass none of it to the model
-    when the cap is exceeded (#583), so a command that printed hundreds of
+    when the cap is exceeded, so a command that printed hundreds of
     kilobytes returned nothing usable. Keeping both ends preserves the leading
     progress and the trailing errors and summary, where the useful information
     usually lives — the tail gets the larger share.
     """
     if max_output <= 0 or len(text) <= max_output:
         return text
-    budget = max_output - _MARKER_RESERVE
-    if budget < 2:
-        # A cap too small to hold anything besides the marker; leave as-is.
-        return text
+    if max_output < 5:
+        return text[:max_output]
+
+    def make_marker(omitted: int) -> str:
+        return (
+            f"\n...[Output truncated: {omitted:,} of {len(text):,} characters omitted. "
+            "Re-run the command writing its output to a file (for example "
+            "'... | Out-File -Encoding utf8 <path>') and read that file in parts with "
+            "the FileSystem tool's offset/limit, or raise max_output (0 disables "
+            "capping).]...\n"
+        )
+
+    # Using the largest possible omission count gives an upper bound on the
+    # marker length; the final marker can only be shorter.
+    marker = make_marker(len(text))
+    if len(marker) + 2 > max_output:
+        marker = "..."
+    budget = max_output - len(marker)
     head = max(budget * 2 // 5, 1)
-    tail = max(budget - head, 1)
-    omitted = len(text) - head - tail
-    marker = (
-        f"\n...[Output truncated: {omitted:,} of {len(text):,} characters omitted. "
-        "Re-run the command writing its output to a file (for example "
-        "'... | Out-File -Encoding utf8 <path>') and read that file in parts with "
-        "the FileSystem tool's offset/limit, or raise max_output (0 disables "
-        "capping).]...\n"
-    )
+    tail = budget - head
+    if marker != "...":
+        marker = make_marker(len(text) - head - tail)
     return text[:head] + marker + text[-tail:]
 
 

@@ -55,14 +55,24 @@ def test_cap_output_keeps_more_of_the_tail_than_the_head():
     # Distinct halves so the exact split is observable.
     text = "h" * 5000 + "t" * 5000
     capped = cap_output(text, 1000)
-    budget = 1000 - shell_module._MARKER_RESERVE
-    assert capped.startswith("h" * (budget * 2 // 5))
-    assert capped.endswith("t" * (budget - budget * 2 // 5))
+    head_length = len(capped) - len(capped.lstrip("h"))
+    tail_length = len(capped) - len(capped.rstrip("t"))
+    assert head_length > 0
+    assert tail_length > head_length
 
 
-def test_cap_output_leaves_text_alone_when_smaller_than_the_marker():
+def test_cap_output_uses_short_marker_when_limit_is_small():
     text = "x" * 100
-    assert cap_output(text, 50) == text
+    capped = cap_output(text, 50)
+    assert len(capped) <= 50
+    assert capped.startswith("x")
+    assert capped.endswith("x")
+
+
+def test_cap_output_never_exceeds_requested_limit():
+    text = "HEAD" + "x" * 40_000 + "TAIL"
+    for limit in (1, 10, 31, 32, 50, 220, 1000):
+        assert len(cap_output(text, limit)) <= limit
 
 
 # ---------------------------------------------------------------------------
