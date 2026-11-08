@@ -1,5 +1,6 @@
-from windows_mcp.powershell.service import PowerShellExecutor
+from windows_mcp.powershell.service import COMMAND_TIMED_OUT, PowerShellExecutor
 
 __all__ = [
-    'PowerShellExecutor',
+    "COMMAND_TIMED_OUT",
+    "PowerShellExecutor",
 ]

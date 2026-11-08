@@ -1,4 +1,4 @@
-""" PowerShell command executor service """
+"""PowerShell command executor service"""
 
 import base64
 import ctypes
@@ -8,13 +8,38 @@ import os
 import winreg
 import shutil
 import subprocess
+from time import perf_counter
 
 from windows_mcp.desktop.utils import is_elevated
 from windows_mcp.powershell.utils import decode_clixml, run_with_graceful_timeout
 
-__all__ = ["PowerShellExecutor"]
+__all__ = ["COMMAND_TIMED_OUT", "PowerShellExecutor"]
 
 logger = logging.getLogger(__name__)
+
+#: Status returned when the tool's timeout ended the command. Windows exit
+#: codes are unsigned, so no real process can exit with this value, letting
+#: callers tell a timeout apart from an ordinary failure (#583).
+COMMAND_TIMED_OUT = -1
+
+
+def _timeout_partial_output(exc: subprocess.TimeoutExpired) -> str:
+    """Decode whatever the timed-out command printed before it was ended.
+
+    ``run_with_graceful_timeout`` refills ``exc.stdout``/``exc.stderr`` with the
+    output gathered during its graceful-shutdown attempts; the plain timeout
+    path used to drop it.
+    """
+    chunks: list[str] = []
+    for stream in (exc.stdout, exc.stderr):
+        if not stream:
+            continue
+        if isinstance(stream, bytes):
+            stream = stream.decode("utf-8", errors="replace")
+        chunk = decode_clixml(stream).strip()
+        if chunk:
+            chunks.append(chunk)
+    return "\n".join(chunks)
 
 
 def _read_reg_env(hkey: int, subkey: str) -> tuple[dict[str, str], str, str]:
@@ -220,7 +245,7 @@ class PowerShellExecutor:
 
     @staticmethod
     def execute_command(
-            command: str, timeout: int = 10, shell: str | None = None
+        command: str, timeout: int = 10, shell: str | None = None
     ) -> tuple[str, int]:
         try:
             # $OutputEncoding: controls how PS5.1 encodes output written to its stdout pipe.
@@ -248,6 +273,7 @@ class PowerShellExecutor:
                 args.extend(["-OutputFormat", "Text"])
             args.extend(["-EncodedCommand", encoded])
 
+            started_at = perf_counter()
             result = run_with_graceful_timeout(
                 args,
                 stdin=subprocess.DEVNULL,  # Prevent child processes from inheriting the MCP pipe stdin
@@ -272,8 +298,22 @@ class PowerShellExecutor:
                     "The Windows-MCP server is currently running at a lower integrity level."
                 )
             return output, result.returncode
-        except subprocess.TimeoutExpired:
-            return "Command execution timed out", 1
+        except subprocess.TimeoutExpired as exc:
+            # Report the timeout under a status no real process can exit with
+            # (#583): the command may have done part of its work, and retrying
+            # with a longer timeout is the usual fix — a different reaction
+            # than for a command that ran and failed. Include how long it ran
+            # and whatever it printed before ending.
+            elapsed = perf_counter() - started_at
+            partial = _timeout_partial_output(exc)
+            message = (
+                f"Command execution timed out after {elapsed:.1f}s (timeout limit: {timeout}s)"
+            )
+            if partial:
+                message += f". Output collected before the timeout:\n{partial}"
+            else:
+                message += ". No output was collected before the timeout."
+            return message, COMMAND_TIMED_OUT
         except Exception as e:
             # WinError 2 does not say which file was missing, so name the shell.
             logger.warning("PowerShell command failed to run (shell=%s)", shell, exc_info=True)
