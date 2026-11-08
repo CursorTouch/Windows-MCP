@@ -1,12 +1,13 @@
 import codecs
 import errno
-import io
 import logging
 import re
 import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from typing import IO
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
 
@@ -107,24 +108,26 @@ class _PipeReader:
     keeps the pipe open until it exits, so the call waited for that program.
     """
 
-    def __init__(self, stream):
+    def __init__(self, stream: IO) -> None:
         self._stream = stream
         self._chunks: list[bytes] = []
         self._keep = True
+        self._lock = threading.Lock()
         # In text mode, read the bytes and decode at the end, as communicate() does.
         self._encoding = getattr(stream, "encoding", None)
         self._errors = getattr(stream, "errors", None)
         self._thread = threading.Thread(target=self._read, daemon=True)
         self._thread.start()
 
-    def _read(self):
+    def _read(self) -> None:
         raw = getattr(self._stream, "buffer", self._stream)
         # An unbuffered pipe (bufsize=0) is a FileIO, which has no read1().
         read = getattr(raw, "read1", raw.read)
         try:
             while chunk := read(65536):
-                if self._keep:
-                    self._chunks.append(chunk)
+                with self._lock:
+                    if self._keep:
+                        self._chunks.append(chunk)
         except (OSError, ValueError):
             pass
         finally:
@@ -136,27 +139,31 @@ class _PipeReader:
     def join(self, deadline: float) -> None:
         self._thread.join(max(0.0, deadline - time.monotonic()))
 
-    def take_output(self):
-        """Return what was read and drop whatever arrives later.
+    def stop_keeping(self) -> None:
+        """Keep draining the pipe but drop whatever arrives from now on.
 
         A program still holding the pipe may write for hours after the call
-        has returned. The reader keeps draining the pipe, so that program does
-        not block on a full pipe, but no longer stores what it reads.
+        has returned. Draining keeps it from blocking on a full pipe.
         """
-        self._keep = False
-        data = b"".join(self._chunks)
-        self._chunks = []
+        with self._lock:
+            self._keep = False
+
+    def take_output(self) -> bytes | str:
+        """Return what was read, and drop whatever arrives later."""
+        with self._lock:
+            self._keep = False
+            data = b"".join(self._chunks)
+            self._chunks = []
         if self._encoding is None:
             return data
-        decoder = io.IncrementalNewlineDecoder(
-            codecs.getincrementaldecoder(self._encoding)(self._errors or "strict"),
-            translate=True,
-        )
+        decoder = codecs.getincrementaldecoder(self._encoding)(self._errors or "strict")
         # While another program holds the pipe, the data may end mid-character.
-        return decoder.decode(data, final=not self._thread.is_alive())
+        text = decoder.decode(data, final=not self._thread.is_alive())
+        # Universal newlines, as a text-mode pipe gives them.
+        return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _ignore_closed_pipe(action) -> None:
+def _ignore_closed_pipe(action: Callable[[], object]) -> None:
     """Run *action*, ignoring the errors ``Popen.communicate()`` ignores when
     the child stopped reading its stdin."""
     try:
@@ -169,7 +176,7 @@ def _ignore_closed_pipe(action) -> None:
             raise
 
 
-def _write_stdin(process: subprocess.Popen, input) -> None:
+def _write_stdin(process: subprocess.Popen, input: bytes | str | None) -> None:
     """Send *input* and close stdin, as ``Popen.communicate()`` does."""
     if process.stdin is None:
         return
@@ -268,12 +275,20 @@ def run_with_graceful_timeout(
             readers.append(_PipeReader(stream) if stream is not None else None)
             setattr(process, name, None)
 
-        def collect_output():
+        def stop_keeping() -> None:
+            for reader in readers:
+                if reader is not None:
+                    reader.stop_keeping()
+
+        def collect_output() -> tuple[bytes | str | None, bytes | str | None]:
             deadline = time.monotonic() + PIPE_DRAIN_SECONDS
             for reader in readers:
                 if reader is not None:
                     reader.join(deadline)
-            return tuple(reader.take_output() if reader is not None else None for reader in readers)
+            # Stop both before decoding, which may raise.
+            stop_keeping()
+            stdout, stderr = (r.take_output() if r is not None else None for r in readers)
+            return stdout, stderr
 
         try:
             _write_stdin(process, input)
@@ -325,6 +340,8 @@ def run_with_graceful_timeout(
         except BaseException:
             # Keep cleanup strategy consistent with timeout path
             logger.debug('Other exception occurred, attempting to kill process...')
+            # A program left running may hold the pipes; do not store its output.
+            stop_keeping()
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,

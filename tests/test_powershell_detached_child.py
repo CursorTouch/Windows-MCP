@@ -50,7 +50,8 @@ def test_returns_when_the_process_exits(timeout):
     try:
         assert psutil.pid_exists(grandchild), "the grandchild should still hold the pipes"
         assert result.returncode == 0
-        assert elapsed < 3, f"waited {elapsed:.1f}s for the grandchild"
+        # The grandchild runs 20 s; allow slow process startup on CI.
+        assert elapsed < 8, f"waited {elapsed:.1f}s for the grandchild"
     finally:
         _kill(grandchild)
 
@@ -60,16 +61,17 @@ def test_powershell_start_process_with_redirect_returns_at_once(tmp_path):
     # and the started program keeps the inherited pipes until it ends.
     log = tmp_path / "ping.log"
     command = (
-        "Start-Process cmd.exe -ArgumentList '/c','ping -n 8 127.0.0.1' "
+        "Start-Process cmd.exe -ArgumentList '/c','ping -n 15 127.0.0.1' "
         f"-RedirectStandardOutput '{log}' -WindowStyle Hidden; 'started'"
     )
 
     started = time.monotonic()
-    output, status = PowerShellExecutor.execute_command(command, timeout=4)
+    output, status = PowerShellExecutor.execute_command(command, timeout=10)
     elapsed = time.monotonic() - started
 
     assert (output.strip(), status) == ("started", 0)
-    assert elapsed < 3, f"waited {elapsed:.1f}s for ping"
+    # ping runs about 14 s; allow slow PowerShell startup on CI.
+    assert elapsed < 8, f"waited {elapsed:.1f}s for ping"
 
 
 def test_output_written_before_exit_is_kept():
@@ -154,3 +156,41 @@ def test_text_cut_mid_character_by_a_program_still_holding_the_pipe():
         assert reader.take_output() == "ok\n"
     finally:
         os.close(write_fd)
+
+
+def test_text_ending_in_cr_keeps_its_line_break_while_the_pipe_is_held():
+    from windows_mcp.powershell.utils import _PipeReader
+
+    read_fd, write_fd = os.pipe()
+    reader = _PipeReader(io.TextIOWrapper(open(read_fd, "rb"), encoding="utf-8"))
+    try:
+        os.write(write_fd, b"done\r")
+        _wait_for(lambda: reader._chunks)
+
+        assert reader.take_output() == "done\n"
+    finally:
+        os.close(write_fd)
+
+
+def test_readers_stop_keeping_output_when_the_call_raises(monkeypatch):
+    from windows_mcp.powershell import utils
+
+    stopped = []
+    real_stop = utils._PipeReader.stop_keeping
+
+    def spy(self):
+        stopped.append(self)
+        real_stop(self)
+
+    def interrupted_wait(self, timeout=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(utils._PipeReader, "stop_keeping", spy)
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupted_wait)
+    with pytest.raises(KeyboardInterrupt):
+        run_with_graceful_timeout(
+            [sys.executable, "-c", "import time; time.sleep(5)"], capture_output=True
+        )
+    monkeypatch.undo()
+
+    assert len(stopped) == 2
