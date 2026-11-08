@@ -540,6 +540,11 @@ def _run_overlay(
         )
 
         glow_rgba = _render_glow_rgba(width, height, local_rects, outward=False)
+        # Premultiply once. Each frame then fades the whole window through the
+        # blend function's SourceConstantAlpha, which Windows applies to the
+        # premultiplied colour and the per-pixel alpha alike (BLENDFUNCTION
+        # remarks), so the per-frame work no longer grows with the bitmap.
+        glow_bgra = _premultiplied_bgra(glow_rgba, 1.0)
 
         logger.info(
             "screenshot flash overlay started: %dx%d layered window at (%d,%d) for %d rect(s)",
@@ -559,11 +564,8 @@ def _run_overlay(
             intensity = _intensity_at(elapsed_ms / _DURATION_MS, full_screen)
             intensity_q = round(intensity * _INTENSITY_QUANT)
             if intensity_q != last_intensity_q:
-                if intensity < _MIN_VISIBLE_INTENSITY:
-                    bgra = b"\x00" * (width * height * 4)
-                else:
-                    bgra = _premultiplied_bgra(glow_rgba, intensity)
-                _push_bitmap(hwnd, union_left, union_top, width, height, bgra)
+                opacity = 0 if intensity < _MIN_VISIBLE_INTENSITY else round(intensity * 255)
+                _push_bitmap(hwnd, union_left, union_top, width, height, glow_bgra, opacity=opacity)
                 last_intensity_q = intensity_q
             _pump_messages(hwnd)
             time.sleep(_FRAME_INTERVAL_MS / 1000)
