@@ -479,19 +479,20 @@ class Desktop:
         """Find a window by fuzzy name match. Returns (window, error_msg).
         If the returned window is None, error_msg describes the failure reason.
 
-        If refresh_state is True, always refresh desktop_state before searching;
-        otherwise refresh only when desktop_state is absent or empty.
+        If refresh_state is True, always list the windows again before searching;
+        otherwise do so only when desktop_state is absent or empty.
         """
         if refresh_state or self.desktop_state is None or not self.desktop_state.windows:
-            self.get_state()
-        if self.desktop_state is None:
-            return None, "Failed to get desktop state. Please try again."
-
-        window_list = [
-            w
-            for w in [self.desktop_state.active_window] + (self.desktop_state.windows or [])
-            if w is not None
-        ]
+            # Matching a title needs only the top-level windows. get_state() would also walk
+            # the UI tree of every window, and one app that does not answer a UIA request
+            # can hold that walk for minutes (#577).
+            window_list, _ = self.get_windows()
+        else:
+            window_list = [
+                w
+                for w in [self.desktop_state.active_window] + (self.desktop_state.windows or [])
+                if w is not None
+            ]
         if not window_list:
             return None, "No windows found on the desktop."
 
