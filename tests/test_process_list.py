@@ -80,3 +80,16 @@ def test_cpu_sort_measures_usage_on_the_first_call(processes):
 def test_system_idle_process_is_not_listed(processes):
     for sort_by in ("cpu", "memory", "name"):
         assert "System Idle Process" not in list_processes(sort_by=sort_by, limit=10)
+
+
+@pytest.mark.parametrize("limit", [0, -1, -2])
+def test_limit_below_one_is_refused(processes, limit):
+    # limit=0 used to say "No processes found." with three processes running,
+    # and limit=-1 listed all but the last one.
+    assert list_processes(sort_by="name", limit=limit) == "Error: limit must be at least 1."
+
+
+def test_limit_one_lists_one_process(processes):
+    assert _rows(list_processes(sort_by="name", limit=1)) == [
+        ["200", "busy.exe", "97.5%", "10.0", "MB"]
+    ]

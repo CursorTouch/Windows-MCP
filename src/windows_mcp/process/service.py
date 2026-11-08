@@ -15,6 +15,11 @@ def list_processes(
     sort_by: Literal["memory", "cpu", "name"] = "memory",
     limit: int = 20,
 ) -> str:
+    # A slice with limit 0 is empty and a negative one drops processes from the
+    # end, so these said "No processes found." or left out the last few.
+    if limit < 1:
+        return "Error: limit must be at least 1."
+
     import psutil
     from tabulate import tabulate
 
