@@ -187,6 +187,41 @@ def test_clear_treats_a_multiline_win32_edit_as_multi_line(
     assert keys[:3] == ["{Ctrl}{Home}", "{Ctrl}{Shift}{End}", "{Back}"]
 
 
+@pytest.mark.parametrize(
+    ("caret_position", "key"), [("start", "{Ctrl}{Home}"), ("end", "{Ctrl}{End}")]
+)
+@pytest.mark.parametrize("kind", ["document", "win32-multiline-edit"])
+def test_caret_position_reaches_the_ends_of_a_multi_line_field(
+    desktop: Desktop, focus: Callable[..., list[str]], caret_position: str, key: str, kind: str
+) -> None:
+    # Home and End stop at the ends of the clicked line, so "end" typed into
+    # the middle of a document instead of after its last line.
+    if kind == "document":
+        field = FakeField(
+            "line 1\nline 2",
+            control_type=service.uia.ControlType.DocumentControl,
+            type_name="DocumentControl",
+        )
+    else:
+        field = FakeField("line 1\r\nline 2", class_name="Edit", handle=0x1234, style=ES_MULTILINE)
+    keys = focus(field)
+
+    desktop.type(loc=(100, 100), text="EF", caret_position=caret_position)
+
+    assert keys == [key, "E", "F"]
+
+
+@pytest.mark.parametrize(("caret_position", "key"), [("start", "{Home}"), ("end", "{End}")])
+def test_caret_position_uses_home_and_end_in_a_single_line_field(
+    desktop: Desktop, focus: Callable[..., list[str]], caret_position: str, key: str
+) -> None:
+    keys = focus(FakeField("abc"))
+
+    desktop.type(loc=(100, 100), text="EF", caret_position=caret_position)
+
+    assert keys == [key, "E", "F"]
+
+
 def test_read_back_through_wm_gettext_for_a_win32_edit_without_patterns(
     desktop: Desktop, focus: Callable[..., list[str]]
 ) -> None:

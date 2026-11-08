@@ -263,7 +263,7 @@ def register(
 
     @mcp.tool(
         name="Type",
-        description="Types text at specified coordinates [x, y] or passing a UI element's label/id. Set clear=True to clear existing text first (Home, Shift+End, Backspace; never Ctrl+A, which many apps treat as 'mark every record'), False to append. The answer says how the field was cleared and what it reads back when the field exposes its text, and warns when focus moved away while typing (e.g. a message box took the keystrokes). Set press_enter=True to submit after typing. Set caret_position to 'start' (beginning), 'end' (end), or 'idle' (default). Provide either loc or label. clear and press_enter accept only true or false. An empty text types nothing, so combine it with clear=True to just empty a field.",
+        description="Types text at specified coordinates [x, y] or passing a UI element's label/id. Set clear=True to clear existing text first (Home, Shift+End, Backspace; never Ctrl+A, which many apps treat as 'mark every record'), False to append. The answer says how the field was cleared and what it reads back when the field exposes its text, and warns when focus moved away while typing (e.g. a message box took the keystrokes). Set press_enter=True to submit after typing. Set caret_position to 'start' or 'end' to type at the beginning or end of the field's text (in multi-line fields too), or 'idle' (default) to type where the click put the caret. Provide either loc or label. clear and press_enter accept only true or false. An empty text types nothing, so combine it with clear=True to just empty a field.",
         annotations=ToolAnnotations(
             title="Type",
             readOnlyHint=False,

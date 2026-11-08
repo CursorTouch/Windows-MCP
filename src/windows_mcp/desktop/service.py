@@ -865,13 +865,15 @@ class Desktop:
         self._validate_screen_point(x, y)
         uia.Click(x, y)
         owner.record_step_current()
-        if caret_position == "start":
+        if caret_position in ("start", "end"):
+            key = "{Home}" if caret_position == "start" else "{End}"
+            # In a multi-line field Home and End stop at the ends of the clicked
+            # line; Ctrl+Home and Ctrl+End reach the start and end of the text.
+            field = self._focused_control()
+            if field is not None and self._is_multiline(field):
+                key = "{Ctrl}" + key
             owner.checkpoint_current()
-            uia.SendKeys("{Home}", waitTime=0.05)
-            owner.record_step_current()
-        elif caret_position == "end":
-            owner.checkpoint_current()
-            uia.SendKeys("{End}", waitTime=0.05)
+            uia.SendKeys(key, waitTime=0.05)
             owner.record_step_current()
         notes: list[str] = []
         target = None
