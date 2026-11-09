@@ -24,6 +24,9 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows process
 
 PYTHON = sys._base_executable
 PYTHONW = os.path.join(os.path.dirname(PYTHON), "pythonw.exe")
+needs_pythonw = pytest.mark.skipif(
+    not os.path.exists(PYTHONW), reason="needs pythonw.exe as a GUI program"
+)
 
 
 def _tagged(tag: str) -> list[psutil.Process]:
@@ -61,6 +64,7 @@ def _alive(tag: str, name: str) -> bool:
     return any(p.is_running() for p in _tagged(f"{tag}-{name}"))
 
 
+@needs_pythonw
 def test_gui_programs_are_told_apart_from_console_programs() -> None:
     gui = subprocess.Popen([PYTHONW, "-c", "import time; time.sleep(5)"])
     console = subprocess.Popen(
@@ -74,8 +78,10 @@ def test_gui_programs_are_told_apart_from_console_programs() -> None:
         console.kill()
 
 
+@needs_pythonw
 def test_timeout_keeps_programs_started_to_run_on_their_own(tag: str) -> None:
-    # PowerShell stays in a .NET sleep after CTRL_BREAK, so the force kill runs.
+    # PowerShell keeps waiting for the program that ignores CTRL_BREAK, so the
+    # force kill after the 2 s grace period runs.
     detached = _sleeper(tag, "start-process")
     gui = _sleeper(tag, "gui")
     waited = _sleeper(tag, "waited", ignore_break=True)
@@ -86,15 +92,20 @@ def test_timeout_keeps_programs_started_to_run_on_their_own(tag: str) -> None:
         f"& '{PYTHON}' -c '{waited}'"
     )
 
+    started = time.monotonic()
     output, status = PowerShellExecutor.execute_command(command, timeout=3)
+    elapsed = time.monotonic() - started
     time.sleep(0.5)
 
     assert "timed out" in output, output
+    if elapsed < 3 + 2:
+        pytest.skip("PowerShell ended on CTRL_BREAK, so the force kill did not run")
     assert _alive(tag, "start-process"), "Start-Process program was ended"
     assert _alive(tag, "gui"), "GUI program was ended"
     assert not _alive(tag, "waited"), "console program the command was running survived"
 
 
+@needs_pythonw
 def test_descendants_of_a_waited_for_program_end_with_it(tag: str) -> None:
     # A console program the command runs may start GUI helpers (a test runner
     # starting a headless browser); those are part of its work and end with it.

@@ -117,9 +117,11 @@ def _is_gui_program(process: psutil.Process) -> bool:
 def _runs_on_its_own(process: psutil.Process) -> bool:
     """Whether a program the command started is meant to outlive it.
 
-    Start-Process opens a console program in a console of its own, so it has
-    its own console host child. A GUI program has no console at all. A program
-    the command runs and waits for shares the command's console and is neither.
+    Start-Process opens a console program in a console of its own (unless
+    -NoNewWindow is given), so it has its own console host child. A GUI program
+    has no console at all. A program the command runs and waits for shares the
+    command's console and is neither; so does one from Start-Process
+    -NoNewWindow, which cannot be told apart from it.
     """
     try:
         if process.name().lower() in _CONSOLE_HOSTS:
@@ -135,11 +137,15 @@ def kill_command_tree(pid: int) -> None:
     """End a timed-out command and the console programs it runs (#584).
 
     ``taskkill /T`` also ended the programs the command had started to run on
-    their own, such as a GUI program or a ``Start-Process`` console program,
-    so a timeout closed a browser or interrupted a build the script had only
-    launched. Those keep running now, with all of their descendants. The
-    programs that share the command's console, which it was waiting for, end
-    with it together with their descendants, as before.
+    their own, such as a GUI program or a ``Start-Process`` console program in
+    a window of its own, so a timeout closed a browser or interrupted a build
+    the script had only launched. Those direct children keep running now, with
+    all of their descendants. The programs that share the command's console,
+    which it was waiting for, end with it together with all of their
+    descendants, as before.
+
+    Args:
+        pid: Process ID of the command (the PowerShell process).
     """
     try:
         root = psutil.Process(pid)
