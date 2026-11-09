@@ -1,7 +1,13 @@
+import codecs
+import errno
 import logging
 import re
 import signal
 import subprocess
+import threading
+import time
+from collections.abc import Callable
+from typing import IO
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
 
@@ -86,6 +92,99 @@ def check_pid_exists(pid: int) -> bool:
         return False
 
 
+#: How long to keep reading the output pipes after the process has exited. A
+#: program the command started may hold inherited copies of the pipes (#578);
+#: EOF then waits for that program, but what the process itself wrote is
+#: already in the pipe and is read at once.
+PIPE_DRAIN_SECONDS = 0.5
+
+
+class _PipeReader:
+    """Read one output pipe on a thread, keeping what has arrived so far.
+
+    ``Popen.communicate()`` returns only at EOF on every pipe. A program the
+    command started without waiting for it, and that inherited the pipe
+    handles (``Start-Process`` with ``-RedirectStandardOutput`` does this),
+    keeps the pipe open until it exits, so the call waited for that program.
+    """
+
+    def __init__(self, stream: IO) -> None:
+        self._stream = stream
+        self._chunks: list[bytes] = []
+        self._keep = True
+        self._lock = threading.Lock()
+        # In text mode, read the bytes and decode at the end, as communicate() does.
+        self._encoding = getattr(stream, "encoding", None)
+        self._errors = getattr(stream, "errors", None)
+        self._thread = threading.Thread(target=self._read, daemon=True)
+        self._thread.start()
+
+    def _read(self) -> None:
+        raw = getattr(self._stream, "buffer", self._stream)
+        # An unbuffered pipe (bufsize=0) is a FileIO, which has no read1().
+        read = getattr(raw, "read1", raw.read)
+        try:
+            while chunk := read(65536):
+                with self._lock:
+                    if self._keep:
+                        self._chunks.append(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._stream.close()
+            except (OSError, ValueError):
+                pass
+
+    def join(self, deadline: float) -> None:
+        self._thread.join(max(0.0, deadline - time.monotonic()))
+
+    def stop_keeping(self) -> None:
+        """Keep draining the pipe but drop whatever arrives from now on.
+
+        A program still holding the pipe may write for hours after the call
+        has returned. Draining keeps it from blocking on a full pipe.
+        """
+        with self._lock:
+            self._keep = False
+
+    def take_output(self) -> bytes | str:
+        """Return what was read, and drop whatever arrives later."""
+        with self._lock:
+            self._keep = False
+            data = b"".join(self._chunks)
+            self._chunks = []
+        if self._encoding is None:
+            return data
+        decoder = codecs.getincrementaldecoder(self._encoding)(self._errors or "strict")
+        # While another program holds the pipe, the data may end mid-character.
+        text = decoder.decode(data, final=not self._thread.is_alive())
+        # Universal newlines, as a text-mode pipe gives them.
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _ignore_closed_pipe(action: Callable[[], object]) -> None:
+    """Run *action*, ignoring the errors ``Popen.communicate()`` ignores when
+    the child stopped reading its stdin."""
+    try:
+        action()
+    except BrokenPipeError:
+        pass
+    except OSError as exc:
+        # Windows reports EINVAL when the child exited or closed the pipe.
+        if exc.errno != errno.EINVAL:
+            raise
+
+
+def _write_stdin(process: subprocess.Popen, input: bytes | str | None) -> None:
+    """Send *input* and close stdin, as ``Popen.communicate()`` does."""
+    if process.stdin is None:
+        return
+    if input:
+        _ignore_closed_pipe(lambda: process.stdin.write(input))
+    _ignore_closed_pipe(process.stdin.close)
+
+
 def run_with_graceful_timeout(
         *popenargs,
         input=None,
@@ -132,6 +231,12 @@ def run_with_graceful_timeout(
            terminate the whole process tree via ``taskkill /T /F``.
 
         Related issues: #124, #146
+
+        The call returns when the process exits, not when its output pipes
+        reach EOF. A program the command left running (``Start-Process`` with
+        ``-RedirectStandardOutput``) inherits the pipes and holds them open
+        until it exits; the output the process wrote is read for up to
+        ``PIPE_DRAIN_SECONDS`` after it exits (#578).
     """
 
     if input is not None:
@@ -161,9 +266,33 @@ def run_with_graceful_timeout(
     kwargs["creationflags"] = creationflags
 
     with subprocess.Popen(*popenargs, **kwargs) as process:
-        stdout = stderr = None
+        # Wait for the process, not for EOF on its pipes (#578). The readers own
+        # the streams from here on and close them at EOF: Popen.__exit__ would
+        # otherwise block closing a pipe that a reader is still waiting on.
+        readers = []
+        for name in ("stdout", "stderr"):
+            stream = getattr(process, name)
+            readers.append(_PipeReader(stream) if stream is not None else None)
+            setattr(process, name, None)
+
+        def stop_keeping() -> None:
+            for reader in readers:
+                if reader is not None:
+                    reader.stop_keeping()
+
+        def collect_output() -> tuple[bytes | str | None, bytes | str | None]:
+            deadline = time.monotonic() + PIPE_DRAIN_SECONDS
+            for reader in readers:
+                if reader is not None:
+                    reader.join(deadline)
+            # Stop both before decoding, which may raise.
+            stop_keeping()
+            stdout, stderr = (r.take_output() if r is not None else None for r in readers)
+            return stdout, stderr
+
         try:
-            stdout, stderr = process.communicate(input=input, timeout=timeout)
+            _write_stdin(process, input)
+            process.wait(timeout=timeout)
 
         except subprocess.TimeoutExpired as exc1:
             # Try graceful shutdown first
@@ -174,7 +303,8 @@ def run_with_graceful_timeout(
                 logger.debug('Failed to send CTRL_BREAK_EVENT, attempting to terminate process.')
 
             try:
-                exc1.stdout, exc1.stderr = process.communicate(timeout=grace_period)
+                process.wait(timeout=grace_period)
+                exc1.stdout, exc1.stderr = collect_output()
                 logger.debug("Process exited after CTRL_BREAK, re-raising original TimeoutExpired.")
                 exc1.add_note("Process exited after graceful CTRL_BREAK shutdown.")
                 raise exc1  # (1)
@@ -196,10 +326,11 @@ def run_with_graceful_timeout(
                 )
 
                 try:
-                    exc2.stdout, exc2.stderr = process.communicate(timeout=grace_period)
+                    process.wait(timeout=grace_period)
                 except subprocess.TimeoutExpired:
                     # Do not replace the original timeout exception
                     pass
+                exc2.stdout, exc2.stderr = collect_output()
 
                 exc2.add_note(
                     f"Process killed after failing to exit gracefully within {grace_period} seconds."
@@ -209,6 +340,8 @@ def run_with_graceful_timeout(
         except BaseException:
             # Keep cleanup strategy consistent with timeout path
             logger.debug('Other exception occurred, attempting to kill process...')
+            # A program left running may hold the pipes; do not store its output.
+            stop_keeping()
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
@@ -218,6 +351,7 @@ def run_with_graceful_timeout(
             )
             raise
 
+        stdout, stderr = collect_output()
         retcode = process.poll()
         if check and retcode:
             raise subprocess.CalledProcessError(
