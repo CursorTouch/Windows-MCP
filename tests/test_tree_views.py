@@ -247,3 +247,15 @@ class TestSelectionMetadata:
         lines = result.splitlines()
         assert len(lines) == 3
         assert lines[-1].endswith(r'[selected:"one\r\ntwo\rthree\nfour"]')
+
+
+class TestSelectedItemMetadata:
+    """tree_traversal flags the selected radio button, tab or list/tree item with is_selected."""
+
+    def test_selected_item_is_flagged(self):
+        metadata = {"has_focused": True, "is_selected": True}
+
+        assert _node_meta_str(metadata) == "  [focused]  [selected]"
+
+    def test_unselected_item_adds_nothing(self):
+        assert _node_meta_str({"has_focused": False, "is_selected": False}) == ""

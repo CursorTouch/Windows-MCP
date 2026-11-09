@@ -650,6 +650,16 @@ class Tree:
                             except Exception:
                                 pass
 
+                            # Mark the selected radio button, tab or list/tree item. IsSelected is in
+                            # the walk's cache request; elements without SelectionItem report its
+                            # default, False.
+                            try:
+                                is_selected = node.GetCachedPropertyValue(PropertyId.SelectionItemIsSelectedProperty)
+                                if is_selected is True:
+                                    metadata['is_selected'] = True
+                            except Exception:
+                                pass
+
                             if isinstance(node,(ButtonControl,CheckBoxControl)):
                                 try:
                                     toggle_state = node.GetCachedPropertyValue(PropertyId.ToggleToggleStateProperty)
@@ -739,12 +749,6 @@ class Tree:
                                 try:
                                     is_selection_required=node.GetCachedPropertyValue(PropertyId.SelectionIsSelectionRequiredProperty)
                                     metadata['is_selection_required']=is_selection_required
-                                except Exception:
-                                    pass
-
-                                try:
-                                    is_selected=node.GetCachedPropertyValue(PropertyId.SelectionItemIsSelectedProperty)
-                                    metadata['is_selected']=is_selected
                                 except Exception:
                                     pass
 
