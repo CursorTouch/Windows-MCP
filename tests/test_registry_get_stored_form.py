@@ -92,3 +92,24 @@ def test_value_ending_in_a_line_break_keeps_it(key: str) -> None:
     result = registry.get_value(path=f"HKCU:\\{key}", name="V")
 
     assert result == f'Registry value [HKCU:\\{key}] "V" (type: String) = line\r\n'
+
+
+def test_list_shows_types_and_stored_values(key: str) -> None:
+    # List mode used Get-ItemProperty too: the ExpandString came back expanded
+    # and no type was named.
+    _set(key, "(default)", "dflt", "String")
+    _set(key, "e", r"%USERPROFILE%\bin", "ExpandString")
+    _set(key, "b", "1, 2, 255", "Binary")
+    _set(key, "d", "4294967295", "DWord")
+    _set(key, "m", "x\ny", "MultiString")
+
+    result = registry.list_key(path=f"HKCU:\\{key}")
+
+    rows = [" ".join(line.split()) for line in result.splitlines()[2:]]
+    assert rows == [
+        "(default) (String) : dflt",
+        r"e (ExpandString) : %USERPROFILE%\bin",
+        "b (Binary) : hex:01,02,ff",
+        "d (DWord) : 4294967295",
+        "m (MultiString) : {x, y}",
+    ]
