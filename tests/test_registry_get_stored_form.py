@@ -113,3 +113,20 @@ def test_list_shows_types_and_stored_values(key: str) -> None:
         "d (DWord) : 4294967295",
         "m (MultiString) : {x, y}",
     ]
+
+
+def test_list_cuts_a_long_binary_value(key: str) -> None:
+    # Format-List cut a byte array at 256 items; a hex string has to be cut
+    # by hand, or one large blob fills the whole answer.
+    _set(key, "big", ",".join(str(i % 256) for i in range(1024)), "Binary")
+    _set(key, "exact", ",".join(str(i) for i in range(256)), "Binary")
+
+    lines = registry.list_key(path=f"HKCU:\\{key}").splitlines()[2:]
+    rows = {label.rstrip(): text for label, text in (line.split(" : ", 1) for line in lines)}
+
+    first_256 = "hex:" + ",".join(f"{i:02x}" for i in range(256))
+    assert rows["big (Binary)"] == first_256 + ",... (1024 bytes)"
+    assert rows["exact (Binary)"] == first_256
+    # get mode still returns the whole value.
+    full = registry.get_value(path=f"HKCU:\\{key}", name="big").split(" = ", 1)[1]
+    assert full == "hex:" + ",".join(f"{i % 256:02x}" for i in range(1024))
