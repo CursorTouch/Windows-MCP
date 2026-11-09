@@ -337,6 +337,75 @@ class TestTreeTraversal:
             + expected_token
         )
 
+    @pytest.mark.parametrize("is_selected", [True, False])
+    @pytest.mark.parametrize(
+        ("control_type_name", "localized_control_type", "role", "role_name", "action"),
+        [
+            ("RadioButtonControl", "radio button", 45, "RadioButton", "select"),
+            ("TabItemControl", "tab item", 37, "PageTab", "click"),
+            ("ListItemControl", "list item", 34, "ListItem", "click"),
+            ("TreeItemControl", "tree item", 36, "OutlineItem", "click"),
+        ],
+    )
+    def test_selected_item_is_marked_in_the_semantic_tree(
+        self,
+        tree_instance,
+        monkeypatch,
+        control_type_name,
+        localized_control_type,
+        role,
+        role_name,
+        action,
+        is_selected,
+    ):
+        """Only the chosen radio button, tab or list/tree item is marked [selected]."""
+        item = MagicMock()
+        item.CachedIsOffscreen = False
+        item.CachedControlTypeName = control_type_name
+        item.CachedIsControlElement = True
+        item.CachedBoundingRectangle = Rect(10, 10, 110, 40)
+        item.CachedIsEnabled = True
+        item.CachedIsKeyboardFocusable = True
+        item.CachedHasKeyboardFocus = False
+        item.CachedName = "Dark"
+        item.CachedLocalizedControlType = localized_control_type
+        item.CachedAcceleratorKey = ""
+        item.CachedHelpText = ""
+        # The walk reads the role and IsSelected from its cache.
+        cached_values = {
+            PropertyId.LegacyIAccessibleRoleProperty: role,
+            PropertyId.SelectionItemIsSelectedProperty: is_selected,
+        }
+        item.GetCachedPropertyValue.side_effect = cached_values.get
+
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(
+            control_type="Window", element_type="window", name="Settings", window_name="Settings"
+        )
+        root.add_child(window)
+
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            lambda node, cache_request: [],
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {role: role_name})
+
+        tree_instance.tree_traversal(
+            item,
+            Rect(0, 0, 500, 100),
+            "Settings",
+            False,
+            [],
+            [],
+            [],
+            [],
+            current_semantic_node=window,
+        )
+
+        line = TreeState(semantic_tree_root=root).semantic_tree_to_string().splitlines()[-1]
+        expected = f'(60,25) {localized_control_type} "Dark"  [action: {action}]'
+        assert line.endswith(expected + ("  [selected]" if is_selected else ""))
+
 
 def _make_button_child(name: str, left: int) -> MagicMock:
     child = MagicMock()

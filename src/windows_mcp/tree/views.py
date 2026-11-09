@@ -57,6 +57,10 @@ def _node_meta_str(metadata: dict[str, Any]) -> str:
         parts.append("selected:all")
     elif selected_text:
         parts.append(f'selected:"{_selection_preview(selected_text)}"')
+    # The chosen radio button, tab or list/tree item; without the flag it reads exactly
+    # like the options next to it.
+    if metadata.get("is_selected"):
+        parts.append("selected")
     toggle = metadata.get("toggle_state")
     if toggle:
         parts.append(f"toggle:{toggle}")
