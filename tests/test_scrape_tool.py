@@ -96,7 +96,7 @@ def test_dom_scrape_of_a_page_that_does_not_scroll_reaches_both_ends() -> None:
 def test_firefox_dom_scrape_still_offers_to_scroll() -> None:
     # The IA2 walk has no scroll pattern, so it cannot tell whether more text follows.
     tree = Tree.__new__(Tree)
-    tree.screen_box = DOM_BOX
+    tree.desktop = SimpleNamespace(get_screen_box=lambda: DOM_BOX)
 
     def walk(windows_handles, active_window_flag, use_dom):
         tree.dom_is_ia2 = True
