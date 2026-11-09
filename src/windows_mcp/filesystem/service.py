@@ -3,6 +3,7 @@ File system service for the Windows MCP server.
 Provides structured, safe file operations as an alternative to raw Shell commands.
 """
 
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 import codecs
@@ -304,6 +305,52 @@ def _is_hidden_below(root: Path, entry: Path, cache: dict[Path, bool]) -> bool:
     return False
 
 
+def _walk(root: Path, pattern: str) -> Iterator[Path]:
+    """Yield the entries below *root* that match *pattern* at any depth.
+
+    Matches what ``root.rglob(pattern)`` matches, but does not descend into
+    directory junctions. rglob enters junctions, though not symlinks, so a
+    junction that points at one of its own ancestors (as packages linking
+    each other in a pnpm workspace do) was walked again and again until the
+    path grew too long, and every file under it was listed once per round.
+    The junction itself is still listed, like a symlink.
+    """
+    pattern_path = Path(pattern)
+    if (
+        not pattern
+        or pattern.endswith(('/', '\\'))
+        or pattern_path.anchor
+        or '..' in pattern_path.parts
+    ):
+        # rglob gives these a meaning of its own (directories only, parents, an
+        # error for an absolute pattern); keep it.
+        yield from root.rglob(pattern)
+        return
+    full_pattern = f'**/{pattern}'
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as scan:
+                entries = list(scan)
+        except OSError:
+            continue
+        for entry in entries:
+            entry_path = Path(entry.path)
+            if entry_path.relative_to(root).full_match(full_pattern):
+                yield entry_path
+            try:
+                descend = (
+                    entry.is_dir(follow_symlinks=False)
+                    and not entry.is_symlink()
+                    and not entry.is_junction()
+                )
+            except OSError:
+                descend = False
+            if descend:
+                pending.append(entry_path)
+
+
 def list_directory(path: str, pattern: str | None = None, recursive: bool = False, show_hidden: bool = False) -> str:
     """List contents of a directory."""
     dir_path = Path(path).resolve()
@@ -319,7 +366,7 @@ def list_directory(path: str, pattern: str | None = None, recursive: bool = Fals
         hidden: dict[Path, bool] = {}
 
         if recursive:
-            iterator = dir_path.rglob(pattern or '*')
+            iterator = _walk(dir_path, pattern or '*')
         else:
             iterator = dir_path.iterdir()
 
@@ -374,7 +421,7 @@ def search_files(path: str, pattern: str, recursive: bool = True) -> str:
         count = 0
 
         if recursive:
-            iterator = search_root.rglob(pattern)
+            iterator = _walk(search_root, pattern)
         else:
             iterator = search_root.glob(pattern)
 
