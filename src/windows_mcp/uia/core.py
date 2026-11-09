@@ -2119,17 +2119,21 @@ def GetClipboardFormats() -> Dict[int, str]:
 def GetClipboardText() -> str:
     with _ClipboardLock:
         if _OpenClipboard(0):
-            if ctypes.windll.user32.IsClipboardFormatAvailable(ClipboardFormat.CF_UNICODETEXT):
-                hClipboardData = ctypes.windll.user32.GetClipboardData(
-                    ClipboardFormat.CF_UNICODETEXT
-                )
-                hText = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hClipboardData))
-                text = ctypes.c_wchar_p(hText).value
-                ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hClipboardData))
+            # Close the clipboard on every path: it used to stay open when it
+            # held no text, e.g. after the user copied an image.
+            try:
+                if ctypes.windll.user32.IsClipboardFormatAvailable(ClipboardFormat.CF_UNICODETEXT):
+                    hClipboardData = ctypes.windll.user32.GetClipboardData(
+                        ClipboardFormat.CF_UNICODETEXT
+                    )
+                    hText = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hClipboardData))
+                    text = ctypes.c_wchar_p(hText).value
+                    ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hClipboardData))
+                    if text is None:
+                        return ""
+                    return text
+            finally:
                 ctypes.windll.user32.CloseClipboard()
-                if text is None:
-                    return ""
-                return text
     return ""
 
 
@@ -2165,6 +2169,90 @@ def SetClipboardText(text: str) -> bool:
             else:
                 ctypes.windll.kernel32.GlobalFree(ctypes.c_void_p(hClipboardData))
             ctypes.windll.user32.CloseClipboard()
+    return ret
+
+
+# Formats whose clipboard data is a GDI or metafile handle rather than global
+# memory, plus the private and GDI object ranges, whose handles Windows does not
+# manage. Windows synthesizes CF_BITMAP from CF_DIB, so an image survives without it.
+_CLIPBOARD_HANDLE_FORMATS = frozenset({2, 3, 9, 14, 0x80, 0x82, 0x83, 0x8E})
+_CLIPBOARD_UNMANAGED_RANGE = range(0x200, 0x400)
+# OLE's own bookkeeping: they point at the data object of the program that
+# copied, which is no longer what the clipboard holds after a restore.
+_CLIPBOARD_OLE_FORMATS = frozenset(
+    ctypes.windll.user32.RegisterClipboardFormatW(name)
+    for name in ("DataObject", "Ole Private Data")
+)
+ctypes.windll.kernel32.GlobalSize.restype = ctypes.c_size_t
+
+
+def GetClipboardSnapshot() -> List[Tuple[int, bytes]] | None:
+    """
+    Copy every clipboard format held in global memory: text, HTML, images (CF_DIB,
+    CF_DIBV5, PNG), copied files (CF_HDROP) and the formats programs register.
+    Return a list of (format, data) for SetClipboardSnapshot, or None if the
+    clipboard could not be opened.
+    """
+    snapshot = []
+    with _ClipboardLock:
+        if not _OpenClipboard(0):
+            return None
+        try:
+            clipboardFormat = 0
+            while clipboardFormat := ctypes.windll.user32.EnumClipboardFormats(clipboardFormat):
+                if (
+                    clipboardFormat in _CLIPBOARD_HANDLE_FORMATS
+                    or clipboardFormat in _CLIPBOARD_UNMANAGED_RANGE
+                    or clipboardFormat in _CLIPBOARD_OLE_FORMATS
+                ):
+                    continue
+                hData = ctypes.windll.user32.GetClipboardData(clipboardFormat)
+                if not hData:
+                    continue
+                size = ctypes.windll.kernel32.GlobalSize(ctypes.c_void_p(hData))
+                pData = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hData))
+                if not pData:
+                    continue
+                try:
+                    snapshot.append((clipboardFormat, ctypes.string_at(pData, size)))
+                finally:
+                    ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hData))
+        finally:
+            ctypes.windll.user32.CloseClipboard()
+    return snapshot
+
+
+def SetClipboardSnapshot(snapshot: List[Tuple[int, bytes]]) -> bool:
+    """
+    Replace the clipboard with a snapshot from GetClipboardSnapshot.
+    Return bool, True if succeed otherwise False.
+    """
+    ret = False
+    with _ClipboardLock:
+        if _OpenClipboard(0):
+            try:
+                ctypes.windll.user32.EmptyClipboard()
+                ret = True
+                for clipboardFormat, data in snapshot:
+                    # GMEM_MOVEABLE
+                    hData = ctypes.windll.kernel32.GlobalAlloc(0x2, max(len(data), 1))
+                    pData = None
+                    if hData:
+                        pData = ctypes.windll.kernel32.GlobalLock(ctypes.c_void_p(hData))
+                    if not pData:
+                        if hData:
+                            ctypes.windll.kernel32.GlobalFree(ctypes.c_void_p(hData))
+                        ret = False
+                        continue
+                    ctypes.memmove(pData, data, len(data))
+                    ctypes.windll.kernel32.GlobalUnlock(ctypes.c_void_p(hData))
+                    if not ctypes.windll.user32.SetClipboardData(
+                        ctypes.c_uint(clipboardFormat), ctypes.c_void_p(hData)
+                    ):
+                        ctypes.windll.kernel32.GlobalFree(ctypes.c_void_p(hData))
+                        ret = False
+            finally:
+                ctypes.windll.user32.CloseClipboard()
     return ret
 
 

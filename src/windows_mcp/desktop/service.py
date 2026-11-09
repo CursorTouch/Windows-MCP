@@ -1108,12 +1108,16 @@ class Desktop:
         """Stash text on the clipboard, Ctrl+V, restore prior clipboard.
         Plain-text only — control chars (newlines, tabs, braces) need to
         route through SendKeys instead so escape sequences are honored.
+
+        The prior clipboard is restored in every format held in memory, not
+        just as text: an image or files copied in Explorer read as "" through
+        GetClipboardText, so the user's clipboard was left holding empty text.
         """
         prior = None
         owner = get_controller()
         owner.checkpoint_current()
         try:
-            prior = uia.GetClipboardText()
+            prior = uia.GetClipboardSnapshot()
         except Exception:
             pass
         uia.SetClipboardText(text)
@@ -1128,7 +1132,7 @@ class Desktop:
             if prior is not None:
                 try:
                     if uia.GetClipboardText() == text:
-                        uia.SetClipboardText(prior)
+                        uia.SetClipboardSnapshot(prior)
                 except Exception:
                     pass
 
