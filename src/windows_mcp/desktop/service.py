@@ -1142,9 +1142,20 @@ class Desktop:
         type: Literal["horizontal", "vertical"] = "vertical",
         direction: Literal["up", "down", "left", "right"] = "down",
         wheel_times: int = 1,
-    ) -> str | None:
+    ) -> None:
         owner = get_controller()
         owner.checkpoint_current()
+        # Check the request before the pointer moves. A direction that does not
+        # fit the type was answered with a successful reply after hovering loc,
+        # and a count below 1 hovered loc without scrolling.
+        directions = {"vertical": ("up", "down"), "horizontal": ("left", "right")}
+        if type not in directions:
+            raise ValueError('Invalid type. Use "horizontal" or "vertical".')
+        if direction not in directions[type]:
+            first, second = directions[type]
+            raise ValueError(f'Invalid direction. Use "{first}" or "{second}".')
+        if wheel_times < 1:
+            raise ValueError("wheel_times must be 1 or more")
         if loc:
             self.move(loc)
         match type:
@@ -1160,8 +1171,6 @@ class Desktop:
                             owner.checkpoint_current()
                             uia.WheelDown(1)
                             owner.record_step_current()
-                    case _:
-                        return 'Invalid direction. Use "up" or "down".'
             case "horizontal":
                 match direction:
                     case "left":
@@ -1192,11 +1201,6 @@ class Desktop:
                                 owner.record_step_current()
                         finally:
                             owner.input_ledger.release("key:shift")
-                    case _:
-                        return 'Invalid direction. Use "left" or "right".'
-            case _:
-                return 'Invalid type. Use "horizontal" or "vertical".'
-        return None
 
     def _normalize_drag_duration(self, duration: float | int | str | None) -> float | None:
         if duration is None:
@@ -1234,6 +1238,11 @@ class Desktop:
             None if from_loc is None else self._normalize_drag_point(from_loc, "from_loc")
         )
         effective_duration = self._normalize_drag_duration(duration)
+        # Check both ends before the wait and the button press: SetCursorPos would
+        # clamp a point off the desktop to its edge.
+        if normalized_from_loc is not None:
+            self._validate_screen_point(*normalized_from_loc)
+        self._validate_screen_point(x, y)
         owner.checkpoint_current()
         sleep(0.5)
         owner.checkpoint_current()
@@ -1271,6 +1280,7 @@ class Desktop:
     def move(self, loc: tuple[int, int]):
         owner = get_controller()
         x, y = loc
+        self._validate_screen_point(x, y)
         owner.checkpoint_current()
         cx, cy = uia.GetCursorPos()
         steps = max(1, min(80, max(abs(x - cx), abs(y - cy)) // 20))
@@ -1296,6 +1306,8 @@ class Desktop:
         # Validate every point before Ctrl goes down, so bad input fails without
         # touching the keyboard (and without clicking half of the list).
         points = [self._normalize_drag_point(loc, f"locs[{i}]") for i, loc in enumerate(locs)]
+        for x, y in points:
+            self._validate_screen_point(x, y)
         try:
             if press_ctrl:
                 owner.input_ledger.press(
@@ -1314,6 +1326,10 @@ class Desktop:
                 owner.input_ledger.release("key:ctrl")
 
     def multi_edit(self, locs: list[tuple[int, int, str]]) -> list[str]:
+        # Check every point first. Type checks its own point too, but only after
+        # the fields before it have been cleared and retyped.
+        for x, y, _ in locs:
+            self._validate_screen_point(x, y)
         notes = []
         for loc in locs:
             get_controller().checkpoint_current()

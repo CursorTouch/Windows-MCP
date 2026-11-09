@@ -329,9 +329,7 @@ def register(
             loc = _resolve_label(desktop, label)
         if loc and len(loc) != 2:
             raise ValueError("Location must be a list of exactly 2 integers [x, y]")
-        response = desktop.scroll(loc, type, direction, wheel_times)
-        if response:
-            return response
+        desktop.scroll(loc, type, direction, wheel_times)
         # The conditional used to cover the whole message, so a scroll at the
         # mouse position (loc=None) answered with an empty string.
         where = f"({loc[0]},{loc[1]})" if loc else "the current mouse position"
