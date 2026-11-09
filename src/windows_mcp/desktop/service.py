@@ -865,13 +865,17 @@ class Desktop:
         self._validate_screen_point(x, y)
         uia.Click(x, y)
         owner.record_step_current()
-        if caret_position == "start":
+        if caret_position in ("start", "end"):
+            key = "{Home}" if caret_position == "start" else "{End}"
+            # In a multi-line field Home and End stop at the ends of the clicked
+            # line; Ctrl+Home and Ctrl+End reach the start and end of the text.
+            # Ctrl+End means something else in a grid or list, so only use it
+            # once the focused element is the multi-line one that was clicked.
+            field = self._focused_element_at(x, y)
+            if field is not None and self._is_multiline(field):
+                key = "{Ctrl}" + key
             owner.checkpoint_current()
-            uia.SendKeys("{Home}", waitTime=0.05)
-            owner.record_step_current()
-        elif caret_position == "end":
-            owner.checkpoint_current()
-            uia.SendKeys("{End}", waitTime=0.05)
+            uia.SendKeys(key, waitTime=0.05)
             owner.record_step_current()
         notes: list[str] = []
         target = None
@@ -911,6 +915,35 @@ class Desktop:
             return uia.GetFocusedControl()
         except Exception:
             return None
+
+    # How long a click may take to move keyboard focus before Type stops
+    # waiting to learn which element it reached.
+    _FOCUS_SETTLE_SECONDS = 0.5
+
+    def _focused_element_at(self, x: int, y: int) -> "uia.Control | None":
+        """The focused element once it is the element at (x, y), else None.
+
+        UIA can still report the element focused before the click. That may be
+        a document that contains the point (a whole web page) while the click
+        went to a grid inside it.
+        """
+        try:
+            clicked = uia.ControlFromPoint(x, y)
+        except Exception:
+            return None
+        if clicked is None:
+            return None
+        deadline = perf_counter() + self._FOCUS_SETTLE_SECONDS
+        while True:
+            focused = self._focused_control()
+            try:
+                if focused is not None and uia.ControlsAreSame(focused, clicked):
+                    return focused
+            except Exception:
+                return None
+            if perf_counter() >= deadline:
+                return None
+            sleep(0.05)
 
     @staticmethod
     def _describe(control) -> str:
