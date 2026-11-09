@@ -84,3 +84,33 @@ def test_recursive_list_with_pattern_matches_like_rglob(tmp_path: Path) -> None:
     for pattern in ("*.txt", "sub/*.txt", "**/*.md", "*"):
         walked = sorted(service._walk(tmp_path, pattern))
         assert walked == sorted(tmp_path.rglob(pattern)), pattern
+
+
+def test_search_with_double_star_is_not_recursive_into_junctions(workspace: Path) -> None:
+    # recursive=False still lets ** recurse; it must not loop either.
+    result = service.search_files(str(workspace), "**/index.js", recursive=False)
+
+    assert result.splitlines()[0].endswith("(2 matches)"), result
+
+
+def test_volume_mounted_in_a_folder_is_entered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A volume mount point is a junction to \\?\Volume{...}\, not to a folder
+    # that can lead back to an ancestor. (Mounting a volume needs elevation, so
+    # the junction's target is faked.)
+    target = tmp_path / "target"
+    target.mkdir()
+    _junction(tmp_path / "mounted", target)
+    real_readlink = service.os.readlink
+
+    def readlink(path: str) -> str:
+        if path.endswith("mounted"):
+            return "\\\\?\\Volume{d19e4094-adb9-491c-b1ba-4b35ef640edb}\\"
+        return real_readlink(path)
+
+    monkeypatch.setattr(service.os, "readlink", readlink)
+    entries = {entry.name: entry for entry in service.os.scandir(tmp_path)}
+
+    assert service._enters(entries["mounted"])
+    assert service._enters(entries["target"])

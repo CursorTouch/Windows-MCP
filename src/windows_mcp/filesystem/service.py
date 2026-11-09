@@ -305,28 +305,49 @@ def _is_hidden_below(root: Path, entry: Path, cache: dict[Path, bool]) -> bool:
     return False
 
 
-def _walk(root: Path, pattern: str) -> Iterator[Path]:
-    """Yield the entries below *root* that match *pattern* at any depth.
+def _enters(entry: os.DirEntry) -> bool:
+    """Whether a recursive walk goes into *entry*.
 
-    Matches what ``root.rglob(pattern)`` matches, but does not descend into
-    directory junctions. rglob enters junctions, though not symlinks, so a
-    junction that points at one of its own ancestors (as packages linking
-    each other in a pnpm workspace do) was walked again and again until the
-    path grew too long, and every file under it was listed once per round.
-    The junction itself is still listed, like a symlink.
+    Directories do; symlinks and junctions do not. A volume mounted into a
+    folder is a junction too, but its target is a volume, not a folder that
+    can lead back to an ancestor, so the walk goes into it.
+    """
+    try:
+        if not entry.is_dir(follow_symlinks=False):
+            return False
+        if not entry.is_junction():
+            return True
+        return os.readlink(entry.path).lower().startswith("\\\\?\\volume{")
+    except OSError:
+        return False
+
+
+def _walk(root: Path, pattern: str, recursive: bool = True) -> Iterator[Path]:
+    """Yield the entries below *root* that match *pattern*.
+
+    Matches what ``root.rglob(pattern)`` matches (``root.glob(pattern)`` when
+    *recursive* is false), but does not descend into directory junctions.
+    Path globbing enters junctions, though not symlinks, so a junction that
+    points at one of its own ancestors (as packages linking each other in a
+    pnpm workspace do) was walked again and again until the path grew too
+    long, and every file under it was listed once per round. The junction
+    itself is still listed, like a symlink.
     """
     pattern_path = Path(pattern)
     if (
         not pattern
-        or pattern.endswith(('/', '\\'))
+        or pattern.endswith(("/", "\\"))
         or pattern_path.anchor
-        or '..' in pattern_path.parts
+        or ".." in pattern_path.parts
     ):
-        # rglob gives these a meaning of its own (directories only, parents, an
-        # error for an absolute pattern); keep it.
-        yield from root.rglob(pattern)
+        # Globbing gives these a meaning of its own (directories only, parents,
+        # an error for an absolute pattern); keep it.
+        yield from root.rglob(pattern) if recursive else root.glob(pattern)
         return
-    full_pattern = f'**/{pattern}'
+    full_pattern = f"**/{pattern}" if recursive else pattern
+    if all(part == "**" for part in pattern_path.parts):
+        # A pattern of only ** also matches the root itself.
+        yield root
     pending = [root]
     while pending:
         current = pending.pop()
@@ -339,15 +360,7 @@ def _walk(root: Path, pattern: str) -> Iterator[Path]:
             entry_path = Path(entry.path)
             if entry_path.relative_to(root).full_match(full_pattern):
                 yield entry_path
-            try:
-                descend = (
-                    entry.is_dir(follow_symlinks=False)
-                    and not entry.is_symlink()
-                    and not entry.is_junction()
-                )
-            except OSError:
-                descend = False
-            if descend:
+            if _enters(entry):
                 pending.append(entry_path)
 
 
@@ -422,6 +435,9 @@ def search_files(path: str, pattern: str, recursive: bool = True) -> str:
 
         if recursive:
             iterator = _walk(search_root, pattern)
+        elif "**" in pattern:
+            # A ** in the pattern makes glob recurse too, into junctions as well.
+            iterator = _walk(search_root, pattern, recursive=False)
         else:
             iterator = search_root.glob(pattern)
 
