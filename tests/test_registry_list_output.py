@@ -120,12 +120,15 @@ def test_long_value_stays_on_one_line(shell):
 
 def test_values_are_listed_as_stored_with_their_type(shell):
     # Get-ItemProperty expanded the %VARIABLES% of an ExpandString and the list
-    # did not say which type a value had.
-    path = _value(ENVIRONMENT, "Path")
-    assert "%SystemRoot%" in path
+    # did not say which type a value had. (Whether the system Path holds any
+    # variables depends on the machine; test_registry_get_stored_form.py
+    # lists one that does.)
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, ENVIRONMENT) as key:
+        path, kind = winreg.QueryValueEx(key, "Path")
+    kind_name = {winreg.REG_EXPAND_SZ: "ExpandString", winreg.REG_SZ: "String"}[kind]
 
     listed = _listed(ENVIRONMENT)
 
-    assert listed["Path"] == ("ExpandString", path)
+    assert listed["Path"] == (kind_name, path)
     assert _listed(SERVICE_GROUP_ORDER)["List"][0] == "MultiString"
     assert _listed(TIME_ZONE)["StandardStart"][0] == "Binary"
