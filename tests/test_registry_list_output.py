@@ -100,7 +100,13 @@ def test_binary_value_is_listed_in_full(shell):
 
 def test_long_value_stays_on_one_line(shell):
     # The system Path does not fit in a 120-column line next to the value names.
-    expected = registry.get_value(_hklm(ENVIRONMENT), "Path").split(" = ", 1)[1]
+    # List mode shows it expanded; get mode shows the stored %VARIABLES%. Expand
+    # it in the same shell list mode runs in.
+    output, status = PowerShellExecutor.execute_command(
+        f"(Get-Item -LiteralPath '{_hklm(ENVIRONMENT)}').GetValue('Path')"
+    )
+    assert status == 0, output
+    expected = output.rstrip("\r\n")
 
     listed = _listed_values(ENVIRONMENT)
 

@@ -40,11 +40,9 @@ class TestPsQuote:
 
 class TestRegistryGet:
     def test_success(self):
-        with patch(EXECUTE_COMMAND_PATH, return_value=("42\n", 0)):
+        with patch(EXECUTE_COMMAND_PATH, return_value=("DWord\r\n42\r\n", 0)):
             result = registry.get_value(path="HKCU:\\Software\\Test", name="MyValue")
-        assert 'MyValue' in result
-        assert '42' in result
-        assert 'Error' not in result
+        assert result == 'Registry value [HKCU:\\Software\\Test] "MyValue" (type: DWord) = 42'
 
     def test_failure(self):
         with patch(EXECUTE_COMMAND_PATH, return_value=("Property not found", 1)):
@@ -282,7 +280,7 @@ class TestRegistryGetWildcardValueName:
     @pytest.mark.parametrize("name", list(VALUES))
     def test_reads_the_named_value(self, key, name):
         result = registry.get_value(path=key, name=name)
-        assert result == f'Registry value [{key}] "{name}" = {self.VALUES[name]}'
+        assert result == f'Registry value [{key}] "{name}" (type: String) = {self.VALUES[name]}'
 
     def test_missing_name_is_an_error(self, key):
         # Get-ItemProperty returns no property, and no error, for a missing name
@@ -300,7 +298,9 @@ def test_delete_with_empty_value_name_keeps_the_key():
     try:
         result = registry.delete_entry(path=key, name="")
         assert result.startswith("Error:"), result
-        assert registry.get_value(path=key, name="V").endswith('"V" = kept')
-        assert registry.get_value(path=f"{key}\\Child", name="V").endswith('"V" = kept')
+        assert registry.get_value(path=key, name="V").endswith('"V" (type: String) = kept')
+        assert registry.get_value(path=f"{key}\\Child", name="V").endswith(
+            '"V" (type: String) = kept'
+        )
     finally:
         registry.delete_entry(path=key)
