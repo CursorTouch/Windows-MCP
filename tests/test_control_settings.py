@@ -16,10 +16,11 @@ def test_long_timeout_does_not_invent_physical_input(monkeypatch, state):
     owner = control.ControlCoordinator()
     owner.idle_timeout_seconds = 1000.0
     owner._state = state
-    assert owner.status()["state"] == "ready"
+    # AI control has no lease to lapse; only real input or release() ends it.
+    assert owner.status()["state"] == state
 
 
-@pytest.mark.parametrize("state", ["user", "ready", "ai"])
+@pytest.mark.parametrize("state", ["user", "ready"])
 @pytest.mark.parametrize("timeout", [0.5, 25.0])
 def test_configured_idle_boundary(monkeypatch, state, timeout):
     now = [100.0]

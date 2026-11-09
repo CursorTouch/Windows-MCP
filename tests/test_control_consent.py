@@ -71,7 +71,7 @@ def test_unattended_timeout_grants_until_the_user_takes_over():
     assert owner.open_consent()
     owner.close_consent("timeout")
     assert owner.status()["state"] == "ready"
-    assert not owner.open_consent()  # A lapsed lease does not ask again.
+    assert not owner.open_consent()  # Granted consent is not asked again.
     _physical_input(owner)
     assert owner.status()["state"] == "user"
     owner._last_physical_event = owner._last_user = control.time.monotonic() - 60
@@ -85,7 +85,6 @@ def test_prompt_can_be_disabled_and_never_interrupts_a_lease():
     assert not owner.open_consent()
     owner.consent_countdown_seconds = 10
     owner._state = "ai"
-    owner._lease_until = control.time.monotonic() + 60
     assert not owner.open_consent()
 
 
@@ -230,3 +229,17 @@ def test_consent_shows_amber_edges_without_notice_or_cursor(monkeypatch):
         assert built[-1] == (False, True) and "ring" in shown
     finally:
         control_overlay.stop()
+
+
+def test_ai_control_never_expires_until_released(monkeypatch):
+    owner = _ready_owner()
+    assert owner.open_consent()
+    owner.close_consent("allow")
+    owner.end_call(owner.begin_call("Click"))
+    real = control.time.monotonic
+    monkeypatch.setattr(control.time, "monotonic", lambda: real() + 3600)  # Long thinking.
+    owner._handle(("tick",))
+    assert owner.status()["state"] == "ai"
+    assert owner.release()["state"] == "ready"
+    assert owner.release()["state"] == "ready"  # Idempotent.
+    assert not owner.open_consent()  # Release keeps consent until the person takes over.

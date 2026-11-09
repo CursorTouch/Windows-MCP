@@ -23,17 +23,12 @@ class StaleInputRecovery:
     @staticmethod
     def _snapshot(owner: Any, now: float) -> tuple | None:
         # Called under owner._lock; physical callbacks run on our pump thread.
-        inactive_pending = (
-            owner._state == "takeover_pending"
-            and not owner._active_calls
-            and now >= owner._lease_until
-        )
+        # AI control never expires, so a missed physical up must also clear between AI
+        # calls; begin_call keeps rejecting the hold (PHYSICAL_INPUT_HELD) until it does.
+        idle_ai = owner._state in ("ai", "takeover_pending") and not owner._active_calls
         if (
             not owner.enabled
-            # An expired AI lease can enter ready with a missed physical up.
-            # begin_call still rejects those holds until reconciliation completes.
-            # A missed mouse up can also hold pending after all AI work expires.
-            or (owner._state not in ("user", "ready") and not inactive_pending)
+            or (owner._state not in ("user", "ready") and not idle_ai)
             or owner._emergency
             or owner._stop.is_set()
             or now - max(owner._last_user, owner._last_physical_event) < owner.idle_timeout_seconds

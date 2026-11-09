@@ -158,7 +158,6 @@ async def test_background_does_not_take_lock_or_lease(ending):
                 assert await task == "done"
         owner.begin_call.assert_not_called()
         owner.end_call.assert_not_called()
-        assert owner._lease_until == 0
     finally:
         release.set()
         task.cancel()

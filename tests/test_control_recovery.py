@@ -183,9 +183,10 @@ def test_change_during_query_cancels_cleanup(case, change):
 
 
 @pytest.mark.parametrize("state", ["ai", "unavailable"])
-def test_active_or_unavailable_states_are_not_sampled(case, state):
+def test_running_ai_call_or_unavailable_state_is_not_sampled(case, state):
     owner, _, _ = case
     owner._state = state
+    owner._active_calls = 1  # Idle AI control is sampled; a running call is not.
     query = Mock(return_value=0)
     samples(case, query)
     query.assert_not_called()
@@ -240,7 +241,7 @@ def test_lock_delay_cannot_compress_actual_query_spacing(case):
     assert recovery._count == 1
 
 
-def test_missed_alt_tab_release_after_ai_lease_recovers(case):
+def test_missed_alt_tab_release_between_ai_calls_recovers(case):
     owner, recovery, clock = case
     owner._pressed.clear()
     owner._state = "ready"
@@ -252,10 +253,10 @@ def test_missed_alt_tab_release_after_ai_lease_recovers(case):
     owner.end_call(token)
     clock[0] += 20
     owner._handle(("tick",))
-    assert owner.status()["state"] == "ready"
+    assert owner.status()["state"] == "ai"
     with pytest.raises(control.ControlBlocked, match="PHYSICAL_INPUT_HELD"):
         owner.begin_call("BlockedProbe")
-    # A real held key must keep blocking even in ready; no timeout clears it.
+    # A real held key must keep blocking while AI idles; no timeout clears it.
     samples(case, lambda vk: 0x8000, 10)
     assert owner._pressed == {0xA4, 0x09}
     samples(case, lambda vk: 0, 4)
@@ -289,28 +290,22 @@ def test_missed_mouse_release_after_confirmed_takeover_recovers(case):
     owner.end_call(owner.begin_call("RecoveredProbe"))
 
 
-@pytest.mark.parametrize("active,lease", [(1, 0.0), (0, 200.0)])
-def test_pending_active_call_or_live_lease_is_not_sampled(case, active, lease):
+def test_pending_active_call_is_not_sampled(case):
     owner, _, _ = case
     owner._state = "takeover_pending"
-    owner._active_calls = active
-    owner._lease_until = lease
+    owner._active_calls = 1
     query = Mock(return_value=0)
     samples(case, query)
     query.assert_not_called()
 
 
-@pytest.mark.parametrize("change", ["active_call", "lease"])
-def test_pending_reactivation_during_query_cancels_cleanup(case, change):
-    owner, _, clock = case
+def test_pending_reactivation_during_query_cancels_cleanup(case):
+    owner, _, _ = case
     owner._state = "takeover_pending"
     samples(case, lambda vk: 0, 4)
 
     def query(vk):
-        if change == "active_call":
-            owner._active_calls = 1
-        else:
-            owner._lease_until = clock[0] + 10
+        owner._active_calls = 1
         return 0
 
     samples(case, query, 1)
@@ -378,16 +373,12 @@ def test_shortcut_hook_sequences_with_missing_releases(case, monkeypatch, keys, 
     owner.end_call(token)
 
 
-@pytest.mark.parametrize("expire_before_dispatch", [False, True])
-def test_takeover_chord_queued_at_lease_expiry_does_not_latch(
-    case, monkeypatch, expire_before_dispatch
-):
+def test_takeover_chord_after_an_ai_call_does_not_latch(case, monkeypatch):
     owner, _, clock = case
     owner._pressed.clear()
     owner._state = "ready"
     token = owner.begin_call("FirstProbe")
     owner.end_call(token)
-    clock[0] = owner._lease_until - 0.01
     owner._deadline = clock[0] + 1  # Simulate a healthy watchdog heartbeat.
     monkeypatch.setattr(control._user32, "CallNextHookEx", lambda *args: 0)
     keys = (0xA2, 0xA4, 0xA0, 0x08)
@@ -400,8 +391,6 @@ def test_takeover_chord_queued_at_lease_expiry_does_not_latch(
     for vk in keys:
         key(vk, True)
     assert owner._fast_takeover
-    if expire_before_dispatch:
-        clock[0] += 0.02
     while not owner._events.empty():
         owner._handle(owner._events.get_nowait())
     for vk in reversed(keys):

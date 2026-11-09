@@ -328,7 +328,6 @@ def test_expired_health_cannot_refresh_suppression(monkeypatch, age):
 def test_cleanup_waiting_for_ledger_does_not_block_injected_callback(monkeypatch):
     owner = control.ControlCoordinator()
     owner._state = "ai"
-    owner._lease_until = control.time.monotonic() + 15
     owner._thread = SimpleNamespace(is_alive=lambda: True)
     owner._thread_beat = control.time.monotonic()
     entered = threading.Event()
