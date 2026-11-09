@@ -115,6 +115,66 @@ class TestIouBoundingBox:
         assert result.bottom == 200
 
 
+class TestScreenChangeAfterStart:
+    """The tree is built once, when the server starts, but the virtual screen can change while
+    the server runs: a monitor plugged in or rearranged, an RDP reconnect at another size. A
+    capture must clip elements to the screen as it is then, not as it was at startup.
+    """
+
+    @pytest.mark.parametrize(
+        ("screen", "window", "button", "center"),
+        [
+            # A second monitor attached to the right of the first one.
+            (
+                make_box(0, 0, 3840, 1080),
+                Rect(1920, 0, 3840, 1080),
+                Rect(2400, 100, 2500, 150),
+                (2450, 125),
+            ),
+            # One attached to the left: the virtual screen now starts at a negative x.
+            (
+                make_box(-1920, 0, 1920, 1080),
+                Rect(-1920, 0, 0, 1080),
+                Rect(-1000, 100, -900, 150),
+                (-950, 125),
+            ),
+            # A button across the old right edge keeps the part past it.
+            (
+                make_box(0, 0, 3840, 1080),
+                Rect(1880, 0, 3840, 1080),
+                Rect(1900, 200, 1960, 250),
+                (1930, 225),
+            ),
+        ],
+    )
+    def test_capture_clips_to_the_current_screen(self, monkeypatch, screen, window, button, center):
+        desktop = MagicMock()
+        desktop.get_screen_box.return_value = make_box(0, 0, 1920, 1080)
+        tree = Tree(desktop)  # at server start, with one 1920x1080 monitor
+        desktop.get_screen_box.return_value = screen  # then the display layout changes
+
+        control = _make_button_child("OK", 0)
+        control.CachedBoundingRectangle = button
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            lambda node, cache_request: [],
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {43: "PushButton"})
+
+        def walk(self, windows_handles, active_window_flag, use_dom=False):
+            nodes = []
+            self.tree_traversal(control, window, "Settings", False, nodes, [], [], [])
+            return nodes, [], [], [], []
+
+        monkeypatch.setattr(Tree, "get_window_wise_nodes", walk)
+
+        state = tree.get_state(None, [0x1234])
+
+        [node] = state.interactive_nodes
+        assert (node.center.x, node.center.y) == center
+        assert state.root_node.bounding_box == screen
+
+
 def _type_error_from(filename: str) -> TypeError:
     namespace = {}
     code = compile("def trigger():\n    ord('hello')\n", filename, "exec")

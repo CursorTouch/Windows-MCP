@@ -116,6 +116,9 @@ class Tree:
         self.dom = None
         self.dom_bounding_box = None
         self.dom_is_ia2 = False
+        # Clip to the virtual screen as it is now: it can change while the server runs
+        # (a monitor plugged in or rearranged, an RDP reconnect at another size).
+        self.screen_box = self.desktop.get_screen_box()
         # Fresh budget per capture — huge lists/grids (e.g. thousands of rows) must not
         # stall UI Automation or blow up the serialized response.
         self.element_budget = TreeElementBudget(resolve_max_tree_elements())
