@@ -21,6 +21,14 @@ def _get_manager():
     return _thread_local.manager
 
 
+def _forget_manager():
+    # The internal manager is a proxy to an object that explorer.exe serves. Once
+    # Explorer restarts, every call on that proxy fails, so drop this thread's
+    # manager and let the next call create a new one.
+    if hasattr(_thread_local, "manager"):
+        del _thread_local.manager
+
+
 def is_window_on_current_desktop(hwnd: int) -> bool:
     return _get_manager().is_window_on_current_desktop(hwnd)
 
@@ -376,6 +384,7 @@ class VirtualDesktopManager:
 
     def __init__(self):
         self._manager = None
+        self._internal_manager = None
         try:
             # Ensure COM is initialized on this thread (RPC_E_CHANGED_MODE or S_OK/S_FALSE)
             # COINIT_APARTMENTTHREADED = 0x2, COINIT_MULTITHREADED = 0x0
@@ -706,8 +715,16 @@ def switch_desktop(desktop_name: str):
 
 
 def get_all_desktops() -> list[dict]:
-    return _get_manager().get_all_desktops()
+    try:
+        return _get_manager().get_all_desktops()
+    except Exception:
+        _forget_manager()
+        raise
 
 
 def get_current_desktop() -> dict:
-    return _get_manager().get_current_desktop()
+    try:
+        return _get_manager().get_current_desktop()
+    except Exception:
+        _forget_manager()
+        raise
