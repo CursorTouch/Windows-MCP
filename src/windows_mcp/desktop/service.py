@@ -206,7 +206,10 @@ class Desktop:
         try:
             active_desktop = get_current_desktop()
             all_desktops = get_all_desktops()
-        except RuntimeError:
+        except Exception:
+            # The virtual desktop calls raise COMError, not RuntimeError, for example after
+            # explorer.exe restarts. Report the default desktop instead of failing the capture.
+            logger.warning("Could not read the virtual desktops", exc_info=True)
             active_desktop = {
                 "id": "00000000-0000-0000-0000-000000000000",
                 "name": "Default Desktop",
