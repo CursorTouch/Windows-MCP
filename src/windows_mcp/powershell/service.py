@@ -8,6 +8,7 @@ import os
 import winreg
 import shutil
 import subprocess
+from collections.abc import Callable
 from time import perf_counter
 
 from windows_mcp.desktop.utils import is_elevated
@@ -245,8 +246,26 @@ class PowerShellExecutor:
 
     @staticmethod
     def execute_command(
-        command: str, timeout: int = 10, shell: str | None = None
+        command: str,
+        timeout: int = 10,
+        shell: str | None = None,
+        *,
+        on_output: Callable[[str, bytes], None] | None = None,
     ) -> tuple[str, int]:
+        """Run *command* in PowerShell and return its output and exit status.
+
+        Args:
+            command: The PowerShell command or script to run.
+            timeout: Seconds before the command is ended.
+            shell: The shell to launch, or ``None`` to prefer ``pwsh``.
+            on_output: Optional callback that sees the raw output as it arrives
+                (``run_with_graceful_timeout``'s ``on_output``), for reporting
+                progress while the command runs. It does not change the result.
+
+        Returns:
+            The output and the exit status, or ``COMMAND_TIMED_OUT`` when the
+            timeout ended the command.
+        """
         try:
             # $OutputEncoding: controls how PS5.1 encodes output written to its stdout pipe.
             # Without this set to UTF-8, PS5.1 uses the system codepage and native process
@@ -281,6 +300,7 @@ class PowerShellExecutor:
                 timeout=timeout,
                 cwd=os.path.expanduser(path="~"),
                 env=env,
+                on_output=on_output,
             )
             # Handle both bytes and str output (subprocess behavior varies by environment)
             stdout = result.stdout

@@ -3,6 +3,7 @@
 from mcp.types import ToolAnnotations
 from windows_mcp.infrastructure import with_analytics
 from windows_mcp.powershell import COMMAND_TIMED_OUT, PowerShellExecutor
+from windows_mcp.tools._shell_progress import run_with_progress
 from fastmcp import Context
 
 def cap_output(text: str, max_output: int) -> str:
@@ -54,12 +55,17 @@ def register(mcp, *, get_desktop, get_analytics):
         ),
     )
     @with_analytics(get_analytics(), "Powershell-Tool")
-    def powershell_tool(
+    async def powershell_tool(
         command: str,
         timeout: int = 30,
         max_output: int = 20000,
         ctx: Context = None,
     ) -> str:
-        response, status_code = PowerShellExecutor.execute_command(command, timeout)
+        # Async so progress notifications go out from the event loop while the
+        # command blocks a worker thread (#579); without a progressToken this
+        # is the same worker-thread call with_analytics used to make.
+        response, status_code = await run_with_progress(
+            ctx, PowerShellExecutor.execute_command, command, timeout, timeout=timeout
+        )
         status_text = "timed out" if status_code == COMMAND_TIMED_OUT else status_code
         return f"Response: {cap_output(response, max_output)}\nStatus Code: {status_text}"
