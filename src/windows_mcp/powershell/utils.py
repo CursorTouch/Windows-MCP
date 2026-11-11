@@ -92,6 +92,88 @@ def check_pid_exists(pid: int) -> bool:
         return False
 
 
+_CONSOLE_HOSTS = frozenset({"conhost.exe", "openconsole.exe"})
+_IMAGE_SUBSYSTEM_WINDOWS_GUI = 2
+
+
+def _is_gui_program(process: psutil.Process) -> bool:
+    """Whether the process runs a GUI-subsystem executable (read from its PE header)."""
+    try:
+        with open(process.exe(), "rb") as image:
+            dos_header = image.read(64)
+            if dos_header[:2] != b"MZ":
+                return False
+            image.seek(int.from_bytes(dos_header[60:64], "little"))
+            # PE signature (4 bytes), COFF header (20), then the optional header,
+            # whose Subsystem field sits at offset 68 in PE32 and PE32+ alike.
+            nt_headers = image.read(4 + 20 + 70)
+    except (OSError, psutil.Error):
+        return False
+    if nt_headers[:4] != b"PE\0\0" or len(nt_headers) < 94:
+        return False
+    return int.from_bytes(nt_headers[92:94], "little") == _IMAGE_SUBSYSTEM_WINDOWS_GUI
+
+
+def _runs_on_its_own(process: psutil.Process) -> bool:
+    """Whether a program the command started is meant to outlive it.
+
+    Start-Process opens a console program in a console of its own (unless
+    -NoNewWindow is given), so it has its own console host child. A GUI program
+    has no console at all. A program the command runs and waits for shares the
+    command's console and is neither; so does one from Start-Process
+    -NoNewWindow, which cannot be told apart from it.
+    """
+    try:
+        if process.name().lower() in _CONSOLE_HOSTS:
+            return False
+        if any(child.name().lower() in _CONSOLE_HOSTS for child in process.children()):
+            return True
+    except psutil.Error:
+        return False
+    return _is_gui_program(process)
+
+
+def kill_command_tree(pid: int) -> None:
+    """End a timed-out command and the console programs it runs (#584).
+
+    ``taskkill /T`` also ended the programs the command had started to run on
+    their own, such as a GUI program or a ``Start-Process`` console program in
+    a window of its own, so a timeout closed a browser or interrupted a build
+    the script had only launched. Those direct children keep running now, with
+    all of their descendants. The programs that share the command's console,
+    which it was waiting for, end with it together with all of their
+    descendants, as before.
+
+    Args:
+        pid: Process ID of the command (the PowerShell process).
+    """
+    try:
+        root = psutil.Process(pid)
+        children = root.children()
+    except psutil.NoSuchProcess:
+        return
+    except psutil.Error:
+        logger.debug("Could not list the processes of %d", pid, exc_info=True)
+        children = []
+    victims = [root]
+    for child in children:
+        if _runs_on_its_own(child):
+            logger.debug("Leaving %d running after the timeout", child.pid)
+            continue
+        victims.append(child)
+        try:
+            victims.extend(child.children(recursive=True))
+        except psutil.Error:
+            pass
+    for victim in victims:
+        try:
+            victim.kill()
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.Error:
+            logger.debug("Could not end %d", victim.pid, exc_info=True)
+
+
 #: How long to keep reading the output pipes after the process has exited. A
 #: program the command started may hold inherited copies of the pipes (#578);
 #: EOF then waits for that program, but what the process itself wrote is
@@ -228,7 +310,10 @@ def run_with_graceful_timeout(
            child process group, so console applications have a chance to exit
            cleanly.
         2. If that still does not finish within ``grace_period``, forcefully
-           terminate the whole process tree via ``taskkill /T /F``.
+           terminate the process and the console programs it runs, with their
+           descendants (``kill_command_tree``). Programs it started to run on
+           their own (GUI programs, ``Start-Process`` console programs) are
+           left running (#584).
 
         Related issues: #124, #146
 
@@ -313,17 +398,11 @@ def run_with_graceful_timeout(
                     # No need to try further shutdown
                     raise exc2
 
-                # Kill the whole tree as a last resort
+                # Kill the command and the console programs it runs as a last resort
                 logger.debug(
-                    f"Process {process.pid} (exist: {check_pid_exists(process.pid)}) did not exit gracefully after {grace_period} seconds, killing it and all child processes..."
+                    f"Process {process.pid} (exist: {check_pid_exists(process.pid)}) did not exit gracefully after {grace_period} seconds, killing it and the console programs it runs..."
                 )
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
+                kill_command_tree(process.pid)
 
                 try:
                     process.wait(timeout=grace_period)
@@ -342,13 +421,7 @@ def run_with_graceful_timeout(
             logger.debug('Other exception occurred, attempting to kill process...')
             # A program left running may hold the pipes; do not store its output.
             stop_keeping()
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            kill_command_tree(process.pid)
             raise
 
         stdout, stderr = collect_output()

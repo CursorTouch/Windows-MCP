@@ -61,8 +61,12 @@ class TestCreationFlags:
         assert flags & subprocess.CREATE_NO_WINDOW
         assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
 
-    def test_taskkill_fallback_is_windowless(self, monkeypatch):
-        """The timeout path must not flash a window either."""
+    def test_force_kill_fallback_is_windowless(self, monkeypatch):
+        """The timeout path must not flash a window either.
+
+        The fallback ends processes through psutil (#584), so it starts no
+        process at all; it used to run taskkill with CREATE_NO_WINDOW.
+        """
         calls = []
         real_run = subprocess.run
 
@@ -73,8 +77,8 @@ class TestCreationFlags:
         monkeypatch.setattr(subprocess, "run", spy)
 
         # Sleep well past both the timeout and the grace period, and ignore
-        # CTRL_BREAK, so the graceful stop fails and taskkill is reached.
-        with pytest.raises(subprocess.TimeoutExpired):
+        # CTRL_BREAK, so the graceful stop fails and the force kill is reached.
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
             run_with_graceful_timeout(
                 ["cmd", "/c", "ping 127.0.0.1 -n 30 > nul"],
                 capture_output=True,
@@ -82,10 +86,8 @@ class TestCreationFlags:
                 grace_period=0.5,
             )
 
-        taskkills = [kw for args, kw in calls if args and args[0][0] == "taskkill"]
-        assert taskkills, "expected the force-kill fallback to run"
-        for kwargs in taskkills:
-            assert kwargs.get("creationflags", 0) & subprocess.CREATE_NO_WINDOW
+        assert "Process killed" in " ".join(caught.value.__notes__)
+        assert calls == []
 
 
 class TestBehaviorUnchanged:
