@@ -627,7 +627,9 @@ class Desktop:
 
     def switch_app(self, name: str):
         try:
-            window, error = self._find_window_by_name(name)
+            # Match against the windows open now, as resize does. The last capture's list misses
+            # windows opened or reopened since, and everything outside a display/region capture.
+            window, error = self._find_window_by_name(name, refresh_state=True)
             if window is None:
                 return error, 1
 
