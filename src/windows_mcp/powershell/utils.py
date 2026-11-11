@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import IO
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
@@ -190,8 +191,9 @@ class _PipeReader:
     keeps the pipe open until it exits, so the call waited for that program.
     """
 
-    def __init__(self, stream: IO) -> None:
+    def __init__(self, stream: IO, on_chunk: Callable[[bytes], None] | None = None) -> None:
         self._stream = stream
+        self._on_chunk = on_chunk
         self._chunks: list[bytes] = []
         self._keep = True
         self._lock = threading.Lock()
@@ -208,8 +210,11 @@ class _PipeReader:
         try:
             while chunk := read(65536):
                 with self._lock:
-                    if self._keep:
+                    keep = self._keep
+                    if keep:
                         self._chunks.append(chunk)
+                if keep and self._on_chunk is not None:
+                    self._notify(chunk)
         except (OSError, ValueError):
             pass
         finally:
@@ -217,6 +222,15 @@ class _PipeReader:
                 self._stream.close()
             except (OSError, ValueError):
                 pass
+
+    def _notify(self, chunk: bytes) -> None:
+        # The callback only observes the output; a failure in it must not stop
+        # the pipe from being read, or the command could block on a full pipe.
+        try:
+            self._on_chunk(chunk)
+        except Exception:
+            logger.debug("Output callback failed; no longer calling it", exc_info=True)
+            self._on_chunk = None
 
     def join(self, deadline: float) -> None:
         self._thread.join(max(0.0, deadline - time.monotonic()))
@@ -274,6 +288,7 @@ def run_with_graceful_timeout(
         timeout=None,
         check=False,
         grace_period: float = 2.0,
+        on_output: Callable[[str, bytes], None] | None = None,
         **kwargs,
 ):
     """A Windows-oriented variant migrated from ``subprocess.run``.
@@ -289,6 +304,10 @@ def run_with_graceful_timeout(
         timeout: Seconds to wait for process to complete before triggering shutdown.
         check: If True, raise CalledProcessError if the process exits with a non-zero code.
         grace_period: Seconds to wait after CTRL_BREAK before force-killing. Defaults to 2.0.
+        on_output: Optional callback for captured output as it arrives, called on a
+            reader thread with the stream name (``"stdout"`` or ``"stderr"``) and the
+            raw bytes read. It is not called for output arriving after the call has
+            returned. The returned output is the same with or without it.
 
     Notes:
         In some Windows scenarios, especially when launching a console host
@@ -357,7 +376,8 @@ def run_with_graceful_timeout(
         readers = []
         for name in ("stdout", "stderr"):
             stream = getattr(process, name)
-            readers.append(_PipeReader(stream) if stream is not None else None)
+            on_chunk = partial(on_output, name) if on_output is not None else None
+            readers.append(_PipeReader(stream, on_chunk) if stream is not None else None)
             setattr(process, name, None)
 
         def stop_keeping() -> None:
