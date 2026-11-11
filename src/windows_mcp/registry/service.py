@@ -21,6 +21,24 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+# Sets $kind and $value for the value $name of $key, as stored: an ExpandString
+# keeps its %VARIABLES%, Binary is .reg hex and DWord/QWord are unsigned.
+# RegistryKey.GetValue returns DWord/QWord signed. When $byteLimit is set, a
+# longer Binary value shows that many bytes and then its length.
+_STORED_VALUE = (
+    "$kind = $key.GetValueKind($name); "
+    "$value = $key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); "
+    "switch ($kind) { "
+    "'DWord' { $value = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$value), 0) } "
+    "'QWord' { $value = [BitConverter]::ToUInt64([BitConverter]::GetBytes([long]$value), 0) } }; "
+    "if ($value -is [byte[]]) { "
+    "$length = $value.Count; $bytes = $value; "
+    "if ($byteLimit -and $length -gt $byteLimit) { $bytes = $value[0..($byteLimit - 1)] }; "
+    "$value = 'hex:' + (($bytes | ForEach-Object { $_.ToString('x2') }) -join ','); "
+    'if ($bytes.Count -lt $length) { $value += ",... ($length bytes)" } }; '
+)
+
+
 def get_value(path: str, name: str) -> str:
     """Read a registry value at *path* with the given *name*.
 
@@ -42,15 +60,9 @@ def get_value(path: str, name: str) -> str:
         f"if ($name -eq '(default)' -and $names -notcontains $name) {{ $name = '' }}; "
         f"if ($names -notcontains $name) {{ throw ('Property ' + {q_name} + "
         f"' does not exist at path ' + {q_path} + '.') }}; "
-        f"$kind = $key.GetValueKind($name); "
-        f"$value = $key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); "
-        f"switch ($kind) {{ "
-        f"'DWord' {{ $value = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$value), 0) }} "
-        f"'QWord' {{ $value = [BitConverter]::ToUInt64([BitConverter]::GetBytes([long]$value), 0) }} "
-        f"'MultiString' {{ $value = $value -join \"`n\" }} }}; "
-        f"if ($value -is [byte[]]) {{ "
-        f"$value = 'hex:' + (($value | ForEach-Object {{ $_.ToString('x2') }}) -join ',') }}; "
-        f'Write-Output "$kind"; Write-Output "$value"'
+        + _STORED_VALUE
+        + "if ($kind -eq 'MultiString') { $value = $value -join \"`n\" }; "
+        'Write-Output "$kind"; Write-Output "$value"'
     )
     response, status = PowerShellExecutor.execute_command(command)
     if status != 0:
@@ -148,23 +160,38 @@ def delete_entry(path: str, name: str | None = None) -> str:
     return f'Registry key [{path}] deleted.'
 
 
-# Items of a binary or multi-string value that list mode shows before an
-# ellipsis. Format-List shows 4 by default; get mode returns the whole value.
+# Items of a multi-string value, and bytes of a binary value, that list mode
+# shows before an ellipsis. Format-List shows 4 items by default; get mode
+# returns the whole value.
 _LIST_ITEM_LIMIT = 256
 
 
 def list_key(path: str) -> str:
-    """List values and sub-keys under *path*."""
+    """List values and sub-keys under *path*.
+
+    Each value is listed as "name (type) : value", with the value as stored:
+    an ExpandString keeps its %VARIABLES%, Binary is .reg hex and DWord/QWord
+    are unsigned, as in get mode. A multi-string value is listed as
+    "{a, b}"; get mode gives it one item per line, the form set takes.
+    Get-ItemProperty expanded the %VARIABLES% of an ExpandString and did not
+    say which type a value had. A binary value longer than _LIST_ITEM_LIMIT
+    bytes is cut there, followed by its length.
+    """
     q_path = ps_quote(path)
-    # Exclude only the five provider properties Get-ItemProperty adds ("PS*"
-    # also hid values such as PSModulePath), show up to _LIST_ITEM_LIMIT items of
-    # binary and multi-string values instead of 4, and keep Windows PowerShell
-    # 5.1 from wrapping long values at the console width.
+    # Read every value name from the key itself (Get-ItemProperty also added
+    # PS* provider properties), show up to _LIST_ITEM_LIMIT items of a
+    # multi-string value instead of 4, and keep Windows PowerShell 5.1 from
+    # wrapping long values at the console width.
     command = (
-        f"$FormatEnumerationLimit = {_LIST_ITEM_LIMIT}; "
-        f"$values = (Get-ItemProperty -LiteralPath {q_path} -ErrorAction Stop | "
-        f"Select-Object * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSDrive, PSProvider "
-        f"| Format-List | Out-String -Width ([int]::MaxValue)).Trim(); "
+        f"$FormatEnumerationLimit = {_LIST_ITEM_LIMIT}; $byteLimit = {_LIST_ITEM_LIMIT}; "
+        f"$key = Get-Item -LiteralPath {q_path} -ErrorAction Stop; "
+        "$listed = [ordered]@{}; "
+        "foreach ($name in $key.GetValueNames()) { "
+        + _STORED_VALUE
+        + "$label = if ($name) { $name } else { '(default)' }; "
+        '$listed["$label ($kind)"] = $value }; '
+        "$values = if ($listed.Count) { ([pscustomobject]$listed "
+        "| Format-List | Out-String -Width ([int]::MaxValue)).Trim() } else { '' }; "
         f"$subkeys = (Get-ChildItem -LiteralPath {q_path} -ErrorAction SilentlyContinue | "
         f"Select-Object -ExpandProperty PSChildName) -join \"`n\"; "
         f"if ($values) {{ Write-Output \"Values:`n$values\" }}; "

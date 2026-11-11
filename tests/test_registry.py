@@ -181,12 +181,14 @@ class TestRegistryList:
             registry.list_key(path="HKCU:\\Software\\Test")
         return mock_exec.call_args[0][0]
 
-    def test_excludes_only_provider_properties(self):
-        # Get-ItemProperty adds these five; a PS* pattern also hides registry
-        # values whose names start with PS, such as PSModulePath.
+    def test_lists_value_names_from_the_key(self):
+        # Get-ItemProperty added five PS* provider properties, and a PS* filter
+        # also hid registry values such as PSModulePath. The key's own value
+        # names need no filter.
         cmd = self._command()
         assert "PS*" not in cmd
-        assert "-ExcludeProperty PSPath, PSParentPath, PSChildName, PSDrive, PSProvider |" in cmd
+        assert "Get-ItemProperty" not in cmd
+        assert "$key.GetValueNames()" in cmd
 
     def test_raises_item_limit_and_line_width(self):
         # Format-List shows 4 items of an array value by default, and Windows

@@ -11,6 +11,8 @@ pipeline changed what the caller got back:
 - Windows PowerShell 5.1 wraps at the console width (120 columns by default), so
   longer values came back split over several lines, mid-word where there is no
   space.
+- Get-ItemProperty expanded the %VARIABLES% of an ExpandString, and the list did
+  not name the types. Values are now listed as get mode shows them.
 
 The keys read here exist on every Windows install. Nothing is written.
 """
@@ -46,17 +48,27 @@ def _hklm(subkey: str) -> str:
     return f"HKLM:\\{subkey}"
 
 
-def _listed_values(subkey: str) -> dict[str, str]:
-    """Map each value name in the list_key() output to the text after ' : '."""
+def _listed(subkey: str) -> dict[str, tuple[str, str]]:
+    """Map each value name in the list_key() output ("name (type) : text") to
+    its type and text."""
     output = registry.list_key(_hklm(subkey))
     assert "Values:" in output, output
     values = {}
     for line in output.splitlines():
-        name, sep, text = line.partition(" : ")
+        label, sep, text = line.partition(" : ")
         # Lines that start with whitespace continue the value above them.
         if sep and not line[:1].isspace():
-            values[name.rstrip()] = text
+            label = label.rstrip()
+            name, _, kind = label.rpartition(" (")
+            if not name or not kind.endswith(")"):
+                name, kind = label, ""
+            values[name] = (kind.removesuffix(")"), text)
     return values
+
+
+def _listed_values(subkey: str) -> dict[str, str]:
+    """Map each value name in the list_key() output to the text after ' : '."""
+    return {name: text for name, (_, text) in _listed(subkey).items()}
 
 
 def _value_names(subkey: str) -> list[str]:
@@ -95,19 +107,28 @@ def test_binary_value_is_listed_in_full(shell):
 
     listed = _listed_values(TIME_ZONE)
 
-    assert listed["StandardStart"] == "{" + ", ".join(map(str, standard_start)) + "}"
+    # In .reg hex, as get mode shows it and set mode takes it.
+    assert listed["StandardStart"] == "hex:" + ",".join(f"{b:02x}" for b in standard_start)
 
 
 def test_long_value_stays_on_one_line(shell):
     # The system Path does not fit in a 120-column line next to the value names.
-    # List mode shows it expanded; get mode shows the stored %VARIABLES%. Expand
-    # it in the same shell list mode runs in.
-    output, status = PowerShellExecutor.execute_command(
-        f"(Get-Item -LiteralPath '{_hklm(ENVIRONMENT)}').GetValue('Path')"
-    )
-    assert status == 0, output
-    expected = output.rstrip("\r\n")
-
     listed = _listed_values(ENVIRONMENT)
 
-    assert listed["Path"] == expected
+    assert listed["Path"] == _value(ENVIRONMENT, "Path")
+
+
+def test_values_are_listed_as_stored_with_their_type(shell):
+    # Get-ItemProperty expanded the %VARIABLES% of an ExpandString and the list
+    # did not say which type a value had. (Whether the system Path holds any
+    # variables depends on the machine; test_registry_get_stored_form.py
+    # lists one that does.)
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, ENVIRONMENT) as key:
+        path, kind = winreg.QueryValueEx(key, "Path")
+    kind_name = {winreg.REG_EXPAND_SZ: "ExpandString", winreg.REG_SZ: "String"}[kind]
+
+    listed = _listed(ENVIRONMENT)
+
+    assert listed["Path"] == (kind_name, path)
+    assert _listed(SERVICE_GROUP_ORDER)["List"][0] == "MultiString"
+    assert _listed(TIME_ZONE)["StandardStart"][0] == "Binary"
