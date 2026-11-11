@@ -31,6 +31,7 @@ from windows_mcp import uia
 logger = logging.getLogger(__name__)
 
 _REFRESH_SECONDS = 0.05
+_ACK_TIMEOUT_SECONDS = 3.0
 _RIPPLE_SECONDS = 0.45
 _SW_HIDE = 0
 _WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -249,6 +250,9 @@ class _Indicator:
         self.applied = 0
         self.generation = -1
         self.error: BaseException | None = None
+        # A missed ack is not a dead thread. Health stays false until a later
+        # apply, but change() may try again instead of failing forever.
+        self.missed_ack = False
         self.heartbeat = 0.0
         self.started = threading.Event()
 
@@ -279,6 +283,10 @@ class _Indicator:
                 raise RuntimeError("AI control indicator failed") from self.error
             if not self.thread.is_alive():
                 raise RuntimeError("AI control indicator stopped")
+            prior_active = self.active
+            prior_pending = self.pending
+            prior_consent = self.consent
+            prior_suspended = self.suspended
             if generation is not None:
                 self.generation = generation
             if active is not None:
@@ -301,18 +309,35 @@ class _Indicator:
                     or self.error is not None
                     or not self.thread.is_alive()
                 ),
-                timeout=3.0,
+                timeout=_ACK_TIMEOUT_SECONDS,
             ):
-                # The owner may later recover and apply this hidden state.
-                # Make the failure sticky so health checks can never grant a
-                # new AI lease with an invisible indicator.
-                self.error = RuntimeError("AI control indicator did not acknowledge state change")
+                # This attempt did not ack, so the caller must not grant a lease.
+                # Drop the unacked request if it is still the latest one, and
+                # leave the thread runnable for a later change().
+                requested_active = self.active
+                requested_pending = self.pending
+                requested_generation = self.generation
+                if self.version == version:
+                    self.active = prior_active
+                    self.pending = prior_pending
+                    self.consent = prior_consent
+                    self.suspended = prior_suspended
+                    # Bump the version so the owner redraws the restored state and a late apply
+                    # of the dropped request is never taken as its ack.
+                    self.version += 1
+                self.missed_ack = True
                 self.condition.notify_all()
-                raise self.error
+                raise RuntimeError(
+                    "AI control indicator did not acknowledge state change "
+                    f"(active={requested_active}, pending={requested_pending}, "
+                    f"generation={requested_generation}, version={version})"
+                )
             if self.stopping:
                 raise RuntimeError("AI control indicator is stopping")
             if self.error:
                 raise RuntimeError("AI control indicator failed") from self.error
+            if self.applied >= version:
+                self.missed_ack = False
             return True
 
     def stop(self) -> None:
@@ -438,6 +463,10 @@ class _Indicator:
                 with self.condition:
                     self.heartbeat = time.monotonic()
                     self.applied = version
+                    # The timed-out caller already failed. Once the latest state
+                    # is on screen, a later attempt may take a lease again.
+                    if self.missed_ack and version >= self.version:
+                        self.missed_ack = False
                     self.condition.notify_all()
         except BaseException as exc:
             logger.exception("AI control indicator failed")
@@ -562,11 +591,14 @@ def is_healthy() -> bool:
     """Reject an alive but stalled window owner after one second."""
     with _lock:
         indicator = _instance
+    # missed_ack stays set until the owner applies a later state. A fresh
+    # heartbeat alone must not count as a visible AI lease. Test doubles omit it.
     return bool(
         indicator
         and indicator.thread.is_alive()
         and not indicator.stopping
         and indicator.error is None
+        and not getattr(indicator, "missed_ack", False)
         and 0 <= time.monotonic() - indicator.heartbeat <= 1.0
     )
 

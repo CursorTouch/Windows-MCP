@@ -117,13 +117,184 @@ def test_capture_ack_timeout_cannot_hide_recovered_indicator(monkeypatch):
     with pytest.raises(RuntimeError, match="did not acknowledge"):
         with control_overlay.suspend_for_capture():
             pytest.fail("Capture must not run before the indicator is hidden")
-    assert indicator.suspended == 1
-    # Even if the window owner later beats again, the incomplete transition
-    # must never be accepted as a healthy, visible AI lease.
+    # The hide was not applied, so it must not stay latched on the indicator.
+    assert indicator.suspended == 0
+    assert indicator.error is None
+    assert indicator.missed_ack is True
+    # A fresh heartbeat is not an acknowledgement. Control stays ungranted
+    # until some later change() actually gets an ack.
     indicator.heartbeat = time.monotonic()
     assert control_overlay.is_healthy() is False
-    with pytest.raises(RuntimeError, match="indicator failed"):
+    with pytest.raises(RuntimeError, match="did not acknowledge"):
         control_overlay.set_active(True)
+    assert indicator.error is None
+    assert indicator.active is False
+    assert indicator.missed_ack is True
+
+
+class _ScriptedAck:
+    """Owner thread that applies indicator state only while ``allow`` is set."""
+
+    def __init__(self) -> None:
+        self.indicator = control_overlay._Indicator()
+        self.indicator.heartbeat = time.monotonic()
+        self.allow = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.indicator.thread = self.thread
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _run(self) -> None:
+        indicator = self.indicator
+        while True:
+            with indicator.condition:
+                if indicator.stopping:
+                    return
+                version = indicator.version
+                if indicator.applied < version and self.allow.is_set():
+                    indicator.applied = version
+                    indicator.heartbeat = time.monotonic()
+                    if indicator.missed_ack and version >= indicator.version:
+                        indicator.missed_ack = False
+                    indicator.condition.notify_all()
+                indicator.condition.wait(timeout=0.01)
+
+
+def _stop_scripted(script: _ScriptedAck) -> None:
+    with script.indicator.condition:
+        script.indicator.stopping = True
+        script.indicator.condition.notify_all()
+    script.thread.join(timeout=1)
+
+
+def test_ack_timeout_does_not_leave_control_unavailable(monkeypatch):
+    """One missed ack must not stick the indicator, or the controller, forever."""
+    monkeypatch.setattr(control_overlay, "_ACK_TIMEOUT_SECONDS", 0.2)
+    script = _ScriptedAck()
+    script.start()
+    monkeypatch.setattr(control_overlay, "_instance", script.indicator)
+    owner = control.ControlCoordinator()
+    try:
+        with pytest.raises(RuntimeError, match="did not acknowledge"):
+            control_overlay.set_active(True, generation=1)
+        assert script.indicator.error is None
+        assert script.indicator.missed_ack is True
+        assert script.indicator.active is False
+        assert control_overlay.is_healthy() is False
+        owner._fail_open(reason="AI control indicator did not acknowledge state change")
+        assert owner._snapshot_locked(time.monotonic())["state"] == "unavailable"
+        # Still unacknowledged: health must not clear the outage yet.
+        owner._recover_after_rehook(
+            owner._fault_token,
+            healthy=control_overlay.is_healthy(),
+            sampled_at=time.monotonic(),
+        )
+        assert owner._emergency is True
+        script.allow.set()
+        deadline = time.monotonic() + 1
+        while not control_overlay.is_healthy() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert control_overlay.is_healthy() is True
+        assert script.indicator.error is None
+        owner._recover_after_rehook(
+            owner._fault_token,
+            healthy=control_overlay.is_healthy(),
+            sampled_at=time.monotonic(),
+        )
+        assert owner._emergency is False
+        assert owner._snapshot_locked(time.monotonic())["state"] == "user"
+    finally:
+        _stop_scripted(script)
+        monkeypatch.setattr(control_overlay, "_instance", None)
+
+
+def test_set_active_succeeds_after_ack_timeout(monkeypatch):
+    """After a timeout, a later show can arm control once the thread acks."""
+    monkeypatch.setattr(control_overlay, "_ACK_TIMEOUT_SECONDS", 0.2)
+    script = _ScriptedAck()
+    script.start()
+    monkeypatch.setattr(control_overlay, "_instance", script.indicator)
+    owner = control.ControlCoordinator()
+    with owner._lock:
+        owner._state = "ai"
+        owner._generation = 2
+    try:
+        with pytest.raises(RuntimeError, match="did not acknowledge"):
+            control_overlay.set_active(True, generation=2)
+        assert owner._visual_armed is False
+        script.allow.set()
+        applied = control_overlay.set_active(True, generation=2)
+        assert applied is True
+        assert script.indicator.active is True
+        assert script.indicator.missed_ack is False
+        owner.arm_visible(2)
+        assert owner._visual_armed is True
+        assert owner._suppress is True
+    finally:
+        _stop_scripted(script)
+        monkeypatch.setattr(control_overlay, "_instance", None)
+
+
+def test_unacknowledged_indicator_does_not_grant_control(monkeypatch):
+    """A show that has not been acked must not arm an AI lease."""
+    monkeypatch.setattr(control_overlay, "_ACK_TIMEOUT_SECONDS", 0.4)
+    indicator = control_overlay._Indicator()
+    indicator.heartbeat = time.monotonic()
+    saw_request = threading.Event()
+
+    def idle() -> None:
+        while True:
+            with indicator.condition:
+                if indicator.version > indicator.applied:
+                    saw_request.set()
+                if indicator.stopping:
+                    return
+                indicator.condition.wait(timeout=0.01)
+
+    thread = threading.Thread(target=idle, daemon=True)
+    indicator.thread = thread
+    thread.start()
+    monkeypatch.setattr(control_overlay, "_instance", indicator)
+    owner = control.ControlCoordinator()
+    with owner._lock:
+        owner._state = "ai"
+        owner._generation = 4
+    outcome: dict[str, object] = {}
+
+    def attempt() -> None:
+        try:
+            applied = control_overlay.set_active(True, generation=4)
+        except RuntimeError as exc:
+            outcome["error"] = exc
+            return
+        outcome["applied"] = applied
+        if applied:
+            owner.arm_visible(4)
+
+    worker = threading.Thread(target=attempt)
+    worker.start()
+    try:
+        assert saw_request.wait(1)
+        # The show is in flight and has not been acked, so nothing may arm it.
+        assert "applied" not in outcome
+        assert owner._visual_armed is False
+        assert owner._suppress is False
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert "applied" not in outcome
+        assert "did not acknowledge" in str(outcome["error"])
+        assert owner._visual_armed is False
+        assert owner._suppress is False
+        assert indicator.active is False
+        assert indicator.missed_ack is True
+    finally:
+        with indicator.condition:
+            indicator.stopping = True
+            indicator.condition.notify_all()
+        thread.join(timeout=1)
+        worker.join(timeout=1)
+        monkeypatch.setattr(control_overlay, "_instance", None)
 
 
 def test_newer_user_state_rejects_ai_show_waiting_behind_capture(monkeypatch):
