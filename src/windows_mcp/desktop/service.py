@@ -298,6 +298,10 @@ class Desktop:
                 )
             else:
                 screenshot = self.get_screenshot(capture_rect=capture_rect)
+                if grid_lines:
+                    # use_annotation=False leaves out the element boxes, not a requested grid.
+                    screenshot = screenshot.copy()
+                    self._draw_grid_lines(screenshot, grid_lines)
 
             screenshot_original_size = Size(width=screenshot.width, height=screenshot.height)
 
@@ -1721,6 +1725,19 @@ class Desktop:
         flash_overlay.show_capture_flash(capture_rect)
         return image
 
+    @staticmethod
+    def _draw_grid_lines(image: Image.Image, grid_lines: tuple[int, int]) -> None:
+        """Divide the image into grid_lines = (columns, rows) equal cells with light gray lines."""
+        draw = ImageDraw.Draw(image)
+        image_width, image_height = image.size
+        w_count, h_count = grid_lines
+        for i in range(1, w_count):
+            x = image_width * i // w_count
+            draw.line([(x, 0), (x, image_height)], fill=(200, 200, 200, 128), width=1)
+        for i in range(1, h_count):
+            y = image_height * i // h_count
+            draw.line([(0, y), (image_width, y)], fill=(200, 200, 200, 128), width=1)
+
     def get_annotated_screenshot(
         self,
         nodes: list[TreeElementNode],
@@ -1765,13 +1782,7 @@ class Desktop:
 
         # Draw grid lines if requested
         if grid_lines:
-            w_count, h_count = grid_lines
-            for i in range(1, w_count):
-                x = image_width * i // w_count
-                draw.line([(x, 0), (x, image_height)], fill=(200, 200, 200, 128), width=1)
-            for i in range(1, h_count):
-                y = image_height * i // h_count
-                draw.line([(0, y), (image_width, y)], fill=(200, 200, 200, 128), width=1)
+            self._draw_grid_lines(annotated_screenshot, grid_lines)
 
         def draw_annotation(label, node: TreeElementNode):
             box = node.bounding_box
