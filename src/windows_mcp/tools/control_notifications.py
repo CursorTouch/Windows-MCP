@@ -303,7 +303,16 @@ class ControlToolGate(Middleware):
             except Exception as exc:
                 from windows_mcp.desktop.control import ControlBlocked
                 from windows_mcp.desktop.control_ledger import InputUnavailable
+                from windows_mcp.infrastructure.thread_affinity import UIAWorkerBusyError
 
+                cur: BaseException | None = exc
+                while cur is not None:
+                    if isinstance(cur, UIAWorkerBusyError):
+                        release = getattr(self.controller, "release", None)
+                        if callable(release):
+                            release()
+                        break
+                    cur = cur.__cause__ or cur.__context__
                 if isinstance(exc, ControlBlocked):
                     raise self._blocked(exc) from exc
                 if isinstance(exc, InputUnavailable):

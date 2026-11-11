@@ -8,9 +8,11 @@ from windows_mcp.infrastructure.security import (
     validate_url,
 )
 from windows_mcp.infrastructure.thread_affinity import (
+    UIAWorkerBusyError,
     is_uia_thread,
     run_uia_affine,
     uia_thread_id,
+    uia_worker_status,
 )
 from windows_mcp.infrastructure.analytics import Analytics, PostHogAnalytics, with_analytics
 from windows_mcp.infrastructure.config import (
@@ -35,9 +37,11 @@ __all__ = [
     "parse_ip_allowlist",
     "safe_get",
     "validate_url",
+    "UIAWorkerBusyError",
     "is_uia_thread",
     "run_uia_affine",
     "uia_thread_id",
+    "uia_worker_status",
     "Analytics",
     "PostHogAnalytics",
     "with_analytics",
