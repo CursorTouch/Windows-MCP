@@ -77,7 +77,6 @@ class ControlCoordinator:
         self._state = "unavailable"
         self._generation = 0
         self._active_calls = 0
-        self._lease_until = 0.0
         self._last_user = 0.0
         self._last_physical_event = 0.0  # Written before hook events enter the queue.
         self._last_point: tuple[int, int] | None = None  # Cursor baseline for activity.
@@ -288,11 +287,7 @@ class ControlCoordinator:
             and now - max(self._last_user, self._last_physical_event) >= self.idle_timeout_seconds
         ):
             return self._set_locked("ready")
-        if self._state == "ai" and not self._active_calls and now >= self._lease_until:
-            if recent:
-                self._last_user = self._last_physical_event
-                return self._set_locked("user")
-            return self._set_locked("ready")
+        # AI control has no expiry: it ends on release(), a user takeover, or shutdown.
         return False
 
     def would_ask(self) -> bool:
@@ -434,8 +429,16 @@ class ControlCoordinator:
     def end_call(self, token: int) -> None:
         with self._lock:
             self._active_calls = max(0, self._active_calls - 1)
-            if self._state in ("ai", "takeover_pending") and not self._active_calls:
-                self._lease_until = time.monotonic() + 15.0
+
+    def release(self) -> dict:
+        """End AI control at the agent's request; a running call stops at its next checkpoint."""
+        now = time.monotonic()
+        with self._lock:
+            changed = self._state == "ai" and self._set_locked("ready")
+            result = self._snapshot_locked(now)
+        if changed:
+            self._notify(result)
+        return result
 
     def start(self) -> None:
         if not self.enabled:
