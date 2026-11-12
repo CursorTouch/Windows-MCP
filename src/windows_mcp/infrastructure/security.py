@@ -30,6 +30,9 @@ def _is_private_target(ip: ipaddress._BaseAddress) -> bool:
         ip.is_multicast,
         ip.is_reserved,
         ip.is_unspecified,
+        # Carrier-grade NAT (100.64.0.0/10) is not "private" to ipaddress. It
+        # holds Tailscale hosts and the Alibaba Cloud metadata service.
+        not ip.is_global,
     ))
 
 
@@ -42,8 +45,9 @@ def validate_url(url: str, *, allow_private: bool = False) -> str | None:
     """Raise ValueError if the URL is unsafe to fetch (SSRF protection).
 
     Blocks non-http/https schemes, credential-embedded URLs, and hostnames
-    that resolve to private, loopback, link-local, multicast, reserved, or
-    unspecified addresses. Pass allow_private=True to skip the address check.
+    that resolve to private, loopback, link-local, multicast, reserved,
+    unspecified, or other non-global addresses (such as carrier-grade NAT).
+    Pass allow_private=True to skip the address check.
 
     Returns the address the caller must connect to, or None when no lookup
     was performed. Resolving the hostname a second time at connect would

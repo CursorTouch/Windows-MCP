@@ -86,11 +86,19 @@ def _patch_validator(monkeypatch, blocked: set[str]) -> list[str]:
         "http://169.254.169.254/latest/meta-data/",
         "http://10.0.0.5/admin",
         "http://[::1]/secret",
+        "http://100.100.100.200/latest/meta-data/",
+        "http://100.64.0.1/admin",
+        "http://[::ffff:100.100.100.200]/latest/meta-data/",
     ],
 )
 def test_validate_url_blocks_internal_targets(url: str) -> None:
     with pytest.raises(ValueError, match="blocked"):
         validate_url(url)
+
+
+@pytest.mark.parametrize("url", ["http://100.63.255.255/", "http://100.128.0.0/"])
+def test_validate_url_allows_public_neighbors_of_cgnat(url: str) -> None:
+    assert validate_url(url) == url.split("/")[2]
 
 
 @pytest.mark.parametrize("url", ["file:///C:/Windows/win.ini", "gopher://example.com/"])
