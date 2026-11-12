@@ -246,6 +246,10 @@ class Tree:
         notification going away) fails every UIA call. When a window's capture fails
         and ``IsWindow`` reports that it is gone, it is neither retried nor reported
         as a failure.
+
+        A window that still exists and fails with an error other than a timeout is
+        retried up to ``THREAD_MAX_RETRIES`` times. The wait before a retry starts at
+        0.5 seconds and doubles each time.
         """
         interactive_nodes, scrollable_nodes, dom_informative_nodes = [], [], []
         failed_handles = []
@@ -295,7 +299,7 @@ class Tree:
                 break
             for attempt in range(THREAD_MAX_RETRIES + 1):
                 try:
-                    result = self.get_nodes(handle, is_browser, wait_time=0.5 * (2 ** (attempt - 1)) if attempt > 0 else 0, use_dom=use_dom)
+                    result = self.get_nodes(handle, is_browser, use_dom=use_dom)
                     if result:
                         element_nodes, scroll_nodes, info_nodes, win_sem_node = result
                         interactive_nodes.extend(element_nodes)
