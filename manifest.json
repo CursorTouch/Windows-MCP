@@ -97,7 +97,7 @@
     },
     {
       "name": "Screenshot",
-      "description": "Captures a fast screenshot-first desktop snapshot with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports display=[0] or display=[0,1] using zero-based active Windows display indices. Note: the returned image may be downscaled for efficiency; when it is, multiply image coordinates by the ratio of original size to displayed size to get the actual screen coordinates for mouse actions (Click, Move, etc.)."
+      "description": "Captures a fast screenshot-first desktop snapshot with cursor position, active/open windows, and an image. Skips UI tree extraction for speed and should be the default first call when you mainly need visual context. Supports display=[0] or display=[0,1] using zero-based active Windows display indices. Note: the returned image may be downscaled for efficiency, and it starts at the top-left corner of the captured area, not necessarily at screen (0, 0). To get the screen coordinates for mouse actions (Click, Move, etc.), multiply image coordinates by the ratio of original size to displayed size, then add the screen coordinate of image pixel (0, 0) when the response gives one."
     },
     {
       "name": "Snapshot",
