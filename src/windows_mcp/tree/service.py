@@ -18,6 +18,7 @@ from psutil import Process
 import logging
 import weakref
 import win32process
+import win32gui
 import os
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,11 @@ class Tree:
         Windows whose owning process is listed in ``WINDOWS_MCP_EXCLUDE_PROCESSES``
         are skipped before any UIA call, so their accessibility providers are never
         entered. Skipped windows are neither traversed nor reported as failures.
+
+        A window that closes after the window list was taken (a dialog, menu or
+        notification going away) fails every UIA call. When a window's capture fails
+        and ``IsWindow`` reports that it is gone, it is neither retried nor reported
+        as a failure.
         """
         interactive_nodes, scrollable_nodes, dom_informative_nodes = [], [], []
         failed_handles = []
@@ -272,6 +278,10 @@ class Tree:
                     )
                     failed_handles.append(handle)
                     continue
+                if not win32gui.IsWindow(handle):
+                    # Closed since the window list was taken: nothing to walk, and not a failure.
+                    logger.debug(f"Window handle {handle} has closed; skipping it for this capture")
+                    continue
             task_inputs.append((handle, is_browser))
 
         retry_counts = {handle: 0 for handle in windows_handles}
@@ -303,6 +313,13 @@ class Tree:
                             f"skipping it for this capture. Error: {e}"
                         )
                         failed_handles.append(handle)
+                        break
+                    if not win32gui.IsWindow(handle):
+                        # The window closed before or during its walk. No retry can reach it,
+                        # and a window that is gone is not a failed capture.
+                        logger.debug(
+                            f"Window handle {handle} has closed; skipping it for this capture"
+                        )
                         break
                     retry_counts[handle] = attempt + 1
                     try:
