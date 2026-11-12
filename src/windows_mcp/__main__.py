@@ -466,7 +466,12 @@ class _LegacyAwareGroup(click.Group):
 def _apply_tool_filter(
     mcp, explicit_tools: list[str] | None, exclude_tools: list[str] | None
 ) -> None:
-    """Remove disabled tools from the MCP registry."""
+    """Remove disabled tools from the MCP registry.
+
+    Names match registered tool names ignoring case. A name that matches none
+    raises ``click.ClickException`` instead of being skipped, which would leave
+    an excluded tool enabled or drop a requested one.
+    """
     tool_mgr = getattr(mcp, "_tool_manager", None)
     tools_dict = getattr(tool_mgr, "_tools", None)
     if tools_dict is None:
@@ -500,15 +505,22 @@ def _apply_tool_filter(
 
         registered = set(tools_dict.keys())
 
+    by_name = {name.lower(): name for name in registered}
+    requested = explicit_tools or exclude_tools or []
+    unknown = [t for t in requested if t.lower() not in by_name]
+    if unknown:
+        raise click.ClickException(
+            f"Unknown tools: {', '.join(unknown)}. Allowed: {', '.join(sorted(registered))}"
+        )
+
     if explicit_tools:
-        keep = {t for t in explicit_tools if t in registered}
+        keep = {by_name[t.lower()] for t in explicit_tools}
         keep.add("ControlStatus")
         for name in registered - keep:
             _remove(name)
     elif exclude_tools:
-        for name in exclude_tools:
-            if name in registered and name != "ControlStatus":
-                _remove(name)
+        for name in {by_name[t.lower()] for t in exclude_tools} - {"ControlStatus"}:
+            _remove(name)
     logger.debug("Tool filter applied: explicit=%s exclude=%s", explicit_tools, exclude_tools)
 
 
@@ -903,6 +915,8 @@ def serve(
             stateless_http=stateless_http,
         )
         logger.debug("Server shut down normally")
+    except click.ClickException:
+        raise
     except Exception:
         logger.error("Server exiting due to unhandled exception", exc_info=True)
         raise
