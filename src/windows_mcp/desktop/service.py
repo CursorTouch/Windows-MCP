@@ -1335,9 +1335,12 @@ class Desktop:
                 owner.input_ledger.release("key:ctrl")
 
     def multi_edit(self, locs: list[tuple[int, int, str]]) -> list[str]:
-        # Check every point first. Type checks its own point too, but only after
-        # the fields before it have been cleared and retyped.
-        for x, y, _ in locs:
+        # Check every field first. Type checks its own point too, but only after
+        # the fields before it have been cleared and retyped, and it fails on a
+        # text that is not a string only after clicking and clearing its field.
+        for x, y, text in locs:
+            if not isinstance(text, str):
+                raise ValueError(f"Text for the field at ({x},{y}) must be a string, not {text!r}")
             self._validate_screen_point(x, y)
         notes = []
         for loc in locs:
