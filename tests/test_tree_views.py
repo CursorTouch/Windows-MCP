@@ -259,3 +259,49 @@ class TestSelectedItemMetadata:
 
     def test_unselected_item_adds_nothing(self):
         assert _node_meta_str({"has_focused": False, "is_selected": False}) == ""
+
+
+class TestLineBreaks:
+    """A name or value can span lines; the UI tree must still give each element one line."""
+
+    def test_multiline_value_stays_on_its_element_line(self):
+        result = _render_edit({"value": "one\r\ntwo\rthree\nfour"})
+
+        lines = result.splitlines()
+        assert len(lines) == 3
+        assert lines[-1].endswith(r'[value:"one\r\ntwo\rthree\nfour"]')
+
+    def test_multiline_names_stay_on_their_element_lines(self):
+        name = "one\r\ntwo\rthree\nfour"
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(control_type="Window", element_type="window", name=name)
+        group = SemanticNode(control_type="Group", element_type="structural", name=name)
+        group.add_child(
+            SemanticNode(
+                control_type="Button",
+                element_type="interactive",
+                name=name,
+                center=Center(x=210, y=40),
+            )
+        )
+        root.add_child(window)
+        window.add_child(group)
+        window.add_child(
+            SemanticNode(
+                control_type="Pane",
+                element_type="scrollable",
+                name=name,
+                center=Center(x=300, y=200),
+            )
+        )
+        window.add_child(SemanticNode(control_type="Text", element_type="informative", name=name))
+
+        lines = TreeState(semantic_tree_root=root).semantic_tree_to_string().splitlines()
+
+        escaped = r"one\r\ntwo\rthree\nfour"
+        assert len(lines) == 6
+        assert lines[1].endswith(f'window "{escaped}"')
+        assert lines[2].endswith(f'group "{escaped}"')
+        assert lines[3].endswith(f'(210,40) button "{escaped}"  [action: click]')
+        assert lines[4].endswith(f'(300,200) pane "{escaped}"  [action: click]')
+        assert lines[5].endswith(f'text "{escaped}"')
