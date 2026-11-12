@@ -945,6 +945,8 @@ class TestProcessExclusion:
         )
         # Retries sleep between attempts; irrelevant here and slow in a test.
         monkeypatch.setattr("windows_mcp.tree.service.sleep", lambda seconds: None)
+        # 200 stands for a window that still exists, so its failures are retried.
+        monkeypatch.setattr("windows_mcp.tree.service.win32gui.IsWindow", lambda handle: True)
 
         def failing_get_nodes(self, handle, is_browser=False, wait_time=0, use_dom=False):
             attempts.append(handle)

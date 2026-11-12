@@ -254,7 +254,9 @@ def test_other_errors_keep_the_existing_retry_policy():
         attempts.append(handle)
         raise RuntimeError("transient")
 
+    # Handle 7 stands for a window that still exists, so its failures are retried.
     with mock.patch.object(tree_service, "ControlFromHandle", lambda h: SimpleNamespace(ClassName="X", Name="x")), \
+            mock.patch.object(tree_service.win32gui, "IsWindow", return_value=True), \
             mock.patch.object(tree, "get_nodes", get_nodes, create=True), \
             mock.patch.object(tree_service, "sleep"):
         result = tree.get_window_wise_nodes(windows_handles=[7], active_window_flag=False)
