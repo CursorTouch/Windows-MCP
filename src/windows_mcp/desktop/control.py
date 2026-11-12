@@ -63,6 +63,7 @@ class ControlCoordinator:
         # Set once by the server lifespan before any tools or hooks start.
         self.enabled = True
         self.idle_timeout_seconds = 10.0
+        self.call_lease_timeout_seconds = 30.0
         self.policy = "relaxed"
         self.consent_countdown_seconds = 10
         self._lock = threading.Lock()
@@ -77,6 +78,7 @@ class ControlCoordinator:
         self._state = "unavailable"
         self._generation = 0
         self._active_calls = 0
+        self._active_call_since: float | None = None
         self._last_user = 0.0
         self._last_physical_event = 0.0  # Written before hook events enter the queue.
         self._last_point: tuple[int, int] | None = None  # Cursor baseline for activity.
@@ -287,7 +289,16 @@ class ControlCoordinator:
             and now - max(self._last_user, self._last_physical_event) >= self.idle_timeout_seconds
         ):
             return self._set_locked("ready")
-        # AI control has no expiry: it ends on release(), a user takeover, or shutdown.
+        if (
+            self._state == "ai"
+            and self._active_calls > 0
+            and self._active_call_since is not None
+            and self.call_lease_timeout_seconds > 0
+            and now - self._active_call_since >= self.call_lease_timeout_seconds
+        ):
+            # Time-bound the input suppression lease when an in-flight call stalls.
+            return self._set_locked("ready")
+        # Otherwise AI control ends on release(), a user takeover, or shutdown.
         return False
 
     def would_ask(self) -> bool:
@@ -371,6 +382,8 @@ class ControlCoordinator:
                 raise ControlBlocked("CONTROL_UNAVAILABLE", self._snapshot_locked(now))
             changed = self._set_locked("ai") or changed
             self._active_calls += 1
+            if self._active_call_since is None:
+                self._active_call_since = now
             token = self._generation
             result = self._snapshot_locked(now)
         if changed:
@@ -429,6 +442,8 @@ class ControlCoordinator:
     def end_call(self, token: int) -> None:
         with self._lock:
             self._active_calls = max(0, self._active_calls - 1)
+            if self._active_calls == 0:
+                self._active_call_since = None
 
     def release(self) -> dict:
         """End AI control at the agent's request; a running call stops at its next checkpoint."""

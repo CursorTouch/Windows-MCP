@@ -3,6 +3,7 @@
 from mcp.types import ToolAnnotations
 
 from windows_mcp.desktop.control import get_controller
+from windows_mcp.infrastructure.thread_affinity import uia_worker_status
 
 
 def register(mcp, *, get_desktop, get_analytics):
@@ -19,4 +20,10 @@ def register(mcp, *, get_desktop, get_analytics):
     )
     def control_status_tool(release: bool = False) -> dict:
         controller = get_controller()
-        return controller.release() if release else controller.status()
+        status = controller.release() if release else controller.status()
+        worker = uia_worker_status()
+        return {
+            **status,
+            "ui_busy": worker["busy"],
+            "uia_worker": worker,
+        }
