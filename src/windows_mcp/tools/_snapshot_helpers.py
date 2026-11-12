@@ -14,6 +14,7 @@ from fastmcp.utilities.types import Image
 from textwrap import dedent
 from windows_mcp.desktop.service import Desktop, Size
 from windows_mcp.desktop.utils import remove_private_use_chars, repair_surrogates
+from windows_mcp.desktop.views import DesktopState
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,25 @@ def _as_region(value: list | str | None) -> list | None:
 
 
 WINDOWS_NOT_LISTED = "Not listed: Screenshot skips window enumeration. Call Snapshot for windows."
+
+
+def _image_origin(desktop_state: DesktopState) -> tuple[int, int]:
+    """Return the screen coordinate of the screenshot's top-left pixel.
+
+    A region or display capture starts at the corner of its rectangle. A full capture
+    covers the virtual screen, which starts left of or above (0, 0) when a monitor sits
+    left of or above the primary one.
+    """
+    region = desktop_state.screenshot_region
+    if region is not None:
+        return region.left, region.top
+    displays = desktop_state.available_displays
+    if not displays:
+        return 0, 0
+    return (
+        min(display.bounding_box.left for display in displays),
+        min(display.bounding_box.top for display in displays),
+    )
 
 
 def capture_desktop_state(
@@ -192,17 +212,29 @@ def build_snapshot_response(
     if desktop_state.screenshot_original_size:
         orig = desktop_state.screenshot_original_size
         scale = desktop_state.screenshot_scale or 1.0
+        origin_x, origin_y = _image_origin(desktop_state)
+        origin = f"({origin_x},{origin_y})"
         if scale < 1.0:
             coord_scale = round(1.0 / scale, 6)
+            add_origin = ""
+            if (origin_x, origin_y) != (0, 0):
+                add_origin = f", then add {origin}, the screen coordinate of image pixel (0, 0),"
             metadata_text += (
                 f"Screenshot Original Size: {orig.to_string()}\n"
                 f"Screenshot Coordinate Scale: {coord_scale} "
                 f"— image pixels are downscaled; multiply every image pixel coordinate by "
-                f"{coord_scale} before passing to Click, Move, Scroll, or any loc= argument "
-                f"(e.g. image pixel (200, 150) → screen coordinate ({round(200 * coord_scale)}, {round(150 * coord_scale)}))\n"
+                f"{coord_scale}{add_origin} before passing to Click, Move, Scroll, or any loc= argument "
+                f"(e.g. image pixel (200, 150) → screen coordinate ({origin_x + round(200 * coord_scale)}, {origin_y + round(150 * coord_scale)}))\n"
             )
         else:
             metadata_text += f"Screenshot Size: {orig.to_string()}\n"
+            if (origin_x, origin_y) != (0, 0):
+                metadata_text += (
+                    f"Screenshot Origin: {origin} — image pixel (0, 0) is screen coordinate {origin}; "
+                    f"add {origin} to every image pixel coordinate before passing to Click, Move, "
+                    f"Scroll, or any loc= argument "
+                    f"(e.g. image pixel (200, 150) → screen coordinate ({origin_x + 200}, {origin_y + 150}))\n"
+                )
     if desktop_state.available_displays:
         metadata_text += "Visible Displays: "
         metadata_text += "; ".join(
