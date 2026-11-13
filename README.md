@@ -490,6 +490,8 @@ windows-mcp serve --tools "Screenshot,Click,Snapshot"   # Enable only these tool
 windows-mcp serve --exclude-tools "PowerShell,Registry" # Disable specific tools
 ```
 
+Tool names are not case-sensitive. A name that matches no tool stops the server with an error that lists the tool names.
+
 ### TLS/HTTPS
 ```shell
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
