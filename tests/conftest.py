@@ -8,6 +8,10 @@ import pytest
 # explicitly via monkeypatch.
 os.environ.setdefault("WINDOWS_MCP_DISABLE_FLASH", "1")
 
+# The suite must not depend on the real processes that launched pytest (an editor,
+# a terminal): keep the host-window exclusion off unless a test switches it on.
+os.environ.setdefault("WINDOWS_MCP_EXCLUDE_HOST_PROCESS", "0")
+
 from windows_mcp.tree.views import BoundingBox, Center, TreeElementNode, ScrollElementNode
 from windows_mcp.desktop.views import Window, Status, DesktopState
 
