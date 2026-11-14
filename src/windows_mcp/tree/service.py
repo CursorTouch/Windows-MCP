@@ -8,6 +8,7 @@ from windows_mcp.tree.cache_utils import (
     is_uia_dead_element_error,
 )
 from windows_mcp.tree.budget import TreeElementBudget, resolve_max_tree_elements
+from windows_mcp.tree.host_process import is_host_window
 from windows_mcp.tree.utils import random_point_within_bounding_box
 from windows_mcp.tree.word_runs import merge_word_nodes_enabled, merge_word_runs
 from windows_mcp.tree import ia2 as ia2_traversal
@@ -241,6 +242,8 @@ class Tree:
         Windows whose owning process is listed in ``WINDOWS_MCP_EXCLUDE_PROCESSES``
         are skipped before any UIA call, so their accessibility providers are never
         entered. Skipped windows are neither traversed nor reported as failures.
+        The windows of the program that launched this server are skipped the same
+        way unless ``WINDOWS_MCP_EXCLUDE_HOST_PROCESS`` switches that off.
 
         A window that closes after the window list was taken (a dialog, menu or
         notification going away) fails every UIA call. When a window's capture fails
@@ -258,6 +261,9 @@ class Tree:
         excluded_processes = _excluded_process_names()
         task_inputs = []
         for handle in windows_handles:
+            if is_host_window(handle):
+                logger.debug("[Tree] Skipping UIA traversal for host window %s", handle)
+                continue
             if excluded_processes:
                 # Resolve the owning process before any UIA call: entering an
                 # excluded provider is the very thing this skip exists to avoid.

@@ -757,6 +757,18 @@ A window is excluded *before* any UI Automation call is made against it, so its 
 
 This is an exclusion mechanism — a mitigation, not a complete fix for every form of [#383](https://github.com/CursorTouch/Windows-MCP/issues/383). It only skips the processes you name; a pathological window you have not listed can still stall a capture.
 
+### Windows of the program that launched the server
+
+| Variable | Default | Description |
+|---|---|---|
+| `WINDOWS_MCP_EXCLUDE_HOST_PROCESS` | _(enabled)_ | Set to `0`, `false`, `no`, or `off` to let UI Automation query the windows of the program that launched the server. |
+
+An MCP client that starts Windows-MCP over stdio is a parent of the server process. When that client is an Electron app (VS Code, Cursor, Claude Desktop), UI Automation calls into its own windows have been seen to leave it hung, after which Windows closes the app together with the session ([#383](https://github.com/CursorTouch/Windows-MCP/issues/383)). By default the server therefore treats the windows of every process in its own launch chain as excluded, exactly as if they were listed in `WINDOWS_MCP_EXCLUDE_PROCESSES`: they are skipped before any UI Automation call and are omitted from the window list, the active-window metadata and the accessibility tree. Screenshots still show them, and the input tools still act on them by coordinates, but `App` cannot find them by name to switch to or resize them.
+
+The launch chain is the server's parent process, that process's parent, and so on, stopping before the desktop shell (`explorer.exe`), so the taskbar, the desktop and File Explorer windows are never affected. Windows are matched by owning process, not by program name: a second copy of the same application that runs as its own process is still traversed, while every window owned by a process in the chain is skipped. A server started by hand in a terminal has that terminal in its chain.
+
+Set `WINDOWS_MCP_EXCLUDE_HOST_PROCESS=0` if you need Snapshot or `App` to work with the client's own windows.
+
 ### UI Automation timeouts
 
 | Variable | Default | Description |
