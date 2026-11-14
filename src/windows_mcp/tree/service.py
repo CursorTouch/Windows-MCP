@@ -651,6 +651,19 @@ class Tree:
                         if isinstance(node,DocumentControl):
                             is_interactive=True
 
+                        # An edit field scrolled out of view passes the visibility check above,
+                        # which keeps edits that UIA reports off-screen. Clipped to its page or
+                        # window and to the screen, its box is empty: its center would be (0,0),
+                        # the top-left corner of the primary display, where Click and Type with
+                        # its label would go. Leave out what has nothing on screen, as the IA2
+                        # walk and the word nodes do.
+                        if is_interactive:
+                            clip_box = window_bounding_box
+                            if is_browser and is_dom:
+                                clip_box = self.dom_bounding_box
+                            visible_box = self.iou_bounding_box(clip_box, element_bounding_box)
+                            is_interactive = visible_box.width > 0 and visible_box.height > 0
+
                         if is_interactive:
                             is_focused = node.CachedHasKeyboardFocus
                             name = node.CachedName.strip()

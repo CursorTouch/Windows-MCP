@@ -406,6 +406,71 @@ class TestTreeTraversal:
         expected = f'(60,25) {localized_control_type} "Dark"  [action: {action}]'
         assert line.endswith(expected + ("  [selected]" if is_selected else ""))
 
+    @pytest.mark.parametrize("is_dom", [False, True], ids=["window", "web page"])
+    def test_field_scrolled_out_of_view_is_not_listed_at_the_origin(
+        self, tree_instance, monkeypatch, is_dom
+    ):
+        """The walk keeps edit fields that UIA reports off-screen. One scrolled below its window,
+        or below the visible part of its page, has nothing on screen: clipped, its box is empty
+        and its center (0,0), where Click and Type with its label would go. One on screen stays.
+        """
+        name_field = _make_edit_child("Name", Rect(10, 10, 410, 50))
+        comment_field = _make_edit_child("Comment", Rect(10, 900, 410, 940))
+        form = _make_pane_parent()
+        children = {id(form): [name_field, comment_field]}
+        monkeypatch.setattr(
+            "windows_mcp.tree.service.CachedControlHelper.get_cached_children",
+            lambda node, cache_request: children.get(id(node), []),
+        )
+        monkeypatch.setattr("windows_mcp.tree.service.AccessibleRoleNames", {42: "Text"})
+
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(
+            control_type="Window", element_type="window", name="Feedback", window_name="Feedback"
+        )
+        root.add_child(window)
+        if is_dom:
+            tree_instance.dom_bounding_box = make_box(0, 0, 800, 600)  # the visible page
+        interactive_nodes, dom_interactive_nodes = [], []
+
+        tree_instance.tree_traversal(
+            form,
+            Rect(0, 0, 800, 600),
+            "Feedback",
+            is_dom,  # is_browser: a page is walked in a browser window
+            interactive_nodes,
+            [],
+            dom_interactive_nodes,
+            [],
+            is_dom=is_dom,
+            current_semantic_node=None if is_dom else window,
+        )
+
+        listed = dom_interactive_nodes if is_dom else interactive_nodes
+        assert [(node.name, node.center.to_string()) for node in listed] == [("Name", "(210,30)")]
+        if not is_dom:
+            assert TreeState(semantic_tree_root=root).semantic_tree_to_string().splitlines() == [
+                "desktop",
+                '    └── window "Feedback"',
+                '        └── (210,30) edit "Name"  [action: fill]',
+            ]
+
+
+def _make_edit_child(name: str, rect: Rect) -> MagicMock:
+    child = MagicMock()
+    child.CachedIsOffscreen = True  # as UIA reports a field scrolled out of view
+    child.CachedControlTypeName = "EditControl"
+    child.CachedIsControlElement = True
+    child.CachedBoundingRectangle = rect
+    child.CachedIsEnabled = True
+    child.CachedHasKeyboardFocus = False
+    child.CachedName = child.Name = name
+    child.CachedLocalizedControlType = "edit"
+    child.CachedAcceleratorKey = ""
+    child.CachedHelpText = ""
+    child.GetCachedPropertyValue.return_value = 42
+    return child
+
 
 def _make_button_child(name: str, left: int) -> MagicMock:
     child = MagicMock()
