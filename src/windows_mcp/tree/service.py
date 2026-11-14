@@ -1000,16 +1000,17 @@ class Tree:
             window_name=node.Name.strip()
             window_name=self.app_name_correction(window_name)
 
-            window_sem_node: Optional[SemanticNode] = None
-            if not is_browser:
-                window_sem_node = SemanticNode(
-                    control_type='Window',
-                    element_type='window',
-                    name=window_name,
-                    window_name=window_name,
-                )
+            window_sem_node = SemanticNode(
+                control_type='Window',
+                element_type='window',
+                name=window_name,
+                window_name=window_name,
+            )
+            # A browser's own controls (tabs, address bar, toolbar buttons, its dialogs) join the
+            # tree like any app's. use_dom=True leaves them out and keeps the page alone.
+            traversal_parent = None if is_browser and use_dom else window_sem_node
 
-            self.tree_traversal(node, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=False, is_dialog=False, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=window_sem_node)
+            self.tree_traversal(node, window_bounding_box, window_name, is_browser, interactive_nodes, scrollable_nodes, dom_interactive_nodes, dom_informative_nodes, is_dom=False, is_dialog=False, element_cache_req=element_cache_req, children_cache_req=children_cache_req, current_semantic_node=traversal_parent)
 
             # IA2 fallback: Firefox doesn't expose RootWebArea via UIA, so the traversal
             # above finds no DOM content. If this is a browser window and UIA gave us no
@@ -1070,17 +1071,11 @@ class Tree:
                 logger.debug(f'DOM informative nodes:{len(dom_informative_nodes)}')
             logger.debug(f'Scrollable nodes:{len(scrollable_nodes)}')
 
-            if not is_browser and window_sem_node is not None:
-                # tree_traversal visits reversed(children) for native apps — fix ordering now
-                _reverse_children_order(window_sem_node)
-            elif is_browser:
-                # Build browser window semantic tree post-hoc from flat DOM lists
-                window_sem_node = SemanticNode(
-                    control_type='Window',
-                    element_type='window',
-                    name=window_name,
-                    window_name=window_name,
-                )
+            # tree_traversal visits reversed(children) for native apps — fix ordering now
+            _reverse_children_order(window_sem_node)
+            if is_browser:
+                # The page comes from the flat DOM lists, in page order, after the browser's own
+                # controls. The walk enters RootWebArea without a semantic parent.
                 for n in dom_interactive_nodes:
                     window_sem_node.add_child(SemanticNode(
                         control_type=n.control_type,
