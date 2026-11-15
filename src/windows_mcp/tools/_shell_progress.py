@@ -86,7 +86,12 @@ class OutputTail:
                 self._decoders[stream] = decoder
             text = self._partial.get(stream, "") + decoder.decode(chunk)
             if stream == "stderr" and _CLIXML_MARKER in text:
+                # Plain text a native command wrote before the CLIXML document
+                # is readable; keep its complete lines before skipping the rest.
                 # Partial CLIXML is unreadable; the final result decodes it.
+                prefix = text.split(_CLIXML_MARKER, 1)[0]
+                for line in prefix.replace("\r\n", "\n").replace("\r", "\n").split("\n")[:-1]:
+                    self._add(line)
                 self._skipped.add(stream)
                 self._partial.pop(stream, None)
                 return
