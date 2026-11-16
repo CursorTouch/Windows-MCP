@@ -49,6 +49,13 @@ class TestParseDisplaySelection:
         with pytest.raises(ValueError):
             Desktop.parse_display_selection(["a"])
 
+    @pytest.mark.parametrize("value", [True, False, [True], [False], [0, True], [1, False]])
+    def test_rejects_booleans_as_display_indices(self, value):
+        # bool is an int subclass, so an unwrapped list element would otherwise
+        # be accepted as display index 1/0 -- as bare booleans already are not.
+        with pytest.raises(ValueError, match="zero-based active display indices"):
+            Desktop.parse_display_selection(value)
+
 
 class TestParseRegionSelection:
     @pytest.fixture

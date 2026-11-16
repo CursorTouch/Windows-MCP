@@ -1630,7 +1630,7 @@ class Desktop:
 
         unique_values: list[int] = []
         for value in values:
-            if not isinstance(value, int) or value < 0:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError("display must contain only zero-based active display indices")
             if value not in unique_values:
                 unique_values.append(value)
