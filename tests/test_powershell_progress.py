@@ -231,6 +231,26 @@ def test_output_tail_skips_clixml_stderr_but_keeps_plain_stderr():
     assert tail.lines() == ["plain warning", "out"]
 
 
+@pytest.mark.parametrize(
+    ("chunk", "expected"),
+    [
+        # A native program's plain stderr shares the pipe read with the CLIXML
+        # marker. Its complete lines are readable and must still reach the
+        # progress message; only the CLIXML document itself is skipped.
+        (b"plain warning\n#< CLIXML\r\n<Objs>x</Objs>\n", ["plain warning"]),
+        (b"one\r\ntwo\r\n#< CLIXML\r\n<Objs>x</Objs>\n", ["one", "two"]),
+        (b"a\rb\r#< CLIXML\r\n<Objs>x</Objs>\n", ["a", "b"]),
+        # No text before the marker, or only an unfinished line: nothing to show.
+        (b"#< CLIXML\r\n<Objs>x</Objs>\n", []),
+        (b"half a line #< CLIXML\r\n<Objs>x</Objs>\n", []),
+    ],
+)
+def test_output_tail_keeps_plain_stderr_before_clixml_in_one_chunk(chunk, expected):
+    tail = OutputTail()
+    tail.feed("stderr", chunk)
+    assert tail.lines() == expected
+
+
 def test_format_progress_message():
     assert (
         format_progress_message(45.4, 300, [])
