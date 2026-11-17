@@ -169,7 +169,7 @@
       "win32"
     ],
     "runtimes": {
-      "python": ">=3.13"
+      "python": ">=3.14"
     }
   },
   "keywords": [

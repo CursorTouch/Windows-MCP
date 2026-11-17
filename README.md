@@ -356,7 +356,7 @@ args=[
 <details>
   <summary>Install in Claude Code</summary>
 
-  1. Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview):
+  1. Install [Claude Code](https://code.claude.com/docs/en/setup):
 
 ```shell
 npm install -g @anthropic-ai/claude-code
@@ -396,6 +396,20 @@ npm install -g @anthropic-ai/claude-code
   ```
 
   To verify the server is registered, run `claude mcp list`. Inside Claude Code, use `/mcp` to check server status.
+
+  **Startup timeout.** Claude Code waits 30 seconds for an MCP server to start (`MCP_TIMEOUT`). The first `uvx` launch downloads and installs dependencies, and on a busy or antivirus-scanned machine even a warm start can take 15-30 seconds, so the server may show as failed in `/mcp`. Either pre-install it with `uv tool install windows-mcp` and register `windows-mcp.exe serve`, or raise the timeout before starting Claude Code:
+
+  ```powershell
+  $env:MCP_TIMEOUT = "120000"; claude
+  ```
+
+  **Environment variables.** Pass settings with `--env`, for example to turn off telemetry:
+
+  ```shell
+  claude mcp add --transport stdio --env ANONYMIZED_TELEMETRY=false windows-mcp -- uvx windows-mcp serve
+  ```
+
+  **Large results.** Claude Code warns when a tool result passes 10,000 tokens and caps it at 25,000 (`MAX_MCP_OUTPUT_TOKENS`); text over 50,000 characters is saved to a file instead, except `Snapshot`, which allows up to 100,000 characters inline. Prefer `Screenshot` over `Snapshot` when you only need to see the screen, pass `region` or `display` to capture less, and lower `WINDOWS_MCP_MAX_TREE_ELEMENTS` if UI trees are too large.
 
   **WSL (Windows Subsystem for Linux)**
 
