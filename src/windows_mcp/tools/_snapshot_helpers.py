@@ -135,6 +135,10 @@ def capture_desktop_state(
         desktop_state.screenshot.save(buffered, format="PNG")
         screenshot_bytes = buffered.getvalue()
         buffered.close()
+    # The Desktop keeps this state until the next capture. Everything after this
+    # point (response, save_path) uses the PNG bytes, so drop the full-resolution
+    # image instead of holding a copy of the screen in memory between calls.
+    desktop_state.screenshot = None
     if profile_enabled:
         screenshot_encode_ms = (time.perf_counter() - stage_started_at) * 1000
         logger.info(

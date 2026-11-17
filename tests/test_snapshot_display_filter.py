@@ -1,3 +1,4 @@
+import io
 import asyncio
 from unittest.mock import MagicMock, patch
 
@@ -816,3 +817,24 @@ class TestSnapshotTools:
         result = asyncio.run(main_module.screenshot_tool(save_path="relative.png"))
 
         assert result[0].startswith("Error saving screenshot:")
+
+    @pytest.mark.parametrize("tool_name", ["screenshot_tool", "state_tool"])
+    def test_tools_drop_the_full_image_once_it_is_encoded(
+        self, desktop_state, monkeypatch, tmp_path, tool_name
+    ):
+        # The Desktop keeps its last state between calls; holding the PIL image there
+        # kept a full-resolution copy of the screen alive for the life of the server.
+        desktop_state.screenshot.putpixel((3, 4), (10, 20, 30))
+        fake_desktop = MagicMock()
+        fake_desktop.get_state.return_value = desktop_state
+        monkeypatch.setattr(main_module, "desktop", fake_desktop)
+        target = tmp_path / "shot.png"
+
+        tool = getattr(main_module, tool_name)
+        result = asyncio.run(tool(save_path=str(target)))
+
+        assert desktop_state.screenshot is None
+        returned = Image.open(io.BytesIO(result[-1].data))
+        assert returned.size == (640, 480)
+        assert returned.convert("RGB").getpixel((3, 4)) == (10, 20, 30)
+        assert Image.open(target).convert("RGB").getpixel((3, 4)) == (10, 20, 30)
