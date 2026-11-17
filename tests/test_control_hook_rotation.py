@@ -126,8 +126,9 @@ def test_monitor_recovers_stale_hold_before_normal_tick(monkeypatch):
 def test_input_monitor_rotates_after_interval_and_cleans_hooks(monkeypatch):
     owner, events, waits, _ = _run_monitor(monkeypatch, [11, 12, 21, 22])
     assert owner._startup_error is None
-    # The pump parks on the full input queue so queued input is never missed.
-    assert waits == [(10, 0x04FF, 0x0006), (10, 0x04FF, 0x0006)]
+    # The pump parks on the full input queue so queued input is never missed,
+    # and with nothing held it stays parked until the next hook rotation is due.
+    assert waits == [(5000, 0x04FF, 0x0006), (5000, 0x04FF, 0x0006)]
     assert events.index(("install", 14, 21)) < events.index(("unhook", 11))
     assert events.index(("install", 13, 22)) < events.index(("unhook", 12))
     assert events[-5:] == [

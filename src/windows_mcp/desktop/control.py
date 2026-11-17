@@ -24,6 +24,7 @@ from windows_mcp.desktop.control_win32 import (
     _key,
     _interactive_desktop,
     run_input_monitor,
+    wake_pump,
 )
 
 # The hand leaving the mouse right after clicking Allow must not take the desktop back.
@@ -101,6 +102,11 @@ class ControlCoordinator:
         self._watchdog: threading.Thread | None = None
         self._startup_error: Exception | None = None
         self._thread_beat = 0.0
+        # The pump parks in a message wait; its event lets other threads wake it,
+        # and an idle pump proves liveness by answering the worker's ping.
+        self._pump_event = None
+        self._pump_idle = False
+        self._pump_ping_at = 0.0
         self._suppress = False  # Atomic snapshot read by the hook callbacks.
         self._deadline = 0.0
         self._emergency = False
@@ -158,6 +164,10 @@ class ControlCoordinator:
                 self._suppress = False
                 self._visual_armed = False
                 self.input_ledger.block_new()
+            else:
+                # The worker may be parked on an idle-state timeout; the new
+                # suppression deadline needs its quarter-second refresh now.
+                self._release_requested.set()
 
     def pause_for_capture(self) -> int | None:
         """Release physical input before an AI indicator is hidden for capture."""
@@ -271,6 +281,8 @@ class ControlCoordinator:
             self._suppress = False
             self.input_ledger.block_new()
         self._deadline = time.monotonic() + 1.0 if self._suppress else 0.0
+        # Each state has its own worker cadence: re-plan the worker's wait now.
+        self._release_requested.set()
         return True
 
     def _tick_locked(self, now: float) -> bool:
@@ -508,6 +520,7 @@ class ControlCoordinator:
         self._deadline = 0.0
         self.input_ledger.block_new()
         self._release_requested.set()  # Wake the watchdog before joining it.
+        self._wake_pump()  # The pump may be parked until its next hook rotation.
         if self._thread:
             self._thread.join(timeout=2.0)
         if self._watchdog:
@@ -545,6 +558,7 @@ class ControlCoordinator:
         self.input_ledger.block_new()  # Atomic flag; hooks must never wait for AI injection.
         self._emergency = True
         self._rotate = True
+        self._wake_pump()  # Reinstall hooks now, not at the next rotation.
         # Hook callbacks must not wait on SendInput or the ledger lock. Wake
         # the existing watchdog to clear AI holds immediately off-hook.
         self._release_requested.set()
@@ -617,6 +631,13 @@ class ControlCoordinator:
             return  # A failed release or health check keeps control unavailable.
         if changed:
             self._notify(result)
+
+    def _wake_pump(self) -> None:
+        """End the hook pump's current wait; never blocks, safe in hook callbacks."""
+        try:
+            wake_pump(self._pump_event)
+        except Exception:
+            pass  # Called from fail-open paths, which must never raise.
 
     def _queue(self, event: tuple) -> None:
         try:

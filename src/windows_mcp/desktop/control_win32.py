@@ -146,6 +146,12 @@ _user32.MsgWaitForMultipleObjectsEx.argtypes = [
 _user32.MsgWaitForMultipleObjectsEx.restype = wintypes.DWORD
 _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 _kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
+_kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.CreateEventW.restype = wintypes.HANDLE
+_kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+_kernel32.SetEvent.restype = wintypes.BOOL
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.CloseHandle.restype = wintypes.BOOL
 _wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
 _wts.WTSQuerySessionInformationW.argtypes = [
     wintypes.HANDLE,
@@ -165,7 +171,26 @@ _CHORD = {0x10, 0x11, 0x12, 0x08}
 _QS_ALLINPUT = 0x04FF  # Keyboard, mouse, raw input, posted messages and timers.
 _MWMO_INPUTAVAILABLE = 0x0004  # Wake on input already queued, not just new input.
 _MWMO_ALERTABLE = 0x0002  # Same alertability GetMessage gives a normal UI pump.
-_IDLE_WAIT_MS = 10  # Upper bound on how long the pump may stay idle between ticks.
+# Windows silently drops a low-level hook that times out; reinstall on this period.
+_ROTATE_SECONDS = 5.0
+# While a physical hold is tracked, wake often enough for StaleInputRecovery's
+# spaced samples. Otherwise nothing on this thread is time-driven except rotation:
+# input, posted messages and the wake event (faults, stop, liveness pings) end the wait.
+_RECOVERY_WAIT_MS = 100
+
+
+def _pump_timeout_ms(owner: Any, now: float, last_rotate: float) -> int:
+    """How long the idle pump may block before it has timed work to do."""
+    rotate_in = max(0, int(round((last_rotate + _ROTATE_SECONDS - now) * 1000)))
+    if owner._pressed or owner._mouse_down:
+        return min(rotate_in, _RECOVERY_WAIT_MS)
+    return rotate_in
+
+
+def wake_pump(handle: Any) -> None:
+    """Wake a pump parked in its message wait; safe from any thread, never blocks."""
+    if handle:
+        _kernel32.SetEvent(handle)
 
 
 def _key(vk: int) -> int:
@@ -279,8 +304,13 @@ def run_input_monitor(owner: Any) -> None:
     atom = _user32.RegisterClassExW(ctypes.byref(wc))
     hwnd = None
     registered = False
+    # Auto-reset: one SetEvent from any thread ends exactly one wait.
+    wake = wintypes.HANDLE(_kernel32.CreateEventW(None, False, False, None))
+    owner._pump_event = wake.value
     try:
         if not atom:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not wake.value:
             raise ctypes.WinError(ctypes.get_last_error())
         hwnd = _user32.CreateWindowExW(0, name, name, 0, 0, 0, 0, 0, None, None, instance, None)
         if not hwnd:
@@ -294,14 +324,16 @@ def run_input_monitor(owner: Any) -> None:
         last_rotate = time.monotonic()
         msg = wintypes.MSG()
         while not owner._stop.is_set():
+            # Beat before clearing idle: the worker reads idle first, then the beat.
             owner._thread_beat = time.monotonic()
+            owner._pump_idle = False
             while _user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 _user32.TranslateMessage(ctypes.byref(msg))
                 _user32.DispatchMessageW(ctypes.byref(msg))
             # Only this thread mutates physical sets. Never wait for business
             # locks here: a sender may hold them while Windows calls our hooks.
             recovery.sample(owner, time.monotonic(), lambda vk: _user32.GetAsyncKeyState(vk))
-            if owner._rotate or time.monotonic() - last_rotate >= 5.0:
+            if owner._rotate or time.monotonic() - last_rotate >= _ROTATE_SECONDS:
                 owner._rotating = True  # Pause AI without letting physical down leak.
                 try:
                     # Clear before installation so a new fault can request another.
@@ -316,15 +348,23 @@ def run_input_monitor(owner: Any) -> None:
             # Block until there is something to pump instead of sleeping past it.
             # A low-level hook is delivered on this thread, so an unconditional
             # sleep here is a fixed tax on the latency of every injected and
-            # physical event: it wakes only when input actually arrives.
+            # physical event: it wakes only when input actually arrives, when
+            # another thread signals the wake event, or when timed work is due.
+            timeout = _pump_timeout_ms(owner, time.monotonic(), last_rotate)
+            owner._pump_idle = True  # Liveness is now proven by answering a ping.
             _user32.MsgWaitForMultipleObjectsEx(
-                0, None, _IDLE_WAIT_MS, _QS_ALLINPUT, _MWMO_INPUTAVAILABLE | _MWMO_ALERTABLE
+                1,
+                ctypes.byref(wake),
+                timeout,
+                _QS_ALLINPUT,
+                _MWMO_INPUTAVAILABLE | _MWMO_ALERTABLE,
             )
     except Exception as exc:
         owner._startup_error = exc
         owner._fail_open()
         owner._ready.set()
     finally:
+        owner._pump_idle = False
         owner._suppress = False
         for hook in (owner._mouse_hook, owner._key_hook):
             if hook:
@@ -337,3 +377,6 @@ def run_input_monitor(owner: Any) -> None:
             _user32.DestroyWindow(hwnd)
         if atom:
             _user32.UnregisterClassW(name, instance)
+        owner._pump_event = None
+        if wake.value:
+            _kernel32.CloseHandle(wake)

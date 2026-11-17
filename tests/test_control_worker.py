@@ -24,7 +24,7 @@ class ClockWake:
         pass
 
     def wait(self, timeout=None):
-        assert timeout is not None and 0 < timeout <= 0.01
+        assert timeout is not None and timeout > 0
         self.waits.append(timeout)
         self.clock[0] += timeout
         self.owner._thread_beat = self.clock[0]

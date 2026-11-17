@@ -50,6 +50,26 @@ _user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 _user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
 _user32.IsWindowVisible.argtypes = [wintypes.HWND]
 _user32.IsWindowVisible.restype = wintypes.BOOL
+# Private DLL objects: argtypes on ctypes.windll.user32 would be process-global.
+_wait_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_wait_user32.MsgWaitForMultipleObjectsEx.argtypes = [
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.HANDLE),
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.DWORD,
+]
+_wait_user32.MsgWaitForMultipleObjectsEx.restype = wintypes.DWORD
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.CreateEventW.restype = wintypes.HANDLE
+_kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+_kernel32.SetEvent.restype = wintypes.BOOL
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.CloseHandle.restype = wintypes.BOOL
+_INFINITE = 0xFFFFFFFF
+_QS_ALLINPUT = 0x04FF  # Includes sent messages, so broadcasts to hidden layers never hang.
+_PING_SECONDS = 1.0
 
 
 class _Layer:
@@ -234,9 +254,29 @@ def _build_layers(
         raise
 
 
+class _WakingCondition(threading.Condition):
+    """A condition whose notifications also end the owner's Win32 message wait."""
+
+    def __init__(self, wake: Callable[[], None]) -> None:
+        super().__init__()
+        self._wake = wake
+
+    def notify(self, n: int = 1) -> None:
+        super().notify(n)
+        self._wake()
+
+    def notify_all(self) -> None:
+        super().notify_all()
+        self._wake()
+
+
 class _Indicator:
     def __init__(self) -> None:
-        self.condition = threading.Condition()
+        # The owner thread parks in MsgWaitForMultipleObjectsEx on this event
+        # (created and closed by that thread) whenever nothing is shown.
+        self._wake_event: int | None = None
+        self._wake_lock = threading.Lock()
+        self.condition = _WakingCondition(self._signal)
         self.thread = threading.Thread(
             target=self._run, name="windows-mcp-control-indicator", daemon=True
         )
@@ -254,6 +294,9 @@ class _Indicator:
         # apply, but change() may try again instead of failing forever.
         self.missed_ack = False
         self.heartbeat = 0.0
+        # Parked owners do not beat; they prove liveness by answering a ping.
+        self.idle = False
+        self.ping_at = 0.0
         self.started = threading.Event()
 
     def start(self) -> None:
@@ -349,6 +392,33 @@ class _Indicator:
         if self.thread.is_alive():
             raise RuntimeError("AI control indicator did not stop")
 
+    def _signal(self) -> None:
+        """Wake the parked owner thread; never blocks on the owner."""
+        if threading.current_thread() is self.thread:
+            return  # The owner's own acks must not cut its next wait short.
+        with self._wake_lock:
+            if self._wake_event:
+                _kernel32.SetEvent(self._wake_event)
+
+    def ping(self) -> None:
+        """Ask a parked owner to wake once and refresh its heartbeat."""
+        self.ping_at = time.monotonic()
+        self._signal()
+
+    def _park(self, timeout: float | None) -> None:
+        """Wait for a state change, a ping, a window message, or *timeout*."""
+        handle = wintypes.HANDLE(self._wake_event)
+        milliseconds = _INFINITE if timeout is None else max(0, int(timeout * 1000))
+        self.idle = timeout is None
+        try:
+            _wait_user32.MsgWaitForMultipleObjectsEx(
+                1, ctypes.byref(handle), milliseconds, _QS_ALLINPUT, 0
+            )
+        finally:
+            # Beat before clearing idle: is_healthy reads idle first, then the beat.
+            self.heartbeat = time.monotonic()
+            self.idle = False
+
     def _beat(self) -> None:
         # A float store is atomic; the watchdog only reads it.
         self.heartbeat = time.monotonic()
@@ -367,11 +437,15 @@ class _Indicator:
         was_shown = False
         breath_started = 0.0
         try:
+            wake = _kernel32.CreateEventW(None, False, False, None)
+            if not wake:
+                raise ctypes.WinError(ctypes.get_last_error())
+            with self._wake_lock:
+                self._wake_event = wake
             self.heartbeat = time.monotonic()
             self.started.set()
             while True:
                 with self.condition:
-                    self.condition.wait(timeout=_REFRESH_SECONDS)
                     if self.stopping:
                         return
                     active, pending = self.active, self.pending
@@ -468,6 +542,9 @@ class _Indicator:
                     if self.missed_ack and version >= self.version:
                         self.missed_ack = False
                     self.condition.notify_all()
+                # Animate at the refresh rate only while something is on screen;
+                # otherwise park until a change, a ping, or a window message.
+                self._park(_REFRESH_SECONDS if shown or ripple_start is not None else None)
         except BaseException as exc:
             logger.exception("AI control indicator failed")
             with self.condition:
@@ -481,6 +558,10 @@ class _Indicator:
                 ring.close()
             if ripple_layer:
                 ripple_layer.close()
+            with self._wake_lock:
+                wake, self._wake_event = self._wake_event, None
+            if wake:
+                _kernel32.CloseHandle(wake)
 
 
 _lock = threading.Lock()
@@ -588,19 +669,36 @@ def ripple(x: int, y: int) -> None:
 
 
 def is_healthy() -> bool:
-    """Reject an alive but stalled window owner after one second."""
+    """Reject an alive but stalled window owner after one second.
+
+    A drawing owner beats at the refresh rate. A parked owner (nothing shown)
+    does not, so an old beat then sends a ping, and the owner is unhealthy only
+    if a ping goes unanswered for a second.
+    """
     with _lock:
         indicator = _instance
     # missed_ack stays set until the owner applies a later state. A fresh
     # heartbeat alone must not count as a visible AI lease. Test doubles omit it.
-    return bool(
+    if not (
         indicator
         and indicator.thread.is_alive()
         and not indicator.stopping
         and indicator.error is None
         and not getattr(indicator, "missed_ack", False)
-        and 0 <= time.monotonic() - indicator.heartbeat <= 1.0
-    )
+    ):
+        return False
+    idle = getattr(indicator, "idle", False)  # Read before the beat; see _park.
+    now = time.monotonic()
+    beat = indicator.heartbeat
+    if 0 <= now - beat <= 1.0:
+        return True
+    if not idle:
+        return False  # Busy but not beating: stalled.
+    ping_at = getattr(indicator, "ping_at", 0.0)
+    if ping_at <= beat:
+        indicator.ping()
+        return True
+    return 0 <= now - ping_at <= _PING_SECONDS
 
 
 @contextmanager
