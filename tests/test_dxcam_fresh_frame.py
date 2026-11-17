@@ -10,13 +10,17 @@ flushes composition, waits briefly for a new frame, and otherwise reuses the
 last full frame it saw itself.
 """
 
+import threading
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from windows_mcp.desktop import screenshot
-from windows_mcp.desktop.screenshot import _DxcamBackend
+from windows_mcp.desktop.screenshot import DxcamOutput, _DxcamBackend
+from windows_mcp.uia import Rect
 
 
 class FakeCamera:
@@ -26,6 +30,10 @@ class FakeCamera:
         self.new_frames = list(new_frames)
         self.cached = cached
         self.calls: list[dict] = []
+        self.releases = 0
+
+    def release(self) -> None:
+        self.releases += 1
 
     def grab(self, **kwargs):
         self.calls.append(kwargs)
@@ -47,6 +55,11 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> _DxcamBackend:
     monkeypatch.setattr(screenshot, "_dwm_flush", MagicMock())
     monkeypatch.setattr(screenshot.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(instance, "_resolve_region", lambda rect: (0, 0, (20, 10, 50, 30)))
+    monkeypatch.setattr(
+        instance,
+        "_iter_outputs",
+        lambda: [DxcamOutput(device_idx=0, output_idx=0, rect=Rect(0, 0, 60, 40))],
+    )
     return instance
 
 
@@ -112,3 +125,208 @@ def test_full_output_capture_returns_the_whole_frame(
     image = backend.capture(object())
 
     assert image.size == (60, 40)
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(backend: _DxcamBackend) -> Clock:
+    fake = Clock()
+    backend._clock = fake
+    return fake
+
+
+def _install_dxcam(monkeypatch: pytest.MonkeyPatch, *cameras: FakeCamera) -> list:
+    queue = list(cameras)
+    created: list = []
+
+    def create(**kwargs):
+        created.append(kwargs)
+        return queue.pop(0)
+
+    monkeypatch.setattr(screenshot, "dxcam", SimpleNamespace(create=create))
+    return created
+
+
+def test_last_frame_is_kept_within_the_window(
+    backend: _DxcamBackend, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    camera = FakeCamera([_frame(200)], cached=_frame(10))
+    _use(backend, camera)
+    backend.capture(object())
+
+    clock.now += screenshot._LAST_FRAME_TTL_SECONDS - 0.5
+    backend.release_expired()
+    monkeypatch.setattr(screenshot, "_NEW_FRAME_WAIT_SECONDS", 0)
+    image = backend.capture(object())
+
+    assert camera.releases == 0
+    assert image.getpixel((5, 5)) == (200, 200, 200)
+
+
+def test_expired_frame_releases_its_camera_and_the_next_capture_starts_fresh(
+    backend: _DxcamBackend, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = FakeCamera([_frame(200)], cached=_frame(10))
+    _use(backend, old)
+    backend.capture(object())
+
+    clock.now += screenshot._LAST_FRAME_TTL_SECONDS + 0.1
+    backend.release_expired()
+    assert old.releases == 1
+
+    # The screen changed while idle. A new duplication hands out the current
+    # desktop as its first frame, so the capture shows it, not the old picture.
+    fresh = FakeCamera([_frame(70)])
+    created = _install_dxcam(monkeypatch, fresh)
+    old_calls = len(old.calls)
+    image = backend.capture(object())
+
+    assert image.getpixel((5, 5)) == (70, 70, 70)
+    assert len(created) == 1
+    assert len(old.calls) == old_calls
+    assert old.releases == 1
+
+
+def test_after_expiry_a_capture_with_no_frame_fails_instead_of_showing_an_old_one(
+    backend: _DxcamBackend, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(backend, FakeCamera([_frame(200)], cached=_frame(10)))
+    backend.capture(object())
+    clock.now += screenshot._LAST_FRAME_TTL_SECONDS + 0.1
+    backend.release_expired()
+
+    monkeypatch.setattr(screenshot, "_NEW_FRAME_WAIT_SECONDS", 0)
+    _install_dxcam(monkeypatch, FakeCamera([], cached=None))
+
+    # Raising lets screenshot.capture() move on to the next backend.
+    with pytest.raises(RuntimeError, match="DXGI capture returned no frame"):
+        backend.capture(object())
+
+
+def test_an_idle_backend_releases_its_camera_without_another_capture(
+    backend: _DxcamBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The server sits idle between tool calls; the frame must not wait for the
+    # next capture to be dropped.
+    monkeypatch.setattr(screenshot, "_LAST_FRAME_TTL_SECONDS", 0.05)
+    camera = FakeCamera([_frame(200)])
+    _use(backend, camera)
+    backend.capture(object())
+
+    deadline = time.monotonic() + 3
+    while camera.releases == 0 and time.monotonic() < deadline:
+        threading.Event().wait(0.01)
+
+    assert camera.releases == 1
+
+
+def test_a_camera_whose_capture_failed_is_still_released_when_idle(
+    backend: _DxcamBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(screenshot, "_LAST_FRAME_TTL_SECONDS", 0.05)
+    monkeypatch.setattr(screenshot, "_NEW_FRAME_WAIT_SECONDS", 0)
+    camera = FakeCamera([], cached=None)
+    _use(backend, camera)
+    with pytest.raises(RuntimeError):
+        backend.capture(object())
+
+    deadline = time.monotonic() + 3
+    while camera.releases == 0 and time.monotonic() < deadline:
+        threading.Event().wait(0.01)
+
+    assert camera.releases == 1
+
+
+def test_a_camera_is_never_released_while_a_capture_is_using_it(
+    backend: _DxcamBackend, clock: Clock
+) -> None:
+    grabbing = threading.Event()
+    finish = threading.Event()
+
+    class SlowCamera(FakeCamera):
+        def grab(self, **kwargs):
+            grabbing.set()
+            finish.wait(5)
+            return super().grab(**kwargs)
+
+    camera = SlowCamera([_frame(200)])
+    _use(backend, camera)
+    capturing = threading.Thread(target=backend.capture, args=(object(),))
+    capturing.start()
+    assert grabbing.wait(5)
+    # The grab stalls long past the expiry window.
+    clock.now += screenshot._LAST_FRAME_TTL_SECONDS + 60
+
+    releasing = threading.Thread(target=backend.release_expired)
+    releasing.start()
+    releasing.join(0.2)
+    released_mid_capture = camera.releases
+
+    finish.set()
+    capturing.join(5)
+    releasing.join(5)
+
+    assert released_mid_capture == 0
+    # The capture just used the camera, so it is not expired any more either.
+    assert camera.releases == 0
+
+
+def test_cameras_are_released_once_when_the_display_set_changes(
+    backend: _DxcamBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    left = DxcamOutput(device_idx=0, output_idx=0, rect=Rect(0, 0, 60, 40))
+    right = DxcamOutput(device_idx=0, output_idx=1, rect=Rect(60, 0, 120, 40))
+    outputs = [left, right]
+    backend._iter_outputs = lambda: list(outputs)
+    target = {"key": (0, 0)}
+    monkeypatch.setattr(
+        backend, "_resolve_region", lambda rect: (*target["key"], (20, 10, 50, 30))
+    )
+    first, second = FakeCamera([_frame(200)]), FakeCamera([_frame(150)])
+    backend._camera_cache[(0, 0)] = first
+    backend._camera_cache[(0, 1)] = second
+    backend.capture(object())
+    target["key"] = (0, 1)
+    backend.capture(object())
+    assert (first.releases, second.releases) == (0, 0)
+
+    # The right-hand display switches resolution: every cached camera and frame
+    # describes the old layout, so all of them go.
+    outputs[1] = DxcamOutput(device_idx=0, output_idx=1, rect=Rect(60, 0, 140, 50))
+    replacement = FakeCamera([_frame(80), _frame(81)])
+    created = _install_dxcam(monkeypatch, replacement)
+    image = backend.capture(object())
+
+    assert (first.releases, second.releases) == (1, 1)
+    assert created == [{"device_idx": 0, "output_idx": 1, "processor_backend": "numpy"}]
+    assert image.getpixel((5, 5)) == (80, 80, 80)
+
+    # Same layout again: nothing more is released.
+    backend.capture(object())
+    assert (first.releases, second.releases, replacement.releases) == (1, 1, 0)
+
+
+def test_a_display_that_goes_away_releases_the_cameras(
+    backend: _DxcamBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outputs = [
+        DxcamOutput(device_idx=0, output_idx=0, rect=Rect(0, 0, 60, 40)),
+        DxcamOutput(device_idx=0, output_idx=1, rect=Rect(60, 0, 120, 40)),
+    ]
+    backend._iter_outputs = lambda: list(outputs)
+    camera = FakeCamera([_frame(200)])
+    _use(backend, camera)
+    backend.capture(object())
+
+    outputs.pop()
+    _install_dxcam(monkeypatch, FakeCamera([_frame(90)]))
+    backend.capture(object())
+
+    assert camera.releases == 1

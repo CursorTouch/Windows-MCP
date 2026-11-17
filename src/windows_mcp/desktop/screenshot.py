@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import ctypes
 import logging
 import os
+import threading
 import time
 from _ctypes import COMError
 
@@ -21,6 +22,16 @@ import windows_mcp.uia as uia
 
 #: How long a DXGI capture waits for a frame newer than the last one it saw.
 _NEW_FRAME_WAIT_SECONDS = 0.25
+
+#: How long the dxcam backend keeps a camera and the last full frame it returned
+#: after the most recent capture on that output. The frame is only needed when a
+#: capture follows the previous one before the desktop changes (DXGI then has no
+#: new frame). Once it is dropped, the camera is released with it, and the next
+#: capture creates a new duplication, whose first frame is the current desktop:
+#: the same picture at the cost of one camera setup (~0.1 s). A frame is 6-25 MB
+#: per output (1080p-4K), so it is only kept across back-to-back captures, not
+#: across the seconds an agent spends between tool calls.
+_LAST_FRAME_TTL_SECONDS = 5.0
 
 
 def _dwm_flush() -> None:
@@ -127,6 +138,15 @@ class _DxcamBackend(_ScreenshotBackend):
         # when the desktop changed since the previous acquire, so this is the
         # current picture whenever no new frame arrives.
         self._last_frames: dict[tuple[int, int], object] = {}
+        # When each output was last captured, by self._clock.
+        self._last_used: dict[tuple[int, int], float] = {}
+        self._clock = time.monotonic
+        # Held for a whole capture and for every release, so a camera is never
+        # released (by the expiry timer or a display change) while it is in use.
+        self._lock = threading.RLock()
+        self._expiry_timer: threading.Timer | None = None
+        # The DXGI output layout the cached cameras were created for.
+        self._layout: tuple[tuple[int, int, int, int, int, int], ...] | None = None
 
     @staticmethod
     def _iter_outputs() -> list[DxcamOutput]:
@@ -214,7 +234,70 @@ class _DxcamBackend(_ScreenshotBackend):
             self._camera_cache[camera_key] = camera
         return camera
 
+    def _release_camera(self, camera_key: tuple[int, int]) -> None:
+        """Release one cached camera and forget its last frame."""
+        self._last_frames.pop(camera_key, None)
+        self._last_used.pop(camera_key, None)
+        camera = self._camera_cache.pop(camera_key, None)
+        if camera is None:
+            return
+        try:
+            camera.release()
+        except Exception:
+            logger.debug("Failed to release dxcam camera %s", camera_key, exc_info=True)
+
+    def release_expired(self) -> None:
+        """Release cameras and frames not used within ``_LAST_FRAME_TTL_SECONDS``."""
+        with self._lock:
+            now = self._clock()
+            for camera_key, last_used in list(self._last_used.items()):
+                if now - last_used >= _LAST_FRAME_TTL_SECONDS:
+                    self._release_camera(camera_key)
+
+    def _release_on_layout_change(self, outputs: list[DxcamOutput]) -> None:
+        """Release every camera when outputs were added, removed, moved or resized.
+
+        A camera and its last frame describe one output's old geometry: reusing
+        them after a change crops the wrong pixels (or the wrong size) whenever no
+        new frame arrives.
+        """
+        layout = tuple(
+            (o.device_idx, o.output_idx, o.rect.left, o.rect.top, o.rect.right, o.rect.bottom)
+            for o in outputs
+        )
+        if self._layout is not None and layout != self._layout:
+            logger.debug("DXGI output layout changed; releasing cached dxcam cameras")
+            for camera_key in list(self._camera_cache):
+                self._release_camera(camera_key)
+        self._layout = layout
+
+    def _schedule_expiry(self) -> None:
+        """Arm one timer for the oldest camera, so an idle process frees it too."""
+        with self._lock:
+            if self._expiry_timer is not None or not self._last_used:
+                return
+            oldest = min(self._last_used.values())
+            delay = max(0.01, oldest + _LAST_FRAME_TTL_SECONDS - self._clock())
+            timer = threading.Timer(delay, self._on_expiry_timer)
+            timer.daemon = True
+            self._expiry_timer = timer
+            timer.start()
+
+    def _on_expiry_timer(self) -> None:
+        with self._lock:
+            self._expiry_timer = None
+            self.release_expired()
+            self._schedule_expiry()
+
     def capture(self, capture_rect: uia.Rect | None) -> Image.Image:
+        with self._lock:
+            try:
+                return self._capture_locked(capture_rect)
+            finally:
+                self._schedule_expiry()
+
+    def _capture_locked(self, capture_rect: uia.Rect | None) -> Image.Image:
+        self._release_on_layout_change(self._iter_outputs())
         resolved = self._resolve_region(capture_rect)
         if resolved is None:
             raise ValueError(
@@ -223,6 +306,7 @@ class _DxcamBackend(_ScreenshotBackend):
         device_idx, output_idx, region = resolved
         camera_key = (device_idx, output_idx)
         camera = self._get_camera(device_idx, output_idx)
+        self._last_used[camera_key] = self._clock()
         # dxcam's DXGI path polls AcquireNextFrame with a zero timeout. Right after
         # the AI indicator is hidden (or any click), the newest composed frame may
         # not have reached the duplication output yet, and new_frame_only=False then
@@ -244,6 +328,7 @@ class _DxcamBackend(_ScreenshotBackend):
         if full is None:
             raise RuntimeError("DXGI capture returned no frame")
         self._last_frames[camera_key] = full
+        self._last_used[camera_key] = self._clock()
         if region is None:
             return Image.fromarray(full)
         left, top, right, bottom = region
