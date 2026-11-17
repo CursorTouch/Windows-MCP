@@ -1559,17 +1559,16 @@ class Desktop:
                     if window_pattern is None:
                         continue
 
-                    if window_pattern.CanMinimize and window_pattern.CanMaximize:
-                        status = self.get_window_status(child)
+                    status = self.get_window_status(child)
 
-                        bounding_rect = child.BoundingRectangle
-                        if bounding_rect.isempty() and status != Status.MINIMIZED:
-                            continue
+                    bounding_rect = child.BoundingRectangle
+                    if bounding_rect.isempty() and status != Status.MINIMIZED:
+                        continue
 
-                        windows.append(
-                            Window(
-                                **{
-                                    "name": child.Name,
+                    windows.append(
+                        Window(
+                            **{
+                                "name": child.Name,
                                     "depth": depth,
                                     "status": status,
                                     "bounding_box": BoundingBox(

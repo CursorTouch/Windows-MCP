@@ -85,6 +85,24 @@ def test_windows_are_listed_front_to_back_with_their_depth(desktop):
     assert handles == {handle for handle, _ in Z_ORDER}
 
 
+def test_windows_without_min_max_capabilities_are_kept(desktop):
+    # Borderless, dialog, or custom-frame windows with CanMinimize/CanMaximize as False
+    # should be retained as long as WindowPattern is supported.
+    custom_handle = 0x00220022
+    custom_window = FakeWindow(custom_handle, "Custom Borderless Window")
+    custom_window.GetPattern = lambda pattern_id: SimpleNamespace(CanMinimize=False, CanMaximize=False)
+
+    with (
+        patch(f"{SERVICE}.win32gui.EnumWindows", side_effect=lambda cb, extra: cb(custom_handle, extra)),
+        patch(f"{SERVICE}.uia.ControlFromHandle", return_value=custom_window),
+    ):
+        windows, handles = desktop.get_windows()
+
+    assert len(windows) == 1
+    assert windows[0].name == "Custom Borderless Window"
+    assert custom_handle in handles
+
+
 def test_focused_window_has_the_depth_of_the_front_window(desktop):
     active_window = desktop.get_active_window()
 
