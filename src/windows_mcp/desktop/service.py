@@ -1569,23 +1569,23 @@ class Desktop:
                         Window(
                             **{
                                 "name": child.Name,
-                                    "depth": depth,
-                                    "status": status,
-                                    "bounding_box": BoundingBox(
-                                        left=bounding_rect.left,
-                                        top=bounding_rect.top,
-                                        right=bounding_rect.right,
-                                        bottom=bounding_rect.bottom,
-                                        width=bounding_rect.width(),
-                                        height=bounding_rect.height(),
-                                    ),
-                                    "handle": child.NativeWindowHandle,
-                                    "process_id": child.ProcessId,
-                                    "is_browser": self.is_window_browser(child),
-                                }
-                            )
+                                "depth": depth,
+                                "status": status,
+                                "bounding_box": BoundingBox(
+                                    left=bounding_rect.left,
+                                    top=bounding_rect.top,
+                                    right=bounding_rect.right,
+                                    bottom=bounding_rect.bottom,
+                                    width=bounding_rect.width(),
+                                    height=bounding_rect.height(),
+                                ),
+                                "handle": child.NativeWindowHandle,
+                                "process_id": child.ProcessId,
+                                "is_browser": self.is_window_browser(child),
+                            }
                         )
-                        window_handles.add(child.NativeWindowHandle)
+                    )
+                    window_handles.add(child.NativeWindowHandle)
         except Exception as ex:
             logger.error(f"Error in get_windows: {ex}")
             windows = []
