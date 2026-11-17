@@ -355,3 +355,23 @@ def test_cleanup_waiting_for_ledger_does_not_block_injected_callback(monkeypatch
             owner._release_requested.set()
     worker.join(1)
     assert not worker.is_alive()
+
+
+def test_batch_cap_rewakes_worker_for_remaining_events(monkeypatch):
+    # Idle waits are now seconds long: events past one batch must not sit that long.
+    owner, _, wake = worker_fixture(monkeypatch, limit=2)
+    monkeypatch.setattr(owner, "_handle", lambda event: None)
+    for _ in range(200):
+        owner._events.put_nowait(("key",))  # Bypass _queue so no wake is pre-signalled.
+    control_worker.run_control_worker(owner, lambda: True)
+    assert wake.signals >= 1
+    assert owner._events.qsize() == 72
+
+
+def test_small_batch_does_not_rewake_worker(monkeypatch):
+    owner, _, wake = worker_fixture(monkeypatch, limit=2)
+    monkeypatch.setattr(owner, "_handle", lambda event: None)
+    for _ in range(5):
+        owner._events.put_nowait(("key",))
+    control_worker.run_control_worker(owner, lambda: True)
+    assert wake.signals == 0

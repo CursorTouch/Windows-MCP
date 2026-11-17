@@ -105,6 +105,10 @@ def run_control_worker(owner: Any, interactive_desktop: Callable[[], bool]) -> N
                 except queue.Empty:
                     break
                 owner._handle(event)
+            else:
+                # Batch cap hit: come straight back for the rest instead of
+                # leaving it parked for a whole idle interval.
+                owner._release_requested.set()
             owner._handle(("tick",))
             fault = owner._fault_token
             can_recover = owner._rehook_completed is fault and not owner._rotating
