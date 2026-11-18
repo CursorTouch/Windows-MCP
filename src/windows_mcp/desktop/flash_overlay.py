@@ -34,8 +34,10 @@ _FRAME_INTERVAL_MS = 30
 _GLOW_BORDER_THICKNESS = 8
 _GLOW_BLUR_RADIUS = 14
 _FULLSCREEN_INSET = 6
-# Opacity levels per fade direction: ~8 opacity changes per flash in total.
-_OPACITY_LEVELS = 4
+# Opacity levels per fade direction: ~32 opacity changes per flash in total.
+# Each change only swaps the windows' constant alpha (no pixel upload), so a
+# finer fade costs one cheap UpdateLayeredWindow call per strip per level.
+_OPACITY_LEVELS = 16
 # The blurred ring's alpha reaches 0 at most 49 px in from a rect edge
 # (inset 6 + ring 8 + blur tail 35), so a 56 px strip holds every glow pixel.
 _STRIP_THICKNESS = 56
@@ -445,14 +447,14 @@ def _glow_strips(
 
 
 @_WNDPROC
-def _wnd_proc(hwnd, msg, wparam, lparam):
+def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
     if msg == _WM_DESTROY:
         _user32.PostQuitMessage(0)
         return 0
     return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
-def _create_layered_window(class_name: str, x: int, y: int, w: int, h: int):
+def _create_layered_window(class_name: str, x: int, y: int, w: int, h: int) -> tuple[int, int]:
     h_instance = _kernel32.GetModuleHandleW(None)
     wc = _WNDCLASSEX()
     wc.cbSize = ctypes.sizeof(_WNDCLASSEX)
@@ -495,7 +497,9 @@ def _create_layered_window(class_name: str, x: int, y: int, w: int, h: int):
     return hwnd, h_instance
 
 
-def _push_bitmap(hwnd, x: int, y: int, w: int, h: int, bgra: bytes, *, opacity: int = 255) -> None:
+def _push_bitmap(
+    hwnd: int, x: int, y: int, w: int, h: int, bgra: bytes, *, opacity: int = 255
+) -> None:
     """Upload premultiplied pixels with optional whole-window opacity."""
     screen_dc = _user32.GetDC(None)
     if not screen_dc:
@@ -555,7 +559,7 @@ def _push_bitmap(hwnd, x: int, y: int, w: int, h: int, bgra: bytes, *, opacity: 
         _user32.ReleaseDC(None, screen_dc)
 
 
-def _set_window_opacity(hwnd, opacity: int) -> None:
+def _set_window_opacity(hwnd: int, opacity: int) -> None:
     """Fade a layered window's already-uploaded per-pixel bitmap.
 
     ``UpdateLayeredWindow`` keeps the current surface when ``hdcSrc`` (and
@@ -571,7 +575,7 @@ def _set_window_opacity(hwnd, opacity: int) -> None:
         raise OSError(f"UpdateLayeredWindow failed: {ctypes.get_last_error()}")
 
 
-def _pump_messages(hwnd) -> None:
+def _pump_messages(hwnd: int) -> None:
     msg = wintypes.MSG()
     while _user32.PeekMessageW(ctypes.byref(msg), hwnd, 0, 0, _PM_REMOVE):
         _user32.TranslateMessage(ctypes.byref(msg))
@@ -610,7 +614,7 @@ def _run_overlay(
         overlay.closed_event.set()
         return
 
-    windows: list[tuple[object, object, str]] = []
+    windows: list[tuple[int, int, str]] = []
     class_prefix = f"WindowsMCPFlash_{id(overlay):x}"
 
     try:
