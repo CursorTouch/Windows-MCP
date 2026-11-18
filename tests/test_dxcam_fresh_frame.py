@@ -286,9 +286,7 @@ def test_cameras_are_released_once_when_the_display_set_changes(
     outputs = [left, right]
     backend._iter_outputs = lambda: list(outputs)
     target = {"key": (0, 0)}
-    monkeypatch.setattr(
-        backend, "_resolve_region", lambda rect: (*target["key"], (20, 10, 50, 30))
-    )
+    monkeypatch.setattr(backend, "_resolve_region", lambda rect: (*target["key"], (20, 10, 50, 30)))
     first, second = FakeCamera([_frame(200)]), FakeCamera([_frame(150)])
     backend._camera_cache[(0, 0)] = first
     backend._camera_cache[(0, 1)] = second
@@ -329,4 +327,122 @@ def test_a_display_that_goes_away_releases_the_cameras(
     _install_dxcam(monkeypatch, FakeCamera([_frame(90)]))
     backend.capture(object())
 
+    assert camera.releases == 1
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_idle_window_defaults_to_thirty_seconds(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", value)
+
+    with caplog.at_level("WARNING", logger=screenshot.__name__):
+        assert screenshot.get_dxcam_idle_seconds() == 30.0
+    assert caplog.text == ""
+
+
+def test_idle_window_can_be_set_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", " 2.5 ")
+
+    assert screenshot.get_dxcam_idle_seconds() == 2.5
+
+
+@pytest.mark.parametrize("value", ["soon", "0", "-4", "nan", "inf"])
+def test_an_invalid_idle_window_falls_back_to_the_default_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str
+) -> None:
+    monkeypatch.setenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", value)
+
+    with caplog.at_level("WARNING", logger=screenshot.__name__):
+        assert screenshot.get_dxcam_idle_seconds() == 30.0
+    assert "WINDOWS_MCP_DXCAM_IDLE_SECONDS" in caplog.text
+
+
+class FakeTimer:
+    """Stands in for threading.Timer; records whether it was started or cancelled."""
+
+    instances: list["FakeTimer"] = []
+
+    def __init__(self, delay: float, function) -> None:
+        self.delay = delay
+        self.function = function
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+        FakeTimer.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+@pytest.fixture
+def fake_timers(monkeypatch: pytest.MonkeyPatch) -> list[FakeTimer]:
+    FakeTimer.instances = []
+    monkeypatch.setattr(screenshot.threading, "Timer", FakeTimer)
+    return FakeTimer.instances
+
+
+def test_shutdown_cancels_the_idle_timer_and_releases_the_camera(
+    backend: _DxcamBackend, fake_timers: list[FakeTimer]
+) -> None:
+    camera = FakeCamera([_frame(200)])
+    _use(backend, camera)
+    backend.capture(object())
+    assert [t.started for t in fake_timers] == [True]
+
+    backend.shutdown()
+
+    assert fake_timers[0].cancelled
+    assert camera.releases == 1
+
+
+def test_shutdown_twice_releases_once(backend: _DxcamBackend, fake_timers: list[FakeTimer]) -> None:
+    camera = FakeCamera([_frame(200)])
+    _use(backend, camera)
+    backend.capture(object())
+
+    backend.shutdown()
+    backend.shutdown()
+
+    assert camera.releases == 1
+
+
+def test_an_idle_timer_that_fires_after_shutdown_does_not_rearm(
+    backend: _DxcamBackend, fake_timers: list[FakeTimer]
+) -> None:
+    _use(backend, FakeCamera([_frame(200)]))
+    backend.capture(object())
+    backend.shutdown()
+
+    fake_timers[0].function()  # a timer already running when cancel() came
+
+    assert len(fake_timers) == 1
+
+
+def test_module_shutdown_is_safe_when_dxcam_was_never_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(screenshot, "_backend_instances", {})
+
+    screenshot.shutdown_dxcam()
+    screenshot.shutdown_dxcam()
+
+
+def test_module_shutdown_shuts_down_the_cached_dxcam_backend(
+    monkeypatch: pytest.MonkeyPatch, backend: _DxcamBackend, fake_timers: list[FakeTimer]
+) -> None:
+    camera = FakeCamera([_frame(200)])
+    _use(backend, camera)
+    backend.capture(object())
+    monkeypatch.setattr(screenshot, "_backend_instances", {"dxcam": backend})
+
+    screenshot.shutdown_dxcam()
+
+    assert fake_timers[0].cancelled
     assert camera.releases == 1

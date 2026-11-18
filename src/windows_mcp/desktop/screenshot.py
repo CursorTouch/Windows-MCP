@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+import atexit
 import ctypes
 import logging
+import math
 import os
 import threading
 import time
@@ -23,16 +25,6 @@ import windows_mcp.uia as uia
 #: How long a DXGI capture waits for a frame newer than the last one it saw.
 _NEW_FRAME_WAIT_SECONDS = 0.25
 
-#: How long the dxcam backend keeps a camera and the last full frame it returned
-#: after the most recent capture on that output. The frame is only needed when a
-#: capture follows the previous one before the desktop changes (DXGI then has no
-#: new frame). Once it is dropped, the camera is released with it, and the next
-#: capture creates a new duplication, whose first frame is the current desktop:
-#: the same picture at the cost of one camera setup (~0.1 s). A frame is 6-25 MB
-#: per output (1080p-4K), so it is only kept across back-to-back captures, not
-#: across the seconds an agent spends between tool calls.
-_LAST_FRAME_TTL_SECONDS = 5.0
-
 
 def _dwm_flush() -> None:
     """Wait for the next desktop composition pass, so hidden windows are gone."""
@@ -43,6 +35,48 @@ def _dwm_flush() -> None:
 
 
 logger = logging.getLogger(__name__)
+
+#: Default for ``WINDOWS_MCP_DXCAM_IDLE_SECONDS``.
+_DEFAULT_DXCAM_IDLE_SECONDS = 30.0
+
+
+def get_dxcam_idle_seconds() -> float:
+    """Read how long an idle dxcam camera is kept from ``WINDOWS_MCP_DXCAM_IDLE_SECONDS``.
+
+    Unset or blank means the default. Anything that is not a finite number
+    greater than zero (including ``0``) is rejected with a warning and the
+    default is used instead.
+    """
+    value = os.getenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", "")
+    if not value.strip():
+        return _DEFAULT_DXCAM_IDLE_SECONDS
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = math.nan
+    if math.isfinite(seconds) and seconds > 0:
+        return seconds
+    logger.warning(
+        "Invalid WINDOWS_MCP_DXCAM_IDLE_SECONDS '%s' (expected a number of seconds > 0); "
+        "falling back to %s",
+        value,
+        _DEFAULT_DXCAM_IDLE_SECONDS,
+    )
+    return _DEFAULT_DXCAM_IDLE_SECONDS
+
+
+#: How long the dxcam backend keeps a camera and the last full frame it returned
+#: after the most recent capture on that output. The frame is only needed when a
+#: capture follows the previous one before the desktop changes (DXGI then has no
+#: new frame). Once it is dropped, the camera is released with it, and the next
+#: capture creates a new duplication, whose first frame is the current desktop:
+#: the same picture at the cost of one camera setup (~0.1 s). A frame is 6-25 MB
+#: per output (1080p-4K), so it is kept across a burst of captures but not across
+#: a long idle spell. Read once at import from ``WINDOWS_MCP_DXCAM_IDLE_SECONDS``.
+_LAST_FRAME_TTL_SECONDS = get_dxcam_idle_seconds()
+
+#: How long shutdown waits for an in-flight dxcam capture before giving up.
+_SHUTDOWN_LOCK_TIMEOUT_SECONDS = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +317,29 @@ class _DxcamBackend(_ScreenshotBackend):
             self._expiry_timer = timer
             timer.start()
 
+    def shutdown(self) -> None:
+        """Cancel the idle timer and release every camera. Safe to call repeatedly.
+
+        Waits a bounded time for an in-flight capture; if one is still running,
+        only the timer is cancelled so process exit is never blocked.
+        """
+        timer = self._expiry_timer
+        if timer is not None:
+            timer.cancel()
+        if not self._lock.acquire(timeout=_SHUTDOWN_LOCK_TIMEOUT_SECONDS):
+            logger.debug("dxcam capture still running at shutdown; leaving cameras")
+            return
+        try:
+            if self._expiry_timer is not None:
+                self._expiry_timer.cancel()
+                self._expiry_timer = None
+            for camera_key in list(self._camera_cache):
+                self._release_camera(camera_key)
+            self._last_frames.clear()
+            self._last_used.clear()
+        finally:
+            self._lock.release()
+
     def _on_expiry_timer(self) -> None:
         with self._lock:
             self._expiry_timer = None
@@ -418,6 +475,20 @@ def _get_backend(name: str) -> _ScreenshotBackend:
             raise ValueError(f"Unknown screenshot backend: {name!r}")
         _backend_instances[name] = cls()
     return _backend_instances[name]
+
+
+def shutdown_dxcam() -> None:
+    """Cancel the dxcam idle timer and release its cameras, if dxcam was ever used.
+
+    Idempotent. Registered with :mod:`atexit` so DXGI duplications are released
+    before interpreter teardown on a normal exit (not on a hard kill).
+    """
+    backend = _backend_instances.get(_DxcamBackend.name)
+    if isinstance(backend, _DxcamBackend):
+        backend.shutdown()
+
+
+atexit.register(shutdown_dxcam)
 
 
 def _is_usable_capture(image: Image.Image | None) -> bool:
