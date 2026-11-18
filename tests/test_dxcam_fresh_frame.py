@@ -494,10 +494,14 @@ def test_cameras_are_released_when_the_interpreter_exits() -> None:
         """
     )
     src = Path(screenshot.__file__).resolve().parents[2]
+    # The child must not see the developer's own settings: a WINDOWS_MCP_* value
+    # (e.g. an invalid idle window) or PYTHONVERBOSE writes to stderr on import.
     env = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join([str(src), os.environ.get("PYTHONPATH", "")]),
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("WINDOWS_MCP_") and key.upper() != "PYTHONVERBOSE"
     }
+    env["PYTHONPATH"] = os.pathsep.join([str(src), os.environ.get("PYTHONPATH", "")])
 
     result = subprocess.run(
         [sys.executable, "-c", child], capture_output=True, text=True, env=env, timeout=60
