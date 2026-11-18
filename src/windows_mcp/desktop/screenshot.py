@@ -45,7 +45,9 @@ def get_dxcam_idle_seconds() -> float:
 
     Unset or blank means the default. Anything that is not a finite number
     greater than zero (including ``0``) is rejected with a warning and the
-    default is used instead.
+    default is used instead. A value above ``threading.TIMEOUT_MAX`` (about 49.7
+    days on Windows) is clamped to it with a warning, since a longer
+    ``threading.Timer`` dies with ``OverflowError`` and idle expiry would stop.
     """
     value = os.getenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", "")
     if not value.strip():
@@ -54,6 +56,14 @@ def get_dxcam_idle_seconds() -> float:
         seconds = float(value)
     except ValueError:
         seconds = math.nan
+    if math.isfinite(seconds) and seconds > threading.TIMEOUT_MAX:
+        logger.warning(
+            "WINDOWS_MCP_DXCAM_IDLE_SECONDS '%s' exceeds the platform timer maximum; "
+            "clamping to %s",
+            value,
+            threading.TIMEOUT_MAX,
+        )
+        return threading.TIMEOUT_MAX
     if math.isfinite(seconds) and seconds > 0:
         return seconds
     logger.warning(
@@ -488,6 +498,11 @@ def shutdown_dxcam() -> None:
         backend.shutdown()
 
 
+# Order matters: atexit runs handlers last-in, first-out. Importing comtypes (via
+# dxcam and windows_mcp.uia at the top of this module) registers comtypes'
+# own ``_shutdown`` handler, which calls CoUninitialize. Registering this one
+# afterwards makes it run first, so cameras are released while COM is still up.
+# Keep those imports above this line.
 atexit.register(shutdown_dxcam)
 
 

@@ -10,8 +10,13 @@ flushes composition, waits briefly for a new frame, and otherwise reuses the
 last full frame it saw itself.
 """
 
+import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -361,6 +366,26 @@ def test_an_invalid_idle_window_falls_back_to_the_default_with_a_warning(
     assert "WINDOWS_MCP_DXCAM_IDLE_SECONDS" in caplog.text
 
 
+@pytest.mark.parametrize("value", ["1e7", "1e300"])
+def test_an_idle_window_beyond_the_timer_maximum_is_clamped_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str
+) -> None:
+    monkeypatch.setenv("WINDOWS_MCP_DXCAM_IDLE_SECONDS", value)
+
+    with caplog.at_level("WARNING", logger=screenshot.__name__):
+        seconds = screenshot.get_dxcam_idle_seconds()
+    assert seconds == threading.TIMEOUT_MAX
+    assert "WINDOWS_MCP_DXCAM_IDLE_SECONDS" in caplog.text
+
+    # A timer armed with the clamped window must start (and so keep expiring).
+    timer = threading.Timer(seconds, lambda: None)
+    timer.daemon = True
+    timer.start()
+    timer.cancel()
+    timer.join(timeout=5)
+    assert not timer.is_alive()
+
+
 class FakeTimer:
     """Stands in for threading.Timer; records whether it was started or cancelled."""
 
@@ -446,3 +471,32 @@ def test_module_shutdown_shuts_down_the_cached_dxcam_backend(
 
     assert fake_timers[0].cancelled
     assert camera.releases == 1
+
+
+def test_cameras_are_released_when_the_interpreter_exits() -> None:
+    child = textwrap.dedent(
+        """
+        from windows_mcp.desktop import screenshot
+
+        class MarkerCamera:
+            def release(self):
+                print("CAMERA-RELEASED", flush=True)
+
+        backend = screenshot._DxcamBackend()
+        backend._camera_cache[(0, 0)] = MarkerCamera()
+        screenshot._backend_instances[screenshot._DxcamBackend.name] = backend
+        print("EXITING", flush=True)
+        """
+    )
+    src = Path(screenshot.__file__).resolve().parents[2]
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(src), os.environ.get("PYTHONPATH", "")]),
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", child], capture_output=True, text=True, env=env, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["EXITING", "CAMERA-RELEASED"]
