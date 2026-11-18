@@ -8,16 +8,30 @@ from _ctypes import COMError
 from PIL import Image, ImageGrab
 
 try:
-    import dxcam
-except Exception:
-    dxcam = None
-
-try:
     import mss
 except ImportError:
     mss = None
 
 import windows_mcp.uia as uia
+
+#: dxcam, or None when unavailable. Imported on first use: the import costs
+#: 1.5-2.5 s (it builds a DXGI factory at module scope), which counts against
+#: the client's MCP startup budget (Claude Code's MCP_TIMEOUT defaults to 30 s).
+_DXCAM_UNLOADED = object()
+dxcam = _DXCAM_UNLOADED
+
+
+def _dxcam():
+    """Return the dxcam module, importing it on first call; None if unavailable."""
+    global dxcam
+    if dxcam is _DXCAM_UNLOADED:
+        try:
+            import dxcam as module
+        except Exception:
+            module = None
+        dxcam = module
+    return dxcam
+
 
 #: How long a DXGI capture waits for a frame newer than the last one it saw.
 _NEW_FRAME_WAIT_SECONDS = 0.25
@@ -130,10 +144,11 @@ class _DxcamBackend(_ScreenshotBackend):
 
     @staticmethod
     def _iter_outputs() -> list[DxcamOutput]:
-        if dxcam is None:
+        module = _dxcam()
+        if module is None:
             return []
 
-        factory = getattr(dxcam, "__factory", None)
+        factory = getattr(module, "__factory", None)
         if factory is None:
             return []
 
@@ -196,7 +211,7 @@ class _DxcamBackend(_ScreenshotBackend):
         return None
 
     def is_available(self, capture_rect: uia.Rect | None) -> bool:
-        if dxcam is None:
+        if _dxcam() is None:
             return False
         if capture_rect is None:
             return False
@@ -206,7 +221,8 @@ class _DxcamBackend(_ScreenshotBackend):
         camera_key = (device_idx, output_idx)
         camera = self._camera_cache.get(camera_key)
         if camera is None:
-            camera = dxcam.create(
+            module = _dxcam()
+            camera = module.create(
                 device_idx=device_idx,
                 output_idx=output_idx,
                 processor_backend="numpy",
