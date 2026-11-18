@@ -377,12 +377,17 @@ def test_an_idle_window_beyond_the_timer_maximum_is_clamped_with_a_warning(
     assert seconds == threading.TIMEOUT_MAX
     assert "WINDOWS_MCP_DXCAM_IDLE_SECONDS" in caplog.text
 
-    # A timer armed with the clamped window must start (and so keep expiring).
+    # A timer armed with the clamped window must keep waiting; an unclamped
+    # one dies at once with OverflowError and idle expiry would stop.
     timer = threading.Timer(seconds, lambda: None)
     timer.daemon = True
     timer.start()
-    timer.cancel()
-    timer.join(timeout=5)
+    try:
+        timer.join(0.2)
+        assert timer.is_alive()
+    finally:
+        timer.cancel()
+        timer.join(timeout=5)
     assert not timer.is_alive()
 
 
@@ -500,3 +505,4 @@ def test_cameras_are_released_when_the_interpreter_exits() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["EXITING", "CAMERA-RELEASED"]
+    assert result.stderr.strip() == ""
