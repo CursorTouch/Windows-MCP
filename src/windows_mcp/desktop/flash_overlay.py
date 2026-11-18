@@ -447,14 +447,19 @@ def _glow_strips(
 
 
 @_WNDPROC
-def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+def _wnd_proc(hwnd: int | None, msg: int, wparam: int, lparam: int) -> int:
+    # ctypes hands a NULL HWND (c_void_p) to the callback as None.
     if msg == _WM_DESTROY:
         _user32.PostQuitMessage(0)
         return 0
     return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
-def _create_layered_window(class_name: str, x: int, y: int, w: int, h: int) -> tuple[int, int]:
+def _create_layered_window(
+    class_name: str, x: int, y: int, w: int, h: int
+) -> tuple[int, int | None]:
+    # HWND/HMODULE restypes are c_void_p, so NULL comes back as None. The HWND
+    # is checked below; the module handle is only passed back to Win32.
     h_instance = _kernel32.GetModuleHandleW(None)
     wc = _WNDCLASSEX()
     wc.cbSize = ctypes.sizeof(_WNDCLASSEX)
@@ -614,7 +619,7 @@ def _run_overlay(
         overlay.closed_event.set()
         return
 
-    windows: list[tuple[int, int, str]] = []
+    windows: list[tuple[int, int | None, str]] = []
     class_prefix = f"WindowsMCPFlash_{id(overlay):x}"
 
     try:
@@ -656,6 +661,11 @@ def _run_overlay(
         while not overlay.stop_event.is_set():
             elapsed_ms = (time.perf_counter() - start) * 1000
             if elapsed_ms >= _DURATION_MS:
+                # A late last frame can leave the fade short of zero; finish it
+                # so the windows never vanish at a visible level.
+                if level != 0:
+                    for hwnd, _, _ in windows:
+                        _set_window_opacity(hwnd, 0)
                 break
             intensity = _intensity_at(elapsed_ms / _DURATION_MS, full_screen)
             target = round(intensity * _OPACITY_LEVELS)

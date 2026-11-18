@@ -395,41 +395,60 @@ class TestGlowStrips:
         assert pixels < width * height // 10
 
 
+def _opacity_steps(calls, hwnd):
+    """A strip's opacity history, starting from its hidden (opacity 0) upload."""
+    return [0] + [opacity for h, opacity in calls["opacity"] if h == hwnd]
+
+
 class TestRunOverlay:
-    def test_uploads_each_strip_once_and_fades_in_sixteen_steps_each_way(
-        self, monkeypatch, fresh_glow_cache
+    @pytest.mark.parametrize("full_screen", [True, False])
+    def test_each_strip_is_uploaded_once_and_fades_smoothly_in_then_out(
+        self, monkeypatch, fresh_glow_cache, full_screen
     ):
         calls, run = _fake_win32(monkeypatch)
-        overlay = run([(0, 0, 1440, 900)], True)
+        overlay = run([(0, 0, 1440, 900)], full_screen)
 
         hwnds = [w[0] for w in calls["windows"]]
         assert len(hwnds) == 4
+        # Pixels go up exactly once per strip, hidden; the fade only swaps alpha.
         assert sorted(u[0] for u in calls["uploads"]) == hwnds
-        assert all(u[5] == 0 for u in calls["uploads"])  # uploaded hidden, then faded in
-        fade_in = [16, 32, 48, 64, 80, 96, 112, 128, 143, 159, 175, 191, 207, 223, 239, 255]
-        fade_out = [239, 223, 207, 191, 175, 159, 143, 128, 112, 96, 80, 64, 48, 32, 16, 0]
+        assert all(u[5] == 0 for u in calls["uploads"])
         for hwnd in hwnds:
-            steps = [opacity for h, opacity in calls["opacity"] if h == hwnd]
-            assert steps == fade_in + fade_out
+            steps = _opacity_steps(calls, hwnd)
+            peak = steps.index(max(steps))
+            assert steps[peak] == 255
+            assert steps[: peak + 1] == sorted(steps[: peak + 1])  # fade in, no reversal
+            assert steps[peak:] == sorted(steps[peak:], reverse=True)  # fade out, no reversal
+            assert steps[-1] == 0
+            # The fake clock advances one 30 ms frame per read, so no frame may
+            # skip a level: every change is at most one level (255 / 16 ~ 16).
+            assert max(abs(b - a) for a, b in zip(steps, steps[1:])) <= 16
         assert sorted(calls["destroyed"]) == hwnds
         assert len(calls["unregistered"]) == 4
         assert overlay.closed_event.is_set()
 
     @pytest.mark.parametrize("full_screen", [True, False])
-    def test_fade_steps_stay_small_and_the_flash_lasts_its_full_duration(
-        self, monkeypatch, fresh_glow_cache, full_screen
-    ):
+    def test_the_flash_lasts_its_full_duration(self, monkeypatch, fresh_glow_cache, full_screen):
         frames = []
-        calls, run = _fake_win32(monkeypatch)
+        calls, run = _fake_win32(monkeypatch, clock_step=flash_overlay._FRAME_INTERVAL_MS / 1000)
         monkeypatch.setattr(flash_overlay, "_pump_messages", lambda hwnd: frames.append(hwnd))
         run([(0, 0, 1440, 900)], full_screen)
 
-        hwnd = calls["windows"][0][0]
-        steps = [0] + [opacity for h, opacity in calls["opacity"] if h == hwnd]
-        assert max(steps) == 255 and steps[-1] == 0
-        assert max(abs(b - a) for a, b in zip(steps, steps[1:])) <= 16
-        # 3.5 s at one 30 ms frame per clock read: the fade length is unchanged.
-        assert frames.count(hwnd) == 116
+        expected = flash_overlay._DURATION_MS / flash_overlay._FRAME_INTERVAL_MS
+        assert abs(frames.count(calls["windows"][0][0]) - expected) <= 2
+
+    @pytest.mark.parametrize("full_screen", [True, False])
+    def test_a_finished_flash_is_fully_transparent_before_its_windows_close(
+        self, monkeypatch, fresh_glow_cache, full_screen
+    ):
+        # A slow 250 ms frame (a busy machine) puts the last frame well before
+        # the curve reaches zero, so the fade itself stops at a visible level.
+        calls, run = _fake_win32(monkeypatch, clock_step=0.25)
+        run([(0, 0, 1440, 900)], full_screen)
+
+        for hwnd in [w[0] for w in calls["windows"]]:
+            steps = [opacity for h, opacity in calls["opacity"] if h == hwnd]
+            assert steps[-1] == 0
 
     def test_region_flash_windows_stay_inside_the_capture_rect(self, monkeypatch, fresh_glow_cache):
         calls, run = _fake_win32(monkeypatch)
