@@ -260,9 +260,11 @@ class TestRunOverlayFallthrough:
 def _fake_win32(monkeypatch, *, clock_step: float = 0.03, stop_after: int | None = None):
     """Replace the Win32 calls of ``_run_overlay`` with recorders.
 
-    The fake clock advances ``clock_step`` seconds per read, so a whole flash
-    runs instantly. ``stop_after`` sets the stop event after that many
-    opacity changes, standing in for a newer capture cancelling the flash.
+    The fake clock advances ``clock_step`` seconds per read (one read per
+    frame), and the per-frame wait on the stop event returns at once instead
+    of sleeping, so a whole flash runs instantly with the same frame cadence.
+    ``stop_after`` sets the stop event after that many opacity changes,
+    standing in for a newer capture cancelling the flash.
     """
     calls = {"windows": [], "uploads": [], "opacity": [], "destroyed": [], "unregistered": []}
     overlay_ref = {}
@@ -301,6 +303,9 @@ def _fake_win32(monkeypatch, *, clock_step: float = 0.03, stop_after: int | None
     def run(rects, full_screen):
         overlay = flash_overlay._Overlay()
         overlay_ref["overlay"] = overlay
+        stop_event = overlay.stop_event
+        # The frame's wait would really sleep; the fake clock already moved.
+        stop_event.wait = lambda timeout=None: stop_event.is_set()
         flash_overlay._run_overlay(rects, full_screen, overlay)
         return overlay
 
