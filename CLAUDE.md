@@ -74,6 +74,7 @@ The codebase follows a layered service architecture under `src/windows_mcp/`:
 |---|---|---|
 | `WINDOWS_MCP_SCREENSHOT_SCALE` | `1.0` | Scale factor for screenshots (range `0.1`–`1.0`). Lower on 1440p/4K to stay under Claude Desktop's 1 MB limit. Resolved in `tools/_snapshot_helpers.py`. |
 | `WINDOWS_MCP_SCREENSHOT_BACKEND` | `auto` | Screenshot backend: `auto`, `dxcam`, `mss`, `pillow`. Resolved in `desktop/screenshot.py`. |
+| `WINDOWS_MCP_DXCAM_IDLE_SECONDS` | `30` | Seconds an idle dxcam camera and its last frame are kept before release. Unset or blank → default silently; non-number, `nan`/`inf`, or `<= 0` → warning + default; above `threading.TIMEOUT_MAX` (~49.7 days) → clamped with a warning. Read once at import in `desktop/screenshot.py`, which also releases cameras at exit via `atexit`. |
 | `WINDOWS_MCP_MAX_TREE_ELEMENTS` | `500` | Max UI elements a single Snapshot/WaitFor tree capture may collect before it stops descending and returns a truncated tree (with a note in the output). Bounds both traversal time and response size on huge flat lists/grids (e.g. an unfiltered inventory view with thousands of rows). Resolved in `tree/budget.py`. |
 | `WINDOWS_MCP_PROFILE_SNAPSHOT` | _(off)_ | Set to `1`/`true`/`yes`/`on` to log per-stage timing for Screenshot/Snapshot. Checked in `tools/_snapshot_helpers.py` and `desktop/service.py`. |
 | `ANONYMIZED_TELEMETRY` | `true` | Set to `false` to disable PostHog telemetry. Checked in `__main__.py` and `infrastructure/analytics.py`. |
