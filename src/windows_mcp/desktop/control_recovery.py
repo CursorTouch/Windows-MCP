@@ -90,5 +90,7 @@ class StaleInputRecovery:
             owner._delivered_mouse.difference_update(buttons)
             owner._quarantine.difference_update(keys)
             self._reset()
+            # A held input defers the user countdown; let the parked worker re-plan.
+            owner._release_requested.set()
         finally:
             owner._lock.release()
