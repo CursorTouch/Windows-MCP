@@ -70,20 +70,25 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/windows_mcp/uia/*.py" = ["F403", "F405"]
+# The free-threaded interpreter check must run before the third-party imports.
+"src/windows_mcp/__main__.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.uv]
-# Only ever build the venv on a uv-managed CPython. The Microsoft Store Python
-# patch-updates itself and leaves the venv half-installed (win32com present,
-# win32comext missing). Pair this with the bare minor version in
+# Prefer a uv-managed CPython (installed or downloaded) for the venv. The
+# Microsoft Store Python patch-updates itself and leaves the venv half-installed
+# (win32com present, win32comext missing). "managed" rather than "only-managed"
+# so an offline machine with only a system 3.14 can still start. Free-threaded
+# builds are refused at startup by windows_mcp/interpreter.py, since neither the
+# pin nor this setting keeps them out. Pair this with the bare minor version in
 # .python-version ("3.14", never an exact patch such as "3.14.7"): an exact
 # patch can't be resolved by a uv release older than that CPython patch, so
 # the Claude Desktop extension fails to start. Bump .python-version only when
 # requires-python moves; tests/test_python_pin.py enforces both rules.
-python-preference = "only-managed"
+python-preference = "managed"
 constraint-dependencies = ["pydantic-settings>=2.14.2"]
 
 [tool.uv.extra-build-dependencies]
