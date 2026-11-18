@@ -5,6 +5,7 @@ public dispatch surface (env-var gating, lifecycle bookkeeping, fallthrough
 when ``tkinter`` cannot be imported).
 """
 
+import itertools
 import sys
 import threading
 import ctypes
@@ -257,12 +258,20 @@ class TestRunOverlayFallthrough:
         assert overlay.closed_event.is_set()
 
 
-def _fake_win32(monkeypatch, *, clock_step: float = 0.03, stop_after: int | None = None):
+def _fake_win32(
+    monkeypatch,
+    *,
+    clock_step: float = 0.03,
+    frame_times: "list[float] | None" = None,
+    stop_after: int | None = None,
+):
     """Replace the Win32 calls of ``_run_overlay`` with recorders.
 
     The fake clock advances ``clock_step`` seconds per read (one read per
     frame), and the per-frame wait on the stop event returns at once instead
     of sleeping, so a whole flash runs instantly with the same frame cadence.
+    ``frame_times`` instead advances the clock by each of those intervals in
+    turn, repeating, to stand in for a real timer's jittered frame waits.
     ``stop_after`` sets the stop event after that many opacity changes,
     standing in for a newer capture cancelling the flash.
     """
@@ -283,7 +292,8 @@ def _fake_win32(monkeypatch, *, clock_step: float = 0.03, stop_after: int | None
         if stop_after is not None and len(calls["opacity"]) >= stop_after:
             overlay_ref["overlay"].stop_event.set()
 
-    clock = iter(range(10**6))
+    steps = itertools.cycle(frame_times) if frame_times else itertools.repeat(clock_step)
+    clock = itertools.accumulate(steps, initial=0.0)
     monkeypatch.setattr(flash_overlay, "_create_layered_window", create)
     monkeypatch.setattr(flash_overlay, "_push_bitmap", upload)
     monkeypatch.setattr(flash_overlay, "_set_window_opacity", set_opacity, raising=False)
@@ -298,7 +308,7 @@ def _fake_win32(monkeypatch, *, clock_step: float = 0.03, stop_after: int | None
         "UnregisterClassW",
         lambda name, instance: calls["unregistered"].append(name),
     )
-    monkeypatch.setattr(flash_overlay.time, "perf_counter", lambda: next(clock) * clock_step)
+    monkeypatch.setattr(flash_overlay.time, "perf_counter", lambda: next(clock))
 
     def run(rects, full_screen):
         overlay = flash_overlay._Overlay()
@@ -431,6 +441,26 @@ class TestRunOverlay:
         assert sorted(calls["destroyed"]) == hwnds
         assert len(calls["unregistered"]) == 4
         assert overlay.closed_event.is_set()
+
+    @pytest.mark.parametrize("full_screen", [True, False])
+    def test_jittered_frames_never_skip_an_opacity_level(
+        self, monkeypatch, fresh_glow_cache, full_screen
+    ):
+        # Real Windows timer waits for a 30 ms frame land between 31 and 47 ms,
+        # often several 47 ms frames in a row. The region fade-in is only
+        # ~525 ms (~33 ms per level), so late frames must not jump levels.
+        jitter = [0.047, 0.047, 0.047, 0.031, 0.039, 0.047, 0.035, 0.047, 0.047, 0.043]
+        calls, run = _fake_win32(monkeypatch, frame_times=jitter)
+        run([(0, 0, 1440, 900)], full_screen)
+
+        for hwnd in [w[0] for w in calls["windows"]]:
+            steps = _opacity_steps(calls, hwnd)
+            peak = steps.index(max(steps))
+            assert steps[peak] == 255
+            assert steps[: peak + 1] == sorted(steps[: peak + 1])
+            assert steps[peak:] == sorted(steps[peak:], reverse=True)
+            assert steps[-1] == 0
+            assert max(abs(b - a) for a, b in zip(steps, steps[1:])) <= 16
 
     @pytest.mark.parametrize("full_screen", [True, False])
     def test_the_flash_lasts_its_full_duration(self, monkeypatch, fresh_glow_cache, full_screen):

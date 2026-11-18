@@ -669,6 +669,11 @@ def _run_overlay(
                 break
             intensity = _intensity_at(elapsed_ms / _DURATION_MS, full_screen)
             target = round(intensity * _OPACITY_LEVELS)
+            # Move at most one level per frame. Real frame waits run 31-47 ms,
+            # longer than the region fade-in's ~33 ms per level, so following
+            # the curve directly would skip levels; the capped fade-in still
+            # peaks within ~16 frames (<= 0.75 s), well inside the hold.
+            target = max(level - 1, min(level + 1, target))
             if target != level:
                 opacity = round(target * 255 / _OPACITY_LEVELS)
                 for hwnd, _, _ in windows:
