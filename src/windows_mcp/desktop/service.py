@@ -518,8 +518,10 @@ class Desktop:
             if target_window is None:
                 return error, 1
         else:
-            # If no name provided, try to resize the active window
-            target_window = self.desktop_state.active_window if self.desktop_state else None
+            # No name: resize the window in front now. The last capture's active window
+            # is out of date after a switch or launch, and before any capture or after a
+            # Screenshot (which does not list windows) there is none.
+            target_window = self.get_active_window()
 
             if target_window is None:
                 return "No active window found", 1
