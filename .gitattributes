@@ -1,0 +1,3 @@
+# Keep the pin LF on every checkout, core.autocrlf=true included;
+# tests/test_python_pin.py requires a single LF-terminated line.
+.python-version text eol=lf
