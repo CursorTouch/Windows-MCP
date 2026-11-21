@@ -1,9 +1,10 @@
 import io
 import asyncio
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from windows_mcp.desktop.screenshot import DxcamOutput, _DxcamBackend, _crop_screenshot  # noqa
 from windows_mcp.desktop.service import Desktop
@@ -28,6 +29,31 @@ def make_box(left: int, top: int, right: int, bottom: int) -> BoundingBox:
         bottom=bottom,
         width=right - left,
         height=bottom - top,
+    )
+
+
+def make_element(name: str, control_type: str, window_name: str, box: BoundingBox):
+    return TreeElementNode(
+        name=name,
+        control_type=control_type,
+        window_name=window_name,
+        bounding_box=box,
+        center=box.get_center(),
+        metadata={},
+    )
+
+
+def tree_node_for(element, element_type: str = "interactive") -> SemanticNode:
+    """The UI tree node the walk adds for an element of its interactive or scrollable list."""
+    return SemanticNode(
+        control_type=element.control_type,
+        element_type=element_type,
+        name=element.name,
+        window_name=element.window_name,
+        center=element.center,
+        bounding_box=element.bounding_box,
+        metadata=dict(element.metadata),
+        element=element,
     )
 
 
@@ -258,6 +284,47 @@ class TestDisplayFiltering:
         assert filtered_tree.semantic_tree_root is not None
         assert [node.name for node in filtered_tree.semantic_tree_root.children[0].children] == [
             "Visible"
+        ]
+
+    def test_filter_renumbers_the_labels_the_tree_shows(self, desktop):
+        # The filter drops "Hidden" from the lists, so "Save" moves from label 2 to label 1
+        # and the scrollable pane from label 3 to label 2. The tree shows the new labels.
+        region = make_box(1920, 0, 3840, 1080)
+        open_button = make_element("Open", "Button", "Browser", make_box(2000, 200, 2100, 260))
+        hidden = make_element("Hidden", "Button", "Editor", make_box(200, 200, 260, 260))
+        save = make_element("Save", "Button", "Browser", make_box(2200, 200, 2300, 260))
+        pane = ScrollElementNode(
+            name="Pane",
+            control_type="Pane",
+            window_name="Browser",
+            bounding_box=make_box(1900, 0, 2500, 900),
+            center=Center(x=2200, y=450),
+            metadata={"vertical_scrollable": True, "vertical_scroll_percent": 0.0},
+        )
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        browser = SemanticNode(control_type="Window", element_type="window", name="Browser")
+        editor = SemanticNode(control_type="Window", element_type="window", name="Editor")
+        root.add_child(browser)
+        root.add_child(editor)
+        browser.add_child(tree_node_for(save))
+        browser.add_child(tree_node_for(pane, "scrollable"))
+        browser.add_child(tree_node_for(open_button))
+        editor.add_child(tree_node_for(hidden))
+        tree_state = TreeState(
+            interactive_nodes=[open_button, hidden, save],
+            scrollable_nodes=[pane],
+            semantic_tree_root=root,
+        )
+
+        filtered_tree = desktop._filter_tree_state_to_region(tree_state, region)
+
+        assert [node.name for node in filtered_tree.interactive_nodes] == ["Open", "Save"]
+        assert filtered_tree.semantic_tree_to_string().splitlines() == [
+            "desktop",
+            '    └── window "Browser"',
+            '        ├── [#1] (2250,230) button "Save"  [action: click]',
+            '        ├── [#2] (2210,450) pane "Pane"  [action: click]  [v:0.0%]',
+            '        └── [#0] (2050,230) button "Open"  [action: click]',
         ]
 
     def test_crop_screenshot_to_display_region(self, desktop):
@@ -709,6 +776,141 @@ class TestDisplayFiltering:
                 )
 
         assert any("Snapshot profile:" in message for message in logged)
+
+    @pytest.mark.parametrize(
+        ("capture", "labelled"),
+        [
+            ({}, ["Settings", "File", "Text editor", "OK", "Text area"]),
+            ({"display": [1]}, ["Settings", "Text editor", "OK", "Text area"]),
+            ({"region": [1920, 0, 3000, 800]}, ["Text editor", "Text area"]),
+        ],
+        ids=["full-desktop", "display", "region"],
+    )
+    def test_snapshot_tree_labels_match_click_and_the_annotated_screenshot(
+        self, desktop, monkeypatch, capture, labelled
+    ):
+        # Click(label=N) takes interactive_nodes[N] of the last capture, or a scrollable node
+        # numbered on after them, and the annotated screenshot draws N on interactive_nodes[N].
+        # The UI tree lists the elements in another order, and a display or region capture
+        # drops elements and renumbers the rest. Each label in the tree must be the one Click
+        # and the screenshot give the element on its line.
+        settings = make_element("Settings", "Button", "Editor", make_box(3680, 20, 3720, 60))
+        file_menu = make_element("File", "MenuItem", "Notes", make_box(20, 20, 80, 60))
+        text_editor = make_element("Text editor", "Edit", "Editor", make_box(2000, 200, 2800, 600))
+        ok_button = make_element("OK", "Button", "Editor", make_box(2460, 880, 2540, 920))
+        text_area = ScrollElementNode(
+            name="Text area",
+            control_type="Pane",
+            window_name="Editor",
+            bounding_box=make_box(1960, 100, 3200, 1000),
+            center=Center(x=2580, y=550),
+            metadata={"vertical_scrollable": True, "vertical_scroll_percent": 0.0},
+        )
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        editor = SemanticNode(control_type="Window", element_type="window", name="Editor")
+        notes = SemanticNode(control_type="Window", element_type="window", name="Notes")
+        root.add_child(editor)
+        root.add_child(notes)
+        editor.add_child(tree_node_for(text_editor))
+        editor.add_child(tree_node_for(text_area, "scrollable"))
+        editor.add_child(tree_node_for(ok_button))
+        editor.add_child(tree_node_for(settings))
+        notes.add_child(tree_node_for(file_menu))
+        desktop.tree = MagicMock()
+        desktop.tree.screen_box = make_box(0, 0, 3840, 1080)
+        desktop.tree.get_state.return_value = TreeState(
+            interactive_nodes=[settings, file_menu, text_editor, ok_button],
+            scrollable_nodes=[text_area],
+            semantic_tree_root=root,
+        )
+        desktop.get_screen_box = MagicMock(return_value=make_box(0, 0, 3840, 1080))
+        desktop.get_displays = MagicMock(
+            return_value=[
+                DisplayInfo(
+                    index=0,
+                    device_name="\\\\.\\DISPLAY1",
+                    rect=Rect(0, 0, 1920, 1080),
+                    primary=True,
+                ),
+                DisplayInfo(
+                    index=1,
+                    device_name="\\\\.\\DISPLAY2",
+                    rect=Rect(1920, 0, 3840, 1080),
+                    primary=False,
+                ),
+            ]
+        )
+        editor_window = Window(
+            name="Editor",
+            is_browser=False,
+            depth=0,
+            status=Status.NORMAL,
+            bounding_box=make_box(1920, 0, 3840, 1040),
+            handle=1,
+            process_id=11,
+        )
+        desktop.get_controls_handles = MagicMock(return_value=[1])
+        desktop.get_windows = MagicMock(return_value=([editor_window], {1}))
+        desktop.get_active_window = MagicMock(return_value=editor_window)
+        desktop.get_cursor_location = MagicMock(return_value=(2400, 400))
+        desktop.get_screenshot = lambda capture_rect=None: Image.new(
+            "RGB",
+            (capture_rect.width(), capture_rect.height()) if capture_rect else (3840, 1080),
+            "white",
+        )
+
+        # Pair each element box the annotation outlines with the label drawn for it.
+        outlined, drawn_labels = [], []
+        rectangle, text = ImageDraw.ImageDraw.rectangle, ImageDraw.ImageDraw.text
+
+        def record_rectangle(draw, xy, *args, **kwargs):
+            if "outline" in kwargs:  # an element's box; label backgrounds are filled instead
+                outlined.append(xy)
+            return rectangle(draw, xy, *args, **kwargs)
+
+        def record_text(draw, xy, label, *args, **kwargs):
+            if label != "CURSOR":
+                drawn_labels.append(int(label))
+            return text(draw, xy, label, *args, **kwargs)
+
+        monkeypatch.setattr(ImageDraw.ImageDraw, "rectangle", record_rectangle)
+        monkeypatch.setattr(ImageDraw.ImageDraw, "text", record_text)
+        monkeypatch.setattr(
+            "windows_mcp.desktop.service.uia.GetVirtualScreenRect", lambda: (0, 0, 3840, 1080)
+        )
+        monkeypatch.setattr(
+            "windows_mcp.desktop.service.get_current_desktop", lambda: {"name": "Desktop 1"}
+        )
+        monkeypatch.setattr(
+            "windows_mcp.desktop.service.get_all_desktops", lambda: [{"name": "Desktop 1"}]
+        )
+        monkeypatch.setattr(main_module, "desktop", desktop)
+
+        result = asyncio.run(main_module.state_tool(use_vision=True, **capture))
+
+        tree_state = desktop.desktop_state.tree_state
+        elements = tree_state.interactive_nodes + tree_state.scrollable_nodes
+        assert [element.name for element in elements] == labelled
+        ui_tree = result[0][result[0].index("UI Tree:") :]
+        # Each labelled tree line: its label, then the coordinates and the name it lists.
+        labelled_line = re.compile(r'\[#(\d+)\] \((-?\d+),(-?\d+)\) [^"]+"([^"]*)"')
+        shown = [
+            (int(label), (int(x), int(y)), name)
+            for label, x, y, name in labelled_line.findall(ui_tree)
+        ]
+        assert sorted(label for label, _, _ in shown) == list(range(len(elements)))
+        # The center of the box the screenshot outlines with each label, in screen coordinates.
+        origin = desktop.desktop_state.screenshot_region or make_box(0, 0, 3840, 1080)
+        drawn = {
+            label: ((x1 + x2) // 2 + origin.left, (y1 + y2) // 2 + origin.top)
+            for label, (x1, y1, x2, y2) in zip(drawn_labels, outlined)
+        }
+        assert sorted(drawn) == list(range(len(tree_state.interactive_nodes)))
+        for label, point, name in shown:
+            assert elements[label].name == name
+            assert desktop.get_coordinates_from_label(label) == point
+            if label < len(tree_state.interactive_nodes):
+                assert drawn[label] == point
 
 
 class TestSnapshotTools:
