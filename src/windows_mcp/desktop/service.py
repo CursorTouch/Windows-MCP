@@ -10,7 +10,13 @@ from windows_mcp.vdm.core import (
     is_window_on_current_desktop,
 )
 from windows_mcp.desktop.views import DesktopState, Window, Browser, Status, Size, Display
-from windows_mcp.tree.views import BoundingBox, TreeElementNode, TreeState, SemanticNode
+from windows_mcp.tree.views import (
+    BoundingBox,
+    TreeElementNode,
+    TreeState,
+    SemanticNode,
+    ScrollElementNode,
+)
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree, _excluded_process_names, _window_process_name
 from windows_mcp.desktop import screenshot as screenshot_capture
@@ -1936,6 +1942,7 @@ class Desktop:
         self,
         node: SemanticNode | None,
         region: BoundingBox,
+        clipped_elements: dict[int, TreeElementNode | ScrollElementNode],
     ) -> SemanticNode | None:
         if node is None:
             return None
@@ -1948,7 +1955,7 @@ class Desktop:
 
         filtered_children = []
         for child in node.children:
-            filtered_child = self._filter_semantic_node_to_region(child, region)
+            filtered_child = self._filter_semantic_node_to_region(child, region, clipped_elements)
             if filtered_child is not None:
                 filtered_children.append(filtered_child)
 
@@ -1964,21 +1971,28 @@ class Desktop:
             bounding_box=clipped_box,
             metadata=dict(node.metadata),
         )
+        if node.element is not None:
+            # Its element's clipped copy, whose place in the filtered lists is its label.
+            filtered_node.element = clipped_elements.get(id(node.element))
         filtered_node.children = filtered_children
         return filtered_node
 
     def _filter_tree_state_to_region(self, tree_state, region: BoundingBox):
+        # Each kept element's clipped copy, by the original's id(), for the filtered UI tree.
+        clipped_elements = {}
         filtered_interactive_nodes = []
         for node in tree_state.interactive_nodes:
             filtered_node = self._filter_tree_node_to_region(node, region)
             if filtered_node is not None:
                 filtered_interactive_nodes.append(filtered_node)
+                clipped_elements[id(node)] = filtered_node
 
         filtered_scrollable_nodes = []
         for node in tree_state.scrollable_nodes:
             filtered_node = self._filter_scroll_node_to_region(node, region)
             if filtered_node is not None:
                 filtered_scrollable_nodes.append(filtered_node)
+                clipped_elements[id(node)] = filtered_node
 
         filtered_dom_node = None
         if tree_state.dom_node is not None:
@@ -1987,6 +2001,7 @@ class Desktop:
         filtered_semantic_root = self._filter_semantic_node_to_region(
             tree_state.semantic_tree_root,
             region,
+            clipped_elements,
         )
         if filtered_semantic_root is not None:
             filtered_semantic_root.bounding_box = region
