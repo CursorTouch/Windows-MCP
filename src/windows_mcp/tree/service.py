@@ -388,6 +388,7 @@ class Tree:
                     center=center,
                     bounding_box=bounding_box,
                     metadata={},
+                    element=word_node,
                 ))
 
 
@@ -544,7 +545,7 @@ class Tree:
 
                             sem_scroll_name = name.strip() or automation_id or localized_control_type.capitalize() or "''"
                             self.element_budget.try_consume()
-                            scrollable_nodes.append(ScrollElementNode(**{
+                            scroll_node=ScrollElementNode(**{
                                 'name':sem_scroll_name,
                                 'control_type':localized_control_type.title(),
                                 'bounding_box':BoundingBox(**{
@@ -558,7 +559,8 @@ class Tree:
                                 'center':center,
                                 'window_name':window_name,
                                 'metadata':metadata
-                            }))
+                            })
+                            scrollable_nodes.append(scroll_node)
                             if current_semantic_node is not None and not is_dom:
                                 current_semantic_node.add_child(SemanticNode(
                                     control_type=localized_control_type.title(),
@@ -571,6 +573,7 @@ class Tree:
                                         width=box.width(), height=box.height()
                                     ),
                                     metadata=dict(metadata),
+                                    element=scroll_node,
                                 ))
                                 semantic_added = True
                     except Exception:
@@ -847,6 +850,7 @@ class Tree:
                                             center=tree_node.center,
                                             bounding_box=tree_node.bounding_box,
                                             metadata=dict(tree_node.metadata),
+                                            element=tree_node,
                                         ))
                                         semantic_added = True
                                 self._append_word_nodes(word_elements, window_bounding_box, window_name, interactive_nodes, current_semantic_node)
@@ -1085,6 +1089,7 @@ class Tree:
                         center=n.center,
                         bounding_box=n.bounding_box,
                         metadata=dict(n.metadata),
+                        element=n,
                     ))
                 for text_node in dom_informative_nodes:
                     if text_node.text:

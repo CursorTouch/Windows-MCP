@@ -91,25 +91,27 @@ def _capture(window, use_dom, monkeypatch):
         return tree.get_state(BROWSER, [], use_dom=use_dom)
 
 
-TOOLBAR_LINES = [
-    '        ├── tool bar "App bar"',
-    '        │   ├── (25,60) button "Back"  [action: click]',
-    '        │   └── (510,60) edit "Address and search bar"  [action: fill]',
-]
+def _toolbar_lines(back_label, address_label):
+    return [
+        '        ├── tool bar "App bar"',
+        f'        │   ├── [#{back_label}] (25,60) button "Back"  [action: click]',
+        f'        │   └── [#{address_label}] (510,60) edit "Address and search bar"  [action: fill]',
+    ]
 
 
 def test_browser_controls_are_listed_above_the_page(monkeypatch):
     window = _browser_window("Example - Google Chrome", "RootWebArea")
     tree_state = _capture(window, use_dom=False, monkeypatch=monkeypatch)
 
-    # Labels number every element the walk captured, in the walk's order.
+    # Labels number every element the walk captured, in the walk's order, and the tree
+    # shows each element's label.
     labelled = [node.name for node in tree_state.interactive_nodes]
     assert labelled == ["Address and search bar", "Back", "More info"]
     assert tree_state.semantic_tree_to_string().splitlines() == [
         "desktop",
         '    └── window "Example - Google Chrome"',
-        *TOOLBAR_LINES,
-        '        ├── (200,310) link "More info"  [action: click]',
+        *_toolbar_lines(back_label=1, address_label=0),
+        '        ├── [#2] (200,310) link "More info"  [action: click]',
         '        └── text "Example text."',
     ]
 
@@ -124,8 +126,8 @@ def test_page_without_root_web_area_is_listed(monkeypatch):
     assert tree_state.semantic_tree_to_string().splitlines() == [
         "desktop",
         '    └── window "Example - Mozilla Firefox"',
-        *TOOLBAR_LINES,
-        '        └── (200,310) link "More info"  [action: click]',
+        *_toolbar_lines(back_label=2, address_label=1),
+        '        └── [#0] (200,310) link "More info"  [action: click]',
     ]
 
 
@@ -137,6 +139,6 @@ def test_use_dom_lists_the_page_alone(monkeypatch):
     assert tree_state.semantic_tree_to_string().splitlines() == [
         "desktop",
         '    └── window "Example - Google Chrome"',
-        '        ├── (200,310) link "More info"  [action: click]',
+        '        ├── [#0] (200,310) link "More info"  [action: click]',
         '        └── text "Example text."',
     ]

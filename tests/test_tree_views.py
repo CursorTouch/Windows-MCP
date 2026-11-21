@@ -305,3 +305,81 @@ class TestLineBreaks:
         assert lines[3].endswith(f'(210,40) button "{escaped}"  [action: click]')
         assert lines[4].endswith(f'(300,200) pane "{escaped}"  [action: click]')
         assert lines[5].endswith(f'text "{escaped}"')
+
+
+def _element(name: str, control_type: str, x: int, y: int) -> TreeElementNode:
+    box = BoundingBox(left=x - 10, top=y - 10, right=x + 10, bottom=y + 10, width=20, height=20)
+    return TreeElementNode(
+        bounding_box=box, center=Center(x=x, y=y), name=name, control_type=control_type
+    )
+
+
+def _tree_node_for(element, element_type: str = "interactive") -> SemanticNode:
+    """The tree node the walk adds for an entry of interactive_nodes or scrollable_nodes."""
+    return SemanticNode(
+        control_type=element.control_type,
+        element_type=element_type,
+        name=element.name,
+        center=element.center,
+        bounding_box=element.bounding_box,
+        metadata=dict(element.metadata),
+        element=element,
+    )
+
+
+class TestElementLabels:
+    """Click(label=N) takes interactive_nodes[N], or a scrollable node numbered on after them,
+    and the annotated screenshot draws N on interactive_nodes[N]. The walk visits children
+    right to left, so the tree lists elements in another order: each line shows its label."""
+
+    def test_each_element_line_shows_its_label(self):
+        settings = _element("Settings", "Button", 1170, 45)
+        editor = _element("Text editor", "Edit", 590, 410)
+        text_area = ScrollElementNode(
+            name="Text area",
+            control_type="Pane",
+            window_name="Notepad",
+            bounding_box=BoundingBox(
+                left=0, top=60, right=1200, bottom=760, width=1200, height=700
+            ),
+            center=Center(x=600, y=410),
+            metadata={"vertical_scrollable": True, "vertical_scroll_percent": 0.0},
+        )
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(control_type="Window", element_type="window", name="Notepad")
+        root.add_child(window)
+        window.add_child(_tree_node_for(editor))
+        window.add_child(_tree_node_for(text_area, "scrollable"))
+        window.add_child(_tree_node_for(settings))
+        tree_state = TreeState(
+            interactive_nodes=[settings, editor],
+            scrollable_nodes=[text_area],
+            semantic_tree_root=root,
+        )
+
+        assert tree_state.semantic_tree_to_string().splitlines() == [
+            "desktop",
+            '    └── window "Notepad"',
+            '        ├── [#1] (590,410) edit "Text editor"  [action: fill]',
+            '        ├── [#2] (600,410) pane "Text area"  [action: click]  [v:0.0%]',
+            '        └── [#0] (1170,45) button "Settings"  [action: click]',
+        ]
+
+    def test_element_left_out_of_the_lists_shows_no_label(self):
+        # A modal dialog empties its window's interactive list (tree_traversal), but the
+        # elements the walk already put in the tree stay there. Click has no label for them.
+        behind = _element("Behind the dialog", "Button", 100, 100)
+        ok = _element("OK", "Button", 400, 300)
+        root = SemanticNode(control_type="Desktop", element_type="desktop", name="Desktop")
+        window = SemanticNode(control_type="Window", element_type="window", name="Notepad")
+        root.add_child(window)
+        window.add_child(_tree_node_for(behind))
+        window.add_child(_tree_node_for(ok))
+        tree_state = TreeState(interactive_nodes=[ok], semantic_tree_root=root)
+
+        assert tree_state.semantic_tree_to_string().splitlines() == [
+            "desktop",
+            '    └── window "Notepad"',
+            '        ├── (100,100) button "Behind the dialog"  [action: click]',
+            '        └── [#0] (400,300) button "OK"  [action: click]',
+        ]
