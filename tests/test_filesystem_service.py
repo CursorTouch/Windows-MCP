@@ -106,10 +106,17 @@ class TestReadFile:
         assert read_file(str(f), offset=2, limit=1).endswith("\nLines 2-2 of 2:\nlast\n")
         assert read_file(str(f), limit=1).startswith("Error: The requested lines add up to")
 
-    def test_read_rejects_negative_limit(self, tmp_path):
+    @pytest.mark.parametrize("limit", [0, -1], ids=["zero", "negative"])
+    def test_read_rejects_limit_below_one(self, tmp_path, limit):
         f = tmp_path / "lines.txt"
         f.write_text("line1\nline2\nline3\n", encoding="utf-8")
-        assert read_file(str(f), offset=2, limit=-1) == "Error: limit cannot be negative."
+        assert read_file(str(f), offset=2, limit=limit) == "Error: limit must be at least 1."
+
+    @pytest.mark.parametrize("offset", [0, -1], ids=["zero", "negative"])
+    def test_read_rejects_offset_below_one(self, tmp_path, offset):
+        f = tmp_path / "lines.txt"
+        f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+        assert read_file(str(f), offset=offset, limit=1) == "Error: offset must be at least 1."
 
 
 class TestWriteFile:
