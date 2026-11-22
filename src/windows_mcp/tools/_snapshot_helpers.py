@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT = 1920, 1080
 
+# Configured scales already logged as lowered by the image cap. Every full capture of a
+# 4K screen lowers the scale the same way, so each configured value is logged once per
+# process instead of on every Screenshot and Snapshot.
+_logged_capped_scales: set[float] = set()
+
 
 def _screenshot_scale() -> float:
     value = os.getenv("WINDOWS_MCP_SCREENSHOT_SCALE", "1.0")
@@ -33,6 +38,34 @@ def _screenshot_scale() -> float:
         logger.warning("WINDOWS_MCP_SCREENSHOT_SCALE %r out of range [0.1, 1.0], clamping", scale)
         scale = max(0.1, min(1.0, scale))
     return scale
+
+
+def _log_capped_scale(scale: float, desktop_state: DesktopState) -> None:
+    """Warn once when the image cap lowered a WINDOWS_MCP_SCREENSHOT_SCALE that was set.
+
+    Desktop.get_state() applies the smaller of the configured scale and the one that fits
+    the capture in MAX_IMAGE_WIDTH x MAX_IMAGE_HEIGHT. With the variable unset no scale was
+    asked for and the cap alone sizes the image, so that case is not reported.
+    """
+    if not os.getenv("WINDOWS_MCP_SCREENSHOT_SCALE", "").strip():
+        return
+    applied_scale = desktop_state.screenshot_scale
+    if applied_scale is None or applied_scale >= scale:
+        return
+    if scale in _logged_capped_scales:
+        return
+    _logged_capped_scales.add(scale)
+    size = desktop_state.screenshot_original_size
+    logger.warning(
+        "WINDOWS_MCP_SCREENSHOT_SCALE %s lowered to %s for a %dx%d capture: "
+        "screenshots are capped at %dx%d",
+        scale,
+        round(applied_scale, 6),
+        size.width,
+        size.height,
+        MAX_IMAGE_WIDTH,
+        MAX_IMAGE_HEIGHT,
+    )
 
 
 def _snapshot_profile_enabled() -> bool:
@@ -97,18 +130,20 @@ def capture_desktop_state(
     if width_reference_line and height_reference_line:
         grid_lines = (int(width_reference_line), int(height_reference_line))
 
+    scale = _screenshot_scale()
     desktop_state = desktop.get_state(
         use_vision=use_vision,
         use_dom=use_dom,
         use_annotation=use_annotation,
         use_ui_tree=use_ui_tree,
         as_bytes=False,
-        scale=_screenshot_scale(),
+        scale=scale,
         grid_lines=grid_lines,
         display_indices=display_indices,
         region=region,
         max_image_size=Size(width=MAX_IMAGE_WIDTH, height=MAX_IMAGE_HEIGHT),
     )
+    _log_capped_scale(scale, desktop_state)
     if profile_enabled:
         desktop_state_ms = (time.perf_counter() - stage_started_at) * 1000
         stage_started_at = time.perf_counter()
