@@ -227,6 +227,7 @@ class Tree:
             semantic_tree_root=desktop_root,
             truncated=self.element_budget.truncated,
             element_limit=self.element_budget.limit,
+            failed_handles=list(dict.fromkeys(failed_handles)),
         )
 
     def get_window_wise_nodes(self,windows_handles:list[int],active_window_flag:bool,use_dom:bool=False) -> tuple[list[TreeElementNode],list[ScrollElementNode],list[TextElementNode],list[int],list[SemanticNode]]:

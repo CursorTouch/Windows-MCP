@@ -257,6 +257,14 @@ class Desktop:
                 sorted(other_windows_handles, key=lambda h: z_order.get(h, len(z_order))),
                 use_dom=use_dom,
             )
+            if tree_state.failed_handles:
+                known_windows = windows if active_window is None else [active_window, *windows]
+                failed_set = set(tree_state.failed_handles)
+                tree_state.failed_windows = {
+                    window.handle: window.name
+                    for window in known_windows
+                    if window.handle in failed_set and window.name
+                }
         else:
             root_box = screenshot_region or self.tree.screen_box
             tree_state = TreeState(
@@ -2025,4 +2033,6 @@ class Desktop:
             semantic_tree_root=filtered_semantic_root,
             truncated=tree_state.truncated,
             element_limit=tree_state.element_limit,
+            failed_handles=list(tree_state.failed_handles),
+            failed_windows=dict(tree_state.failed_windows),
         )
