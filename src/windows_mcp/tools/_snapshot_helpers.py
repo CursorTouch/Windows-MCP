@@ -312,10 +312,16 @@ def build_snapshot_response(
     {windows}
     ''')
     if include_ui_details:
+        # The tree has no blank lines, and its notes (such as the truncation note) follow a
+        # blank line at column 0: keep them out of dedent() so the tree loses only the
+        # template's indent.
+        tree, _, notes = (semantic_tree or "No elements found.").partition("\n\n")
         response_text += dedent(f'''
 
     UI Tree:
-    {semantic_tree or "No elements found."}''')
+    {tree}''')
+        if notes:
+            response_text += f"\n\n{notes}"
 
     response = [response_text]
     if screenshot_bytes:
