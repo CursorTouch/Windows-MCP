@@ -19,7 +19,9 @@ from windows_mcp.desktop.views import DesktopState
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT = 1920, 1080
+DEFAULT_MAX_IMAGE_WIDTH, DEFAULT_MAX_IMAGE_HEIGHT = 1920, 1080
+# Kept for code that imports the defaults under their old names.
+MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT = DEFAULT_MAX_IMAGE_WIDTH, DEFAULT_MAX_IMAGE_HEIGHT
 
 # Configured scales already logged as lowered by the image cap. Every full capture of a
 # 4K screen lowers the scale the same way, so each configured value is logged once per
@@ -40,13 +42,45 @@ def _screenshot_scale() -> float:
     return scale
 
 
-def _log_capped_scale(scale: float, desktop_state: DesktopState) -> None:
+def _max_image_size() -> Size | None:
+    """Read WINDOWS_MCP_MAX_IMAGE_SIZE: ``WIDTHxHEIGHT``, or ``none`` for no cap.
+
+    Unset or empty keeps the default 1920x1080 cap. An invalid value is logged and
+    the default is used.
+    """
+    default = Size(width=DEFAULT_MAX_IMAGE_WIDTH, height=DEFAULT_MAX_IMAGE_HEIGHT)
+    value = os.getenv("WINDOWS_MCP_MAX_IMAGE_SIZE", "").strip().lower()
+    if not value:
+        return default
+    if value in {"none", "off", "0"}:
+        return None
+    try:
+        width, height = (int(part) for part in value.split("x"))
+        if width <= 0 or height <= 0:
+            raise ValueError(value)
+    except ValueError:
+        logger.warning(
+            "Invalid WINDOWS_MCP_MAX_IMAGE_SIZE value %r, using %dx%d",
+            value,
+            default.width,
+            default.height,
+        )
+        return default
+    return Size(width=width, height=height)
+
+
+def _log_capped_scale(
+    scale: float, desktop_state: DesktopState, max_image_size: Size | None = None
+) -> None:
     """Warn once when the image cap lowered a WINDOWS_MCP_SCREENSHOT_SCALE that was set.
 
     Desktop.get_state() applies the smaller of the configured scale and the one that fits
-    the capture in MAX_IMAGE_WIDTH x MAX_IMAGE_HEIGHT. With the variable unset no scale was
-    asked for and the cap alone sizes the image, so that case is not reported.
+    the capture in the image cap (WINDOWS_MCP_MAX_IMAGE_SIZE, 1920x1080 by default). With
+    the variable unset no scale was asked for and the cap alone sizes the image, so that
+    case is not reported. Without a cap nothing can lower the scale.
     """
+    if max_image_size is None:
+        return
     if not os.getenv("WINDOWS_MCP_SCREENSHOT_SCALE", "").strip():
         return
     applied_scale = desktop_state.screenshot_scale
@@ -63,8 +97,8 @@ def _log_capped_scale(scale: float, desktop_state: DesktopState) -> None:
         round(applied_scale, 6),
         size.width,
         size.height,
-        MAX_IMAGE_WIDTH,
-        MAX_IMAGE_HEIGHT,
+        max_image_size.width,
+        max_image_size.height,
     )
 
 
@@ -131,6 +165,7 @@ def capture_desktop_state(
         grid_lines = (int(width_reference_line), int(height_reference_line))
 
     scale = _screenshot_scale()
+    max_image_size = _max_image_size()
     desktop_state = desktop.get_state(
         use_vision=use_vision,
         use_dom=use_dom,
@@ -141,9 +176,9 @@ def capture_desktop_state(
         grid_lines=grid_lines,
         display_indices=display_indices,
         region=region,
-        max_image_size=Size(width=MAX_IMAGE_WIDTH, height=MAX_IMAGE_HEIGHT),
+        max_image_size=max_image_size,
     )
-    _log_capped_scale(scale, desktop_state)
+    _log_capped_scale(scale, desktop_state, max_image_size)
     if profile_enabled:
         desktop_state_ms = (time.perf_counter() - stage_started_at) * 1000
         stage_started_at = time.perf_counter()
