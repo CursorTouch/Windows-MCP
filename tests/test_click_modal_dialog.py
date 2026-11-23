@@ -34,7 +34,7 @@ class FakeMCP:
 
 @pytest.fixture
 def desktop(monkeypatch: pytest.MonkeyPatch) -> Desktop:
-    """A Desktop that clicks for real but never touches this machine's windows."""
+    """A Desktop that clicks for real but never touches this machine's pointer or windows."""
     instance = Desktop.__new__(Desktop)
     instance.desktop_state = None
     owner = MagicMock()
@@ -43,6 +43,7 @@ def desktop(monkeypatch: pytest.MonkeyPatch) -> Desktop:
     monkeypatch.setattr(service, "get_controller", lambda: owner)
     monkeypatch.setattr(service.uia, "GetVirtualScreenRect", lambda: SINGLE_MONITOR)
     monkeypatch.setattr(service.uia, "Click", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.uia, "SetCursorPos", MagicMock(name="SetCursorPos"))
     monkeypatch.setattr(service.control_overlay, "ripple", lambda x, y: None)
     return instance
 
@@ -107,6 +108,7 @@ def test_hover_only_reports_no_warning(desktop: Desktop, monkeypatch: pytest.Mon
     _window_at(monkeypatch, enabled=False, title="Sign in")
 
     assert desktop.click(loc=[100, 200], clicks=0) == ""
+    service.uia.SetCursorPos.assert_called_once_with(100, 200)
 
 
 def test_the_click_tool_repeats_the_warning(monkeypatch: pytest.MonkeyPatch) -> None:
