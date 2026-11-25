@@ -69,13 +69,23 @@ class OAuthStore:
 
 
 def _verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
+    try:
+        encoded = code_verifier.encode("ascii")
+    except UnicodeEncodeError:
+        return False
     if method == "S256":
-        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        digest = hashlib.sha256(encoded).digest()
         expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
         return secrets.compare_digest(expected, code_challenge)
     if method == "plain":
         return secrets.compare_digest(code_verifier, code_challenge)
     return False
+
+
+def _str_field(body: dict, name: str) -> str | None:
+    """Return a string parameter from a parsed token body, or None if non-string."""
+    value = body.get(name, "")
+    return value if isinstance(value, str) else None
 
 
 def _is_loopback_redirect_uri(redirect_uri: str) -> bool:
@@ -169,7 +179,7 @@ def build_oauth_routes(
                 status_code=500,
             )
 
-        if client_id != configured_client_id:
+        if not secrets.compare_digest(client_id, configured_client_id):
             return JSONResponse({"error": "invalid_client"}, status_code=400)
 
         client = store.clients[client_id]
@@ -195,10 +205,16 @@ def build_oauth_routes(
     async def token(request: Request):
         content_type = request.headers.get("content-type", "")
         if "application/x-www-form-urlencoded" in content_type:
-            form = await request.form()
-            body = dict(form)
+            try:
+                form = await request.form()
+                body = dict(form)
+            except Exception:
+                return JSONResponse({"error": "invalid_request"}, status_code=400)
         elif "application/json" in content_type:
-            body = await request.json()
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "invalid_request"}, status_code=400)
         else:
             try:
                 form = await request.form()
@@ -206,13 +222,40 @@ def build_oauth_routes(
             except Exception:
                 return JSONResponse({"error": "invalid_request"}, status_code=400)
 
-        if body.get("grant_type", "") != "authorization_code":
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+        grant_type = _str_field(body, "grant_type")
+        code_value = _str_field(body, "code")
+        code_verifier = _str_field(body, "code_verifier")
+        client_id = _str_field(body, "client_id")
+        redirect_uri = _str_field(body, "redirect_uri")
+        provided_secret = _str_field(body, "client_secret")
+
+        if any(
+            field is None
+            for field in (
+                grant_type,
+                code_value,
+                code_verifier,
+                client_id,
+                redirect_uri,
+                provided_secret,
+            )
+        ):
+            return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+        if grant_type != "authorization_code":
             return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
 
-        code_value = body.get("code", "")
-        code_verifier = body.get("code_verifier", "")
-        client_id = body.get("client_id", "")
-        redirect_uri = body.get("redirect_uri", "")
+        # Authenticate the confidential client before inspecting or consuming
+        # authorization codes so unauthenticated callers cannot probe or burn codes.
+        client = store.clients.get(client_id)
+        if not client or not client.client_secret:
+            return JSONResponse({"error": "invalid_client"}, status_code=401)
+
+        if not provided_secret or not secrets.compare_digest(provided_secret, client.client_secret):
+            return JSONResponse({"error": "invalid_client"}, status_code=401)
 
         auth_code = store.codes.get(code_value)
         if not auth_code:
@@ -242,14 +285,6 @@ def build_oauth_routes(
             )
 
         del store.codes[code_value]  # one-time use
-
-        client = store.clients.get(client_id)
-        if not client or not client.client_secret:
-            return JSONResponse({"error": "invalid_client"}, status_code=401)
-
-        provided_secret = body.get("client_secret", "")
-        if not provided_secret or not secrets.compare_digest(provided_secret, client.client_secret):
-            return JSONResponse({"error": "invalid_client"}, status_code=401)
 
         access_token = secrets.token_urlsafe(48)
         store.tokens[access_token] = AccessToken(
