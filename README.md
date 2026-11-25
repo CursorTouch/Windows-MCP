@@ -832,7 +832,7 @@ sampling filters transient readings but cannot distinguish persistent query fail
 
 | Variable | Default | Description |
 |---|---|---|
-| `WINDOWS_MCP_WATCHDOG` | `false` | Set to `on`, `1`, `true`, `yes`, or `enabled` (case-insensitive) to run the UIA focus watchdog. It is off by default because its only remaining effect is debug logging of focus changes, while it costs a background thread and a long-lived UIA event subscription that can crash the server on unstable UIA environments after long uptime (e.g. across a sleep/resume or session change). The accessibility tree is built on demand for every tool call either way, so tool behaviour is unaffected. |
+| `WINDOWS_MCP_WATCHDOG` | `false` | Set to `on`, `1`, `true`, `yes`, or `enabled` (case-insensitive) to run the UIA focus watchdog. It is off by default because its only remaining effect is debug logging of focus changes, while it costs a background thread. When enabled, it polls `IUIAutomation.GetFocusedElement()` every 0.25s on its own STA thread and notifies the Tree service only when the focused element's RuntimeId changes. After 5 consecutive COMErrors it rebuilds the UIA client, with exponential backoff. `PumpEvents` runs only while a structure or property handler is registered; the production focus path does not. The accessibility tree is built on demand for every tool call either way, so tool behaviour is unaffected. |
 
 **Example `claude_desktop_config.json`:**
 
