@@ -938,6 +938,11 @@ Stay updated and join our community:
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=CursorTouch/Windows-MCP&type=Date)](https://star-history.dera.page/#CursorTouch/Windows-MCP&Date)
 
+## 🛠️ Maintainers
+
+- [@Jeomon](https://github.com/Jeomon) — creator
+- [@tanishqbaweja](https://github.com/tanishqbaweja) — maintainer
+
 ## 👥 Contributors
 
 Thanks to all the amazing people who have contributed to Windows-MCP! 🎉
@@ -999,10 +1004,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) f
 
 ## 🙏 Acknowledgements
 
-Windows-MCP makes use of several excellent open-source projects that power its Windows automation features:
-
-- [UIAutomation](https://github.com/yinkaisheng/Python-UIAutomation-for-Windows)
-
 Huge thanks to the maintainers and contributors of these libraries for their outstanding work and open-source spirit.
 
 ## 🤝Contributing
@@ -1015,7 +1016,7 @@ Made with ❤️ by [CursorTouch](https://github.com/CursorTouch)
 
 ```bibtex
 @software{
-  author       = {CursorTouch},
+  author       = {Jeomon George},
   title        = {Windows-MCP: Lightweight open-source project for integrating LLM agents with Windows},
   year         = {2024},
   publisher    = {GitHub},
