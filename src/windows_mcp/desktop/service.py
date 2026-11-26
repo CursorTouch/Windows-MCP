@@ -156,6 +156,7 @@ class Desktop:
         display_indices: list[int] | None = None,
         region: list[int] | tuple[int, ...] | None = None,
         max_image_size: Size | None = None,
+        update_labels: bool = False,
     ) -> DesktopState:
         use_annotation = use_annotation is True or (
             isinstance(use_annotation, str) and use_annotation.lower() == "true"
@@ -347,7 +348,7 @@ class Desktop:
         else:
             screenshot = None
 
-        self.desktop_state = DesktopState(
+        desktop_state = DesktopState(
             active_window=active_window,
             windows=windows,
             active_desktop=active_desktop,
@@ -365,6 +366,11 @@ class Desktop:
             else None,
             capture_sec=time() - start_time,
         )
+        if update_labels:
+            # Click, Type, Scroll, Move and the Multi tools resolve label=<id> against the
+            # elements of this state, so only a Snapshot that lists them replaces it. A
+            # Screenshot, WaitFor or Scrape capture must not renumber what the caller saw.
+            self.desktop_state = desktop_state
         if profile_enabled:
             state_build_ms = (perf_counter() - stage_started_at) * 1000
             total_profile_ms = (perf_counter() - profile_started_at) * 1000
@@ -386,7 +392,7 @@ class Desktop:
         # Log the time taken to capture the state
         end_time = time()
         logger.info(f"Desktop State capture took {end_time - start_time:.2f} seconds")
-        return self.desktop_state
+        return desktop_state
 
     def get_window_status(self, control: uia.Control) -> Status:
         if uia.IsIconic(control.NativeWindowHandle):
