@@ -68,6 +68,17 @@ class OAuthStore:
 # ---------------------------------------------------------------------------
 
 
+def _equals(a: str, b: str) -> bool:
+    """Compare two strings in constant time.
+
+    ``secrets.compare_digest`` raises ``TypeError`` for a ``str`` with non-ASCII
+    characters, so compare the UTF-8 bytes instead, as ``AuthKeyMiddleware`` does.
+    """
+    return secrets.compare_digest(
+        a.encode("utf-8", "surrogatepass"), b.encode("utf-8", "surrogatepass")
+    )
+
+
 def _verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     try:
         encoded = code_verifier.encode("ascii")
@@ -76,9 +87,9 @@ def _verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     if method == "S256":
         digest = hashlib.sha256(encoded).digest()
         expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-        return secrets.compare_digest(expected, code_challenge)
+        return _equals(expected, code_challenge)
     if method == "plain":
-        return secrets.compare_digest(code_verifier, code_challenge)
+        return _equals(code_verifier, code_challenge)
     return False
 
 
@@ -179,7 +190,7 @@ def build_oauth_routes(
                 status_code=500,
             )
 
-        if not secrets.compare_digest(client_id, configured_client_id):
+        if not _equals(client_id, configured_client_id):
             return JSONResponse({"error": "invalid_client"}, status_code=400)
 
         client = store.clients[client_id]
@@ -254,7 +265,7 @@ def build_oauth_routes(
         if not client or not client.client_secret:
             return JSONResponse({"error": "invalid_client"}, status_code=401)
 
-        if not provided_secret or not secrets.compare_digest(provided_secret, client.client_secret):
+        if not provided_secret or not _equals(provided_secret, client.client_secret):
             return JSONResponse({"error": "invalid_client"}, status_code=401)
 
         auth_code = store.codes.get(code_value)
