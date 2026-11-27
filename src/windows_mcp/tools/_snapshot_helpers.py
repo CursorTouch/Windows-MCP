@@ -177,6 +177,9 @@ def capture_desktop_state(
         display_indices=display_indices,
         region=region,
         max_image_size=max_image_size,
+        # Labels number the elements a capture lists. Without the UI tree it lists none,
+        # so the labels of the last Snapshot that did stay valid.
+        update_labels=use_ui_tree,
     )
     _log_capped_scale(scale, desktop_state, max_image_size)
     if profile_enabled:
@@ -205,7 +208,7 @@ def capture_desktop_state(
         desktop_state.screenshot.save(buffered, format="PNG")
         screenshot_bytes = buffered.getvalue()
         buffered.close()
-    # The Desktop keeps this state until the next capture. Everything after this
+    # The Desktop keeps a Snapshot's state until the next one. Everything after this
     # point (response, save_path) uses the PNG bytes, so drop the full-resolution
     # image instead of holding a copy of the screen in memory between calls.
     desktop_state.screenshot = None
