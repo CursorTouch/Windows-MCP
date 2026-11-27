@@ -879,6 +879,11 @@ class Desktop:
 
         Returns a short note for the tool's answer: how the field was cleared and
         what it reads back, when the focused element exposes its text.
+
+        Raises:
+            RuntimeError: The field can be read and the typed text is not in it
+                (wrong characters or nothing arrived). Enter is then not pressed, so a
+                wrong value is never submitted.
         """
         clear = as_bool(clear, "clear")
         press_enter = as_bool(press_enter, "press_enter")
@@ -919,7 +924,12 @@ class Desktop:
                 uia.SendKeys(_escape_text_for_sendkeys(ch), interval=0.04, waitTime=0.05)
                 owner.record_step_current()
         if clear or text:
-            notes.append(self._read_back(target, text, clear, has_control_chars))
+            note, landed = self._read_back(target, text, clear, has_control_chars)
+            notes.append(note)
+            if not landed:
+                if press_enter:
+                    notes.append("Enter was not pressed.")
+                raise RuntimeError(" ".join(note for note in notes if note))
         if press_enter:
             owner.checkpoint_current()
             uia.SendKeys("{Enter}", waitTime=0.05)
@@ -1089,17 +1099,24 @@ class Desktop:
             return f"Warning: {self._describe(control)} still held text after clearing ({how})."
         return f"Cleared {self._describe(control)} with {how}."
 
-    def _read_back(self, control, text: str, clear: bool, has_control_chars: bool) -> str:
+    def _read_back(
+        self, control, text: str, clear: bool, has_control_chars: bool
+    ) -> tuple[str, bool]:
         """Say what the field holds after typing, and whether focus moved away.
 
         control is the element focused before typing (known only after a clear, which
         waits for focus to settle); without it the element focused now is read.
+
+        Returns the note and whether the text landed. It counts as not landed only when
+        the field was read and the typed text is nowhere in it, ignoring case: fields
+        that autocomplete, change case or keep text a clear could not remove still hold
+        the typed text, and those stay warnings.
         """
         now = self._focused_control()
         if control is None:
             control = now
             if control is None:
-                return ""
+                return "", True
         elif now is not None:
             try:
                 moved = not uia.ControlsAreSame(control, now)
@@ -1108,24 +1125,28 @@ class Desktop:
             if moved:
                 return (
                     f"Warning: focus moved to {self._describe(now)} while typing;"
-                    " some keystrokes may have gone there."
+                    " some keystrokes may have gone there.",
+                    True,
                 )
         if self._is_password(control) or (not clear and self._is_multiline(control)):
-            return ""
+            return "", True
         value = self._read_value(control)
         if value is None:
             if clear or self._is_text_field(control):
-                return ""
+                return "", True
             return (
-                f"Could not read the text back: the focused element is {self._describe(control)}."
+                f"Could not read the text back: the focused element is {self._describe(control)}.",
+                True,
             )
         limit = self._READ_BACK_LIMIT
         shown = value if len(value) <= limit else value[:limit] + "…"
         if has_control_chars:
-            return f"Field reads back '{shown}'."
-        if (clear and value != text) or (not clear and text not in value):
-            return f"Warning: the field reads back '{shown}', not the typed text."
-        return f"Field reads back '{shown}'."
+            return f"Field reads back '{shown}'.", True
+        if text.casefold() not in value.casefold():
+            return f"The typed text did not arrive: the field reads back '{shown}'.", False
+        if clear and value != text:
+            return f"Warning: the field reads back '{shown}', not the typed text.", True
+        return f"Field reads back '{shown}'.", True
 
     def _paste_text(self, text: str):
         """Stash text on the clipboard, Ctrl+V, restore prior clipboard.

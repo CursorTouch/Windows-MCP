@@ -55,6 +55,7 @@ class FakeField:
         read_only: bool = False,
         password: bool = False,
         backspace_clears: bool = True,
+        on_type: Callable[[str], str] = lambda key: key,
     ) -> None:
         self.text = text
         self.ControlType = control_type
@@ -65,6 +66,8 @@ class FakeField:
         self.style = style
         self.IsPassword = password
         self.backspace_clears = backspace_clears
+        # What a typed key turns into in the field; "" drops it.
+        self.on_type = on_type
         self.pattern = FakeValuePattern(self, read_only) if value_pattern else None
 
     def GetPattern(self, pattern_id: int):
@@ -104,7 +107,7 @@ def focus(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[str]]:
                 if target.backspace_clears:
                     target.text = ""
             elif not key.startswith("{"):
-                target.text += key
+                target.text += target.on_type(key)
                 if after_typing is not None:
                     state["focused"] = after_typing
 
@@ -336,6 +339,65 @@ def test_long_values_are_cut_in_the_answer(
 
     assert len(note) < 260
     assert note.endswith("…'.")
+
+
+def _mirror(key: str) -> str:
+    # The substitution reported in #655: each letter became its mirror in the alphabet.
+    return chr(ord("a") + ord("z") - ord(key)) if key.islower() else key
+
+
+def test_wrong_characters_fail_and_are_not_submitted(
+    desktop: Desktop, focus: Callable[..., list[str]]
+) -> None:
+    # #655: "notepad" arrived as "mlgvkzw" and Type still reported success, so an
+    # agent believed it worked, and press_enter would have run the wrong command.
+    keys = focus(FakeField("", on_type=_mirror))
+
+    with pytest.raises(RuntimeError) as error:
+        desktop.type(loc=(100, 100), text="notepad", press_enter=True)
+
+    assert str(error.value) == (
+        "The typed text did not arrive: the field reads back 'mlgvkzw'. Enter was not pressed."
+    )
+    assert "{Enter}" not in keys
+
+
+def test_text_lost_after_a_clear_fails_with_the_clear_note(
+    desktop: Desktop, focus: Callable[..., list[str]]
+) -> None:
+    # #656: the clear emptied the field, then none of the typed characters arrived.
+    keys = focus(FakeField("cmd", on_type=lambda key: ""))
+
+    with pytest.raises(RuntimeError) as error:
+        desktop.type(loc=(100, 100), text="notepad", clear=True, press_enter=True)
+
+    assert str(error.value) == (
+        "Cleared EditControl with Home, Shift+End, Backspace."
+        " The typed text did not arrive: the field reads back ''."
+        " Enter was not pressed."
+    )
+    assert "{Enter}" not in keys
+
+
+@pytest.mark.parametrize(
+    ("on_type", "read_back"),
+    [
+        (str.upper, "NOTEPAD"),  # a field that upper-cases its input
+        (lambda key: key + ".exe" if key == "d" else key, "notepad.exe"),  # autocomplete
+    ],
+)
+def test_a_field_that_changes_the_text_around_it_does_not_fail(
+    desktop: Desktop,
+    focus: Callable[..., list[str]],
+    on_type: Callable[[str], str],
+    read_back: str,
+) -> None:
+    keys = focus(FakeField("", on_type=on_type))
+
+    note = desktop.type(loc=(100, 100), text="notepad", clear=True, press_enter=True)
+
+    assert f"reads back '{read_back}'" in note
+    assert keys[-1] == "{Enter}"
 
 
 class FakeMCP:
