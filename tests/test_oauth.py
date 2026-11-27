@@ -208,3 +208,64 @@ def test_token_endpoint_rejects_non_ascii_code_verifier_without_500(oauth_client
     )
     assert resp.status_code == 400
     assert resp.json()["error"] == "invalid_grant"
+
+
+def test_authorize_rejects_non_ascii_client_id_without_500(oauth_client):
+    client, store = oauth_client
+    _, challenge = _pkce_pair()
+
+    resp = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "caf\u00e9-client",
+            "redirect_uri": REDIRECT_URI,
+            "response_type": "code",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_client"
+    assert not store.codes
+
+
+def test_token_endpoint_rejects_non_ascii_client_secret_without_500(oauth_client):
+    client, store = oauth_client
+    verifier, challenge = _pkce_pair()
+    code = _mint_code(client, challenge)
+
+    resp = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": verifier,
+            "client_id": CLIENT_ID,
+            "client_secret": "caf\u00e9-secret",
+            "redirect_uri": REDIRECT_URI,
+        },
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"] == "invalid_client"
+    assert code in store.codes
+
+
+def test_token_endpoint_rejects_non_ascii_code_challenge_without_500(oauth_client):
+    client, _ = oauth_client
+    verifier, _ = _pkce_pair()
+    code = _mint_code(client, "caf\u00e9" * 11)
+
+    resp = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": verifier,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "redirect_uri": REDIRECT_URI,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_grant"
