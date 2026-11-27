@@ -89,8 +89,10 @@ def read_file(path: str, offset: int | None = None, limit: int | None = None, en
         return f'Error: File not found: {file_path}'
     if not file_path.is_file():
         return f'Error: Path is not a file: {file_path}'
-    if limit is not None and limit < 0:
-        return 'Error: limit cannot be negative.'
+    if limit is not None and limit < 1:
+        return 'Error: limit must be at least 1.'
+    if offset is not None and offset < 1:
+        return 'Error: offset must be at least 1.'
     if offset is None and limit is None and file_path.stat().st_size > MAX_READ_SIZE:
         return f'Error: File too large ({file_path.stat().st_size:,} bytes). Maximum is {MAX_READ_SIZE:,} bytes. Use offset/limit parameters or the PowerShell tool for large files.'
 
@@ -99,8 +101,7 @@ def read_file(path: str, offset: int | None = None, limit: int | None = None, en
         with open(file_path, 'r', encoding=encoding, errors='replace') as f:
             if offset is not None or limit is not None:
                 start = (offset or 1) - 1  # Convert 1-based to 0-based
-                start = max(0, start)
-                end = start + limit if limit else float('inf')
+                end = start + limit if limit is not None else float('inf')
                 selected = []
                 size = 0
                 total = 0
