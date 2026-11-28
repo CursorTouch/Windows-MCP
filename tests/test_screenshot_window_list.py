@@ -3,7 +3,8 @@
 The Screenshot tool's fast path (use_ui_tree=False) skips window enumeration so
 it cannot hang on an unresponsive app. Its answer used to print "No active
 window found" and "No windows found" with Visma and Server Manager open on
-screen, which reads as a fact about the desktop.
+screen, which reads as a fact about the desktop. Snapshot with use_ui_tree=False
+likewise printed "No elements" for a UI tree it never walked (#638).
 """
 
 from unittest.mock import MagicMock
@@ -15,6 +16,7 @@ def _desktop() -> MagicMock:
     state = MagicMock()
     state.windows_to_string.return_value = "No windows found"
     state.active_window_to_string.return_value = "No active window found"
+    state.tree_state.semantic_tree_to_string.return_value = "No elements"
     state.screenshot = None
     desktop = MagicMock()
     desktop.get_state.return_value = state
@@ -41,6 +43,7 @@ def test_screenshot_path_says_windows_were_not_listed() -> None:
 
     assert result["windows"] == helpers.WINDOWS_NOT_LISTED
     assert result["active_window"] == helpers.WINDOWS_NOT_LISTED
+    assert result["semantic_tree"] == helpers.UI_TREE_NOT_LISTED
 
 
 def test_snapshot_path_keeps_the_real_window_list() -> None:
@@ -48,3 +51,4 @@ def test_snapshot_path_keeps_the_real_window_list() -> None:
 
     assert result["windows"] == "No windows found"
     assert result["active_window"] == "No active window found"
+    assert result["semantic_tree"] == "No elements"

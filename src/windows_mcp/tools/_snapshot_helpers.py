@@ -114,6 +114,10 @@ def _as_region(value: list | str | None) -> list | None:
 
 
 WINDOWS_NOT_LISTED = "Not listed: Screenshot skips window enumeration. Call Snapshot for windows."
+UI_TREE_NOT_LISTED = (
+    "Not listed: use_ui_tree=False skips the UI tree. Call Snapshot with use_ui_tree=True "
+    "for elements."
+)
 
 
 def _image_origin(desktop_state: DesktopState) -> tuple[int, int]:
@@ -193,9 +197,10 @@ def capture_desktop_state(
         windows = desktop_state.windows_to_string()
         active_window = desktop_state.active_window_to_string()
     else:
-        # The fast path never enumerates windows (see Desktop.get_state), so an empty
-        # list here means "not looked at", not "there are none".
+        # The fast path never enumerates windows or walks the UI tree (see
+        # Desktop.get_state), so empty lists here mean "not looked at", not "there are none".
         windows = active_window = WINDOWS_NOT_LISTED
+        semantic_tree = UI_TREE_NOT_LISTED
     active_desktop = desktop_state.active_desktop_to_string()
     all_desktops = desktop_state.desktops_to_string()
     if profile_enabled:
