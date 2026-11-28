@@ -4,7 +4,9 @@ comtypes generates Python wrappers for COM type libraries on first use and
 stores them in ``comtypes/gen``. When two processes generate that cache
 concurrently (e.g. an MCP host spawning multiple server instances, see
 issue #357), or generation is interrupted, the cache is left corrupted and
-every subsequent startup fails with ImportError/AttributeError.
+every subsequent startup fails. A half-written module surfaces as
+ImportError/AttributeError, a truncated one as SyntaxError (issue #412), and a
+damaged bytecode file as ValueError/EOFError.
 
 ``safe_get_module`` wraps ``comtypes.client.GetModule`` with
 
@@ -25,6 +27,23 @@ from types import ModuleType
 from typing import Iterator, Optional
 
 import comtypes.client
+
+# Errors that importing a corrupted comtypes.gen module can raise:
+#   ImportError     - missing module or name (half-written cache, or comtypes'
+#                     _check_version after the type library DLL was updated)
+#   AttributeError  - module imports but lacks ``required_attr``
+#   SyntaxError     - truncated source, e.g. "unterminated string literal"
+#                     (includes IndentationError/TabError)
+#   ValueError      - bad marshal data or undecodable source in the cache
+#                     (includes UnicodeDecodeError)
+#   EOFError        - truncated .pyc ("marshal data too short")
+_CORRUPT_CACHE_ERRORS: tuple[type[Exception], ...] = (
+    ImportError,
+    AttributeError,
+    SyntaxError,
+    ValueError,
+    EOFError,
+)
 
 _LOCK_PATH: str = os.path.join(
     tempfile.gettempdir(),
@@ -124,7 +143,9 @@ def safe_get_module(tlib: str, required_attr: Optional[str] = None) -> ModuleTyp
         The generated ``comtypes.gen`` friendly module for ``tlib``.
 
     Raises:
-        ImportError: If the cache is corrupted and regeneration failed.
+        ImportError, SyntaxError, ValueError, EOFError: If the cache is
+            corrupted and regeneration failed; the error from the second
+            attempt is re-raised unchanged.
         AttributeError: If ``required_attr`` is still missing after
             regeneration.
         TimeoutError: If the cross-process cache lock could not be acquired.
@@ -139,7 +160,7 @@ def safe_get_module(tlib: str, required_attr: Optional[str] = None) -> ModuleTyp
                         % (getattr(module, "__name__", tlib), required_attr)
                     )
                 return module
-            except (ImportError, AttributeError):
+            except _CORRUPT_CACHE_ERRORS:
                 if attempt:
                     raise
                 _clear_gen_cache()

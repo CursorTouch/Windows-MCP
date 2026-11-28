@@ -745,7 +745,8 @@ All variables are optional unless noted. Set them via the `env` key in `claude_d
 
 | Variable | Default | Description |
 |---|---|---|
-| `WINDOWS_MCP_SCREENSHOT_SCALE` | `1.0` | Scale factor applied to screenshots before encoding. Accepts a float in the range `0.1`–`1.0`. Images are also capped at 1920x1080, and the smaller of the two factors applies: a full-screen capture of a 3840x2160 display comes back at 1920x1080 for any value from `0.5` to `1.0` (2560x1440: any value from `0.75` to `1.0`), so only lower values make it smaller, e.g. `0.25` gives 960x540 on 4K. A 1160x140 `region` at `0.75` comes back at 870x105. Lower it if screenshots still exceed Claude Desktop's 1 MB tool-result limit. When the cap lowers a value you set, a warning is logged once. |
+| `WINDOWS_MCP_SCREENSHOT_SCALE` | `1.0` | Scale factor applied to screenshots before encoding. Accepts a float in the range `0.1`–`1.0`. Images are also capped at 1920x1080 by default (see `WINDOWS_MCP_MAX_IMAGE_SIZE`), and the smaller of the two factors applies: a full-screen capture of a 3840x2160 display comes back at 1920x1080 for any value from `0.5` to `1.0` (2560x1440: any value from `0.75` to `1.0`), so only lower values make it smaller, e.g. `0.25` gives 960x540 on 4K. A 1160x140 `region` at `0.75` comes back at 870x105. Lower it if screenshots still exceed Claude Desktop's 1 MB tool-result limit. When the cap lowers a value you set, a warning is logged once. |
+| `WINDOWS_MCP_MAX_IMAGE_SIZE` | `1920x1080` | Largest image Screenshot and Snapshot return, as `WIDTHxHEIGHT` (for example `3840x2160`). A larger capture is scaled down to fit, and the smaller of this factor and `WINDOWS_MCP_SCREENSHOT_SCALE` applies. Set `none` (or `off`, `0`) to remove the cap, so a 4K display can be captured at 1:1 with `WINDOWS_MCP_SCREENSHOT_SCALE=1.0`. A full-size 4K PNG can exceed Claude Desktop's 1 MB tool-result limit. An invalid value is logged and the default is used. |
 | `WINDOWS_MCP_SCREENSHOT_BACKEND` | `auto` | Screenshot capture backend. Accepted values: `auto` (tries dxcam → mss → pillow in order), `dxcam`, `mss`, `pillow`. Use `mss` or `pillow` if `dxcam` is unavailable or causes issues on your GPU. |
 | `WINDOWS_MCP_DXCAM_IDLE_SECONDS` | `30` | Seconds the `dxcam` backend keeps a display's capture camera and its last frame (6–25 MB per display) after the most recent screenshot on it. Back-to-back screenshots within this window reuse the camera; after it, both are released and the next capture pays a one-off ~0.1 s setup. Unset or blank uses the default silently. A non-number, `nan`/`inf`, or a value `<= 0` logs a warning and uses the default. A value above the platform timer maximum (about 49.7 days) is clamped to it with a warning. Read once at startup. |
 | `WINDOWS_MCP_PROFILE_SNAPSHOT` | _(disabled)_ | Set to `1`, `true`, `yes`, or `on` to emit per-stage timing logs for Screenshot/Snapshot calls. Useful for diagnosing slow captures. |
@@ -811,8 +812,6 @@ sampling filters transient readings but cannot distinguish persistent query fail
 | `WINDOWS_MCP_OAUTH_CLIENT_SECRET` | _(none)_ | OAuth client secret for HTTP transports. Must be provided with `WINDOWS_MCP_OAUTH_CLIENT_ID`. |
 | `WINDOWS_MCP_STATELESS_HTTP` | `false` | Set to `1`, `true`, `yes`, or `on` to run `streamable-http` without `Mcp-Session-Id` connection state. Useful for reconnects after restarts and for horizontally scaled deployments. |
 
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/cursortouch-windows-mcp-badge.png)](https://mseep.ai/app/cursortouch-windows-mcp)
-
 ### Telemetry
 
 | Variable | Default | Description |
@@ -831,7 +830,7 @@ sampling filters transient readings but cannot distinguish persistent query fail
 
 | Variable | Default | Description |
 |---|---|---|
-| `WINDOWS_MCP_WATCHDOG` | `false` | Set to `on`, `1`, `true`, `yes`, or `enabled` (case-insensitive) to run the UIA focus watchdog. It is off by default because its only remaining effect is debug logging of focus changes, while it costs a background thread and a long-lived UIA event subscription that can crash the server on unstable UIA environments after long uptime (e.g. across a sleep/resume or session change). The accessibility tree is built on demand for every tool call either way, so tool behaviour is unaffected. |
+| `WINDOWS_MCP_WATCHDOG` | `false` | Set to `on`, `1`, `true`, `yes`, or `enabled` (case-insensitive) to run the UIA focus watchdog. It is off by default because its only remaining effect is debug logging of focus changes, while it costs a background thread. When enabled, it polls `IUIAutomation.GetFocusedElement()` every 0.25s on its own STA thread and notifies the Tree service only when the focused element's RuntimeId changes. After 5 consecutive COMErrors it rebuilds the UIA client, with exponential backoff. `PumpEvents` runs only while a structure or property handler is registered; the production focus path does not. The accessibility tree is built on demand for every tool call either way, so tool behaviour is unaffected. |
 
 **Example `claude_desktop_config.json`:**
 
@@ -937,6 +936,11 @@ Stay updated and join our community:
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=CursorTouch/Windows-MCP&type=Date)](https://star-history.dera.page/#CursorTouch/Windows-MCP&Date)
 
+## 🛠️ Maintainers
+
+- [@Jeomon](https://github.com/Jeomon) — creator
+- [@tanishqbaweja](https://github.com/tanishqbaweja) — maintainer
+
 ## 👥 Contributors
 
 Thanks to all the amazing people who have contributed to Windows-MCP! 🎉
@@ -998,10 +1002,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) f
 
 ## 🙏 Acknowledgements
 
-Windows-MCP makes use of several excellent open-source projects that power its Windows automation features:
-
-- [UIAutomation](https://github.com/yinkaisheng/Python-UIAutomation-for-Windows)
-
 Huge thanks to the maintainers and contributors of these libraries for their outstanding work and open-source spirit.
 
 ## 🤝Contributing
@@ -1014,7 +1014,7 @@ Made with ❤️ by [CursorTouch](https://github.com/CursorTouch)
 
 ```bibtex
 @software{
-  author       = {CursorTouch},
+  author       = {Jeomon George},
   title        = {Windows-MCP: Lightweight open-source project for integrating LLM agents with Windows},
   year         = {2024},
   publisher    = {GitHub},

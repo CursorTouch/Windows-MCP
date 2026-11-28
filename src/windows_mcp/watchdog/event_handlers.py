@@ -23,29 +23,6 @@ def _record_failure(parent, counter_attr: str) -> None:
         parent.request_rebuild()
 
 
-class FocusChangedEventHandler(comtypes.COMObject):
-    _com_interfaces_ = [UIA.IUIAutomationFocusChangedEventHandler]
-
-    def __init__(self, parent):
-        self._parent = weakref.ref(parent)
-        super(FocusChangedEventHandler, self).__init__()
-
-    def HandleFocusChangedEvent(self, sender):
-        parent = self._parent()
-        try:
-            if parent and parent._focus_callback:
-                parent._focus_callback(sender)
-            if parent:
-                parent._focus_fail_count = 0
-        except comtypes.COMError as e:
-            if parent:
-                _record_failure(parent, "_focus_fail_count")
-            logger.debug("Focus callback COM error: %s", e)
-        except Exception as e:
-            logger.debug("Focus callback error: %s", e)
-        return 0  # S_OK
-
-
 class StructureChangedEventHandler(comtypes.COMObject):
     _com_interfaces_ = [UIA.IUIAutomationStructureChangedEventHandler]
 

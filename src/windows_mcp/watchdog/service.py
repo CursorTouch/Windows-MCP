@@ -1,6 +1,15 @@
 """
 Unified WatchDog Service for monitoring UI Automation events.
 Allows single instantiation to handle multiple monitors (Focus, Structure) safely in one STA thread.
+
+Focus is tracked by polling ``IUIAutomation.GetFocusedElement`` rather than by
+registering a focus-changed event handler (issue #332). A registered handler
+means native UIA code calls back into Python while ``PumpEvents`` runs, and a
+failure on that path (e.g. E_UNEXPECTED, -2147418113) can end in an access
+violation that Python cannot catch, taking the whole server down. Polling only
+makes ordinary outgoing COM calls, whose failures surface as a catchable
+``COMError``. ``PumpEvents`` now runs only while a structure or property
+callback is registered.
 """
 
 from windows_mcp.uia.core import _AutomationClient
@@ -12,7 +21,6 @@ import logging
 import time
 
 from .event_handlers import (
-    FocusChangedEventHandler,
     StructureChangedEventHandler,
     PropertyChangedEventHandler,
 )
@@ -20,10 +28,10 @@ from .event_handlers import (
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Consecutive per-callback COMErrors that trigger a full client rebuild.
-# UIA event subscriptions can silently go stale (desktop switch, sleep/resume,
-# session reconfig) without the failure ever becoming a catchable exception in
-# the pump loop, so we detect it from the callback side instead.
+# Consecutive COMErrors (per focus poll or per event callback) that trigger a
+# full client rebuild. The UIA client can silently go stale (desktop switch,
+# sleep/resume, session reconfig) without the failure ever becoming a
+# catchable exception in the loop, so we detect it from repeated errors.
 FAIL_THRESHOLD = 5
 MAX_BACKOFF_SECONDS = 30.0
 
@@ -32,6 +40,9 @@ MAX_BACKOFF_SECONDS = 30.0
 # growing, so a UIA stack that degrades immediately on every rebuild is retried
 # ever more slowly instead of churning COM clients at 1 Hz forever.
 HEALTHY_RUN_SECONDS = 60.0
+
+# How often the focused element is polled.
+FOCUS_POLL_INTERVAL_SECONDS = 0.25
 
 
 class WatchDog:
@@ -54,8 +65,10 @@ class WatchDog:
         self._property_element = None
         self._property_ids = None
 
+        # RuntimeId of the last focused element passed to the focus callback
+        self._last_focus_runtime_id = None
+
         # Internal state for tracking active handlers
-        self._focus_handler = None
         self._structure_handler = None
         self._active_structure_element = None
         self._property_handler = None
@@ -138,6 +151,7 @@ class WatchDog:
             try:
                 self.uia = self._create_uia()
                 self._needs_rebuild.clear()
+                self._last_focus_runtime_id = None
                 self._focus_fail_count = 0
                 self._structure_fail_count = 0
                 self._property_fail_count = 0
@@ -160,23 +174,39 @@ class WatchDog:
                 self.is_running.wait(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
 
+    def _poll_focus(self):
+        """Read the focused element and pass it to the focus callback when it
+        differs (by RuntimeId) from the last one passed.
+
+        Consecutive COMErrors, from UIA or from the callback, are counted and
+        request a client rebuild at FAIL_THRESHOLD, as the event handlers do.
+        """
+        callback = self._focus_callback
+        if not callback:
+            self._last_focus_runtime_id = None
+            return
+        try:
+            element = self.uia.GetFocusedElement()
+            if element:
+                runtime_id = tuple(element.GetRuntimeId())
+                if runtime_id != self._last_focus_runtime_id:
+                    self._last_focus_runtime_id = runtime_id
+                    callback(element)
+            self._focus_fail_count = 0
+        except comtypes.COMError as e:
+            self._focus_fail_count += 1
+            if self._focus_fail_count >= FAIL_THRESHOLD:
+                self.request_rebuild()
+            logger.debug("Focus poll COM error: %s", e)
+        except Exception as e:
+            logger.debug("Focus poll error: %s", e)
+
     def _event_loop(self):
-        """Pump UIA events against the current self.uia client until stopped
-        or a rebuild is requested."""
+        """Poll focus and pump structure/property events against the current
+        self.uia client until stopped or a rebuild is requested."""
         while self.is_running.is_set() and not self._needs_rebuild.is_set():
-            # --- Focus Monitoring ---
-            if self._focus_callback and not self._focus_handler:
-                try:
-                    self._focus_handler = FocusChangedEventHandler(self)
-                    self.uia.AddFocusChangedEventHandler(None, self._focus_handler)
-                except Exception as e:
-                    logger.debug(f"Failed to add focus handler: {e}")
-            elif not self._focus_callback and self._focus_handler:
-                try:
-                    self.uia.RemoveFocusChangedEventHandler(self._focus_handler)
-                except Exception as e:
-                    logger.debug(f"Failed to remove focus handler: {e}")
-                self._focus_handler = None
+            # --- Focus Monitoring (polled, no COM callback) ---
+            self._poll_focus()
 
             # --- Structure Monitoring ---
             # Check if we need to UNREGISTER because configuration changed or disabled
@@ -264,8 +294,12 @@ class WatchDog:
                 except Exception as e:
                     logger.debug(f"Failed to add property handler: {e}")
 
-            # Pump events for this thread
-            comtypes.client.PumpEvents(0.1)
+            # Only event handlers need a message pump; with none registered,
+            # no native code calls back into Python and we just wait.
+            if self._structure_handler or self._property_handler:
+                comtypes.client.PumpEvents(0.1)
+            else:
+                self._needs_rebuild.wait(FOCUS_POLL_INTERVAL_SECONDS)
 
         if self._needs_rebuild.is_set():
             logger.warning("WatchDog event pipeline degraded, rebuilding UIA client")
@@ -274,13 +308,6 @@ class WatchDog:
         """Best-effort removal of any active handlers against self.uia."""
         if not self.uia:
             return
-
-        if self._focus_handler:
-            try:
-                self.uia.RemoveFocusChangedEventHandler(self._focus_handler)
-            except Exception:
-                pass
-            self._focus_handler = None
 
         if self._structure_handler:
             try:

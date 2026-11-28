@@ -128,7 +128,8 @@ class TestRegistryDelete:
         assert 'deleted' in result
         assert '"MyValue"' in result
         cmd = mock_exec.call_args[0][0]
-        assert "Remove-ItemProperty" in cmd
+        assert "Remove-ItemProperty" not in cmd
+        assert "$writable.DeleteValue($name, $true)" in cmd
 
     def test_delete_key(self):
         with patch(EXECUTE_COMMAND_PATH, return_value=("", 0)) as mock_exec:
@@ -306,3 +307,79 @@ def test_delete_with_empty_value_name_keeps_the_key():
         )
     finally:
         registry.delete_entry(path=key)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="writes the Windows registry")
+class TestRegistryDeleteDefaultAndWildcardValueName:
+    """Delete mode must delete the key's (default) value, delete wildcard value
+    names literally, and report an error when a wildcard name is absent."""
+
+    @pytest.fixture
+    def key(self):
+        path = f"HKCU:\\Software\\windows-mcp-test-{uuid.uuid4().hex}"
+        yield path
+        registry.delete_entry(path=path)
+
+    def test_deletes_default_value_and_errors_when_absent(self, key):
+        assert "set to" in registry.set_value(path=key, name="(default)", value="dflt")
+        assert "set to" in registry.set_value(path=key, name="Other", value="keep")
+
+        result = registry.delete_entry(path=key, name="(default)")
+        assert result == f'Registry value [{key}] "(default)" deleted.'
+        assert registry.get_value(path=key, name="(default)").startswith("Error reading registry:")
+        assert registry.get_value(path=key, name="Other").endswith('"Other" (type: String) = keep')
+
+        missing = registry.delete_entry(path=key, name="(default)")
+        assert missing.startswith("Error deleting registry value:"), missing
+        assert "(default)" in missing
+
+    def test_literal_default_value_deleted_before_unnamed_default(self, key):
+        import winreg
+
+        subkey = key.removeprefix("HKCU:\\")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey) as handle:
+            winreg.SetValueEx(handle, "", 0, winreg.REG_SZ, "unnamed")
+            winreg.SetValueEx(handle, "(default)", 0, winreg.REG_SZ, "literal")
+
+        first = registry.delete_entry(path=key, name="(default)")
+        assert first == f'Registry value [{key}] "(default)" deleted.'
+        assert registry.get_value(path=key, name="(default)").endswith(
+            '"(default)" (type: String) = unnamed'
+        )
+
+        second = registry.delete_entry(path=key, name="(default)")
+        assert second == f'Registry value [{key}] "(default)" deleted.'
+        assert registry.get_value(path=key, name="(default)").startswith("Error reading registry:")
+
+    def test_deletes_wildcard_value_names_literally_and_errors_when_missing(self, key):
+        for name, value in (
+            ("setup1.exe", "other app"),
+            ("setup[1].exe", "target"),
+            ("*", "star"),
+        ):
+            assert "set to" in registry.set_value(path=key, name=name, value=value)
+
+        missing = registry.delete_entry(path=key, name="setup?.exe")
+        assert missing.startswith("Error deleting registry value:"), missing
+        assert "setup?.exe" in missing
+
+        assert (
+            registry.delete_entry(path=key, name="setup[1].exe")
+            == f'Registry value [{key}] "setup[1].exe" deleted.'
+        )
+        assert registry.get_value(path=key, name="setup1.exe").endswith(
+            '"setup1.exe" (type: String) = other app'
+        )
+        assert registry.delete_entry(path=key, name="setup[1].exe").startswith(
+            "Error deleting registry value:"
+        )
+
+        assert (
+            registry.delete_entry(path=key, name="*") == f'Registry value [{key}] "*" deleted.'
+        )
+        assert registry.get_value(path=key, name="setup1.exe").endswith(
+            '"setup1.exe" (type: String) = other app'
+        )
+        assert registry.delete_entry(path=key, name="*").startswith(
+            "Error deleting registry value:"
+        )

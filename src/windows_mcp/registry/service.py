@@ -148,7 +148,22 @@ def delete_entry(path: str, name: str | None = None) -> str:
             # an empty name either (get and set fail on it), so refuse it here.
             return "Error: name must not be empty. Omit name to delete the whole key."
         q_name = ps_quote(name)
-        command = f"Remove-ItemProperty -LiteralPath {q_path} -Name {q_name} -Force"
+        # Value names may contain wildcard characters (e.g. "setup[1].exe"),
+        # for which Remove-ItemProperty silently succeeds when absent, and it
+        # does not resolve "(default)" to the key's unnamed default value "".
+        # Use RegistryKey.DeleteValue() directly to match get_value().
+        command = (
+            f"$key = Get-Item -LiteralPath {q_path} -ErrorAction Stop; "
+            "try { "
+            f"$name = {q_name}; $names = $key.GetValueNames(); "
+            "if ($name -eq '(default)' -and $names -notcontains $name) { $name = '' }; "
+            f"if ($names -notcontains $name) {{ throw ('Property ' + {q_name} + "
+            f"' does not exist at path ' + {q_path} + '.') }}; "
+            "$writable = $key.OpenSubKey('', $true); "
+            f"if ($null -eq $writable) {{ throw ('Cannot open registry key ' + {q_path} + ' for writing.') }}; "
+            "try { $writable.DeleteValue($name, $true) } finally { $writable.Close() } "
+            "} finally { $key.Close() }"
+        )
         response, status = PowerShellExecutor.execute_command(command)
         if status != 0:
             return f'Error deleting registry value: {response.strip()}'
