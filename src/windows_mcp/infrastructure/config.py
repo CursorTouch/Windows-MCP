@@ -49,6 +49,8 @@ class ControlConfig:
     policy: str = "relaxed"
     # Countdown before AI starts a new control period; 0 disables the prompt.
     consent_countdown_seconds: int = 10
+    # What an unanswered countdown does: allow (start control) or deny.
+    consent_timeout: str = "allow"
 
 
 @dataclass
@@ -200,6 +202,10 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
         if not 0 <= value <= 60:
             raise ValueError("control.consent_countdown_seconds must be between 0 and 60")
         cfg.control.consent_countdown_seconds = value
+    if "consent_timeout" in control:
+        if control["consent_timeout"] not in ("allow", "deny"):
+            raise ValueError("control.consent_timeout must be allow or deny")
+        cfg.control.consent_timeout = control["consent_timeout"]
 
     for key in ("mouse_takeover_units", "mouse_takeover_pixels"):
         if key in control:
@@ -276,8 +282,9 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
         for key in ("mouse_takeover_units", "mouse_takeover_pixels", "consent_countdown_seconds")
         if getattr(ctrl, key) != getattr(default_ctrl, key)
     ]
-    if ctrl.policy != default_ctrl.policy:
-        control_lines.append(f"policy = {_toml_string(ctrl.policy)}")
+    for key in ("policy", "consent_timeout"):
+        if getattr(ctrl, key) != getattr(default_ctrl, key):
+            control_lines.append(f"{key} = {_toml_string(getattr(ctrl, key))}")
     if ctrl.enabled != default_ctrl.enabled:
         control_lines.append(f"enabled = {str(ctrl.enabled).lower()}")
     if ctrl.idle_timeout_seconds != default_ctrl.idle_timeout_seconds:

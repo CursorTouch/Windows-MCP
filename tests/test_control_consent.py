@@ -1,10 +1,17 @@
 """Consent countdown before a new AI control period."""
 
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastmcp import Client, FastMCP
+from starlette.applications import Starlette
+from starlette.routing import Route
+from starlette.testclient import TestClient
 
+from windows_mcp import __main__ as cli
 from windows_mcp.desktop import control, control_consent, control_overlay, flash_overlay
 from windows_mcp.desktop.control import ControlBlocked
 from windows_mcp.tools.control_notifications import ControlNotifier, ControlToolGate
@@ -79,6 +86,15 @@ def test_unattended_timeout_grants_until_the_user_takes_over():
     assert owner.open_consent()
 
 
+def test_unanswered_prompt_does_not_grant_when_timeout_denies():
+    owner = _ready_owner()
+    owner.consent_timeout = "deny"
+    assert owner.open_consent()
+    owner.close_consent("timeout")
+    assert owner.status()["state"] == "ready"
+    assert owner.open_consent()  # Not granted, so the next call asks again.
+
+
 def test_prompt_can_be_disabled_and_never_interrupts_a_lease():
     owner = _ready_owner()
     owner.consent_countdown_seconds = 0
@@ -145,11 +161,19 @@ async def test_gate_asks_an_active_user_instead_of_refusing():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("answer", "code"),
-    [("allow", None), ("deny", "CONTROL_DENIED"), ("error", "CONTROL_UNAVAILABLE")],
+    ("answer", "timeout", "code"),
+    [
+        ("allow", "allow", None),
+        ("deny", "allow", "CONTROL_DENIED"),
+        ("error", "allow", "CONTROL_UNAVAILABLE"),
+        ("timeout", "allow", None),
+        ("timeout", "deny", "CONTROL_DENIED"),
+        ("allow", "deny", None),
+    ],
 )
-async def test_gate_asks_once_per_control_period(answer, code):
+async def test_gate_asks_once_per_control_period(answer, timeout, code):
     owner = _ready_owner()
+    owner.consent_timeout = timeout
     asked, effects = [], []
     mcp = FastMCP("consent")
     mcp.add_middleware(
@@ -185,6 +209,37 @@ def test_ask_maps_exit_status_to_answer(monkeypatch, code, answer):
     monkeypatch.setattr(control_consent, "_process", None)
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     assert control_consent.ask(10) == answer
+
+
+def test_remote_answer_needs_the_open_prompt_id(monkeypatch):
+    killed = threading.Event()
+
+    class FakeProcess:
+        def poll(self):
+            return 1 if killed.is_set() else None
+
+        def wait(self, timeout=None):
+            killed.wait(timeout)
+            return 1  # A killed dialog exits with no answer of its own.
+
+        def kill(self):
+            killed.set()
+
+    monkeypatch.setattr(control_consent, "_process", None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    url = "/control/consent"
+    app = Starlette(routes=[Route(url, cli._consent_route, methods=["GET", "POST"])])
+    with ThreadPoolExecutor(1) as pool, TestClient(app) as http:
+        assert http.get(url).json() == {"pending": None}
+        result = pool.submit(control_consent.ask, 10, "deny")
+        while not (pending := http.get(url).json()["pending"]):
+            time.sleep(0.01)
+        assert http.post(url, json={"id": "stale", "answer": "allow"}).status_code == 409
+        assert http.post(url, json={"id": pending["id"], "answer": "yes"}).status_code == 400
+        assert http.post(url, json={"id": pending["id"], "answer": "allow"}).status_code == 200
+        assert result.result(timeout=5) == "allow"
+        assert http.post(url, json={"id": pending["id"], "answer": "allow"}).status_code == 409
+        assert http.get(url).json() == {"pending": None}
 
 
 def test_consent_shows_amber_edges_without_notice_or_cursor(monkeypatch):

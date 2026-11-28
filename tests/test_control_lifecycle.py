@@ -16,7 +16,11 @@ from windows_mcp.tools.control_notifications import ControlNotifier
 async def test_lifespan_wires_effective_settings(monkeypatch, enabled):
     owner = control.ControlCoordinator()
     cfg = ControlConfig(
-        enabled=enabled, idle_timeout_seconds=2.5, policy="balanced", consent_countdown_seconds=3
+        enabled=enabled,
+        idle_timeout_seconds=2.5,
+        policy="balanced",
+        consent_countdown_seconds=3,
+        consent_timeout="deny",
     )
     calls = []
     monkeypatch.setenv("ANONYMIZED_TELEMETRY", "false")
@@ -43,6 +47,7 @@ async def test_lifespan_wires_effective_settings(monkeypatch, enabled):
         assert owner.policy == "balanced"
         assert owner.idle_timeout_seconds == 2.5
         assert owner.consent_countdown_seconds == 3
+        assert owner.consent_timeout == "deny"
         if enabled:
             assert owner._health_probe is control_overlay.is_healthy
         else:

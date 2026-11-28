@@ -222,11 +222,13 @@ class ControlToolGate(Middleware):
         finally:
             self.controller.close_consent(answer)
         # An ignored prompt that saw input returns timeout; begin_call reports USER_CONTROL.
-        if answer not in ("allow", "timeout"):
-            from windows_mcp.desktop.control import ControlBlocked
+        timeout_allows = self.controller.consent_timeout == "allow"
+        if answer == "allow" or (answer == "timeout" and timeout_allows):
+            return
+        from windows_mcp.desktop.control import ControlBlocked
 
-            code = "CONTROL_DENIED" if answer == "deny" else "CONTROL_UNAVAILABLE"
-            raise self._blocked(ControlBlocked(code, self.controller.status()))
+        code = "CONTROL_UNAVAILABLE" if answer == "error" else "CONTROL_DENIED"
+        raise self._blocked(ControlBlocked(code, self.controller.status()))
 
     async def on_call_tool(self, context: MiddlewareContext, call_next: Callable) -> Any:
         self.notifier.remember(context)

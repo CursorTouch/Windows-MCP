@@ -139,6 +139,30 @@ def _http_middleware(
     return middleware
 
 
+async def _consent_route(request):
+    """GET the open consent prompt, or POST ``{"id", "answer"}`` to answer it."""
+    from starlette.responses import JSONResponse
+    from windows_mcp.desktop import control_consent
+
+    if request.method == "GET":
+        return JSONResponse({"pending": control_consent.pending()})
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    prompt_id, answer = body.get("id"), body.get("answer")
+    if not isinstance(prompt_id, str) or answer not in ("allow", "deny"):
+        return JSONResponse(
+            {"error": 'Expected {"id": "<pending id>", "answer": "allow" or "deny"}'},
+            status_code=400,
+        )
+    if not control_consent.answer(prompt_id, answer):
+        return JSONResponse({"error": "No open consent prompt with this id"}, status_code=409)
+    return JSONResponse({"answered": answer})
+
+
 def _param_explicit(ctx: click.Context, name: str) -> bool:
     src = ctx.get_parameter_source(name)
     return src in {ParameterSource.COMMANDLINE, ParameterSource.ENVIRONMENT}
@@ -354,7 +378,7 @@ def _build_mcp() -> FastMCP:
 
         control_overlay.set_consent(True)
         try:
-            return control_consent.ask(seconds)
+            return control_consent.ask(seconds, controller.consent_timeout)
         finally:
             control_overlay.set_consent(False)
 
@@ -379,6 +403,7 @@ def _build_mcp() -> FastMCP:
         controller.policy = _control_config.policy
         controller.idle_timeout_seconds = _control_config.idle_timeout_seconds
         controller.consent_countdown_seconds = _control_config.consent_countdown_seconds
+        controller.consent_timeout = _control_config.consent_timeout
 
         try:
             if controller.enabled:
@@ -570,6 +595,9 @@ def _run_server(
         case Transport.STDIO.value:
             mcp.run(transport=Transport.STDIO.value, show_banner=False)
         case Transport.SSE.value | Transport.STREAMABLE_HTTP.value:
+            if auth_key or oauth_validator:
+                # Answering the prompt takes the same credentials as the MCP endpoint.
+                mcp.custom_route("/control/consent", methods=["GET", "POST"])(_consent_route)
             uvicorn_config: dict = {}
             if ssl_certfile and ssl_keyfile:
                 uvicorn_config["ssl_certfile"] = ssl_certfile

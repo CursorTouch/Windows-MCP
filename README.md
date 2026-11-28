@@ -627,6 +627,7 @@ enabled = true
 policy = "relaxed"
 idle_timeout_seconds = 10.0
 consent_countdown_seconds = 10
+consent_timeout = "allow"
 ```
 
 Or override it for one MCP server launch:
@@ -665,6 +666,18 @@ are using the computer, instead of a silent `USER_CONTROL`. After you deny, igno
 while working, or take the desktop back from AI, calls return `USER_CONTROL` without
 asking until you have been idle for `idle_timeout_seconds`. Set
 `consent_countdown_seconds = 0` (0–60) to start control without asking.
+
+Set `consent_timeout = "deny"` to make an unanswered countdown reject the call with
+`CONTROL_DENIED` instead, so control never starts while nobody is there to allow it.
+The dialog then says "Denying in N s"; Allow now works as before.
+
+On HTTP transports with `--auth-key` or OAuth, the prompt can also be answered from
+another device, for example a chat bot that asks the owner. `GET /control/consent`
+returns `{"pending": {"id": "...", "seconds_left": 7}}` while a prompt is open (or
+`{"pending": null}`), and `POST /control/consent` with `{"id": "...", "answer": "allow"}`
+(or `"deny"`) answers it as if the button had been clicked. Each prompt has a new id, so
+a late answer cannot start a later control period: it returns 409. Both use the same
+bearer token as `/mcp`. The route is not registered without authentication.
 
 During AI control, small mouse movements remain blocked without pausing the current
 tool. Mouse takeover adds up the length of each relative raw-input movement,

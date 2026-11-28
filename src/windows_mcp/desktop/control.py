@@ -67,6 +67,7 @@ class ControlCoordinator:
         self.call_lease_timeout_seconds = 30.0
         self.policy = "relaxed"
         self.consent_countdown_seconds = 10
+        self.consent_timeout = "allow"
         self._lock = threading.Lock()
         # Granted by the consent prompt; revoked whenever the person takes the desktop.
         self._consented = False
@@ -340,7 +341,9 @@ class ControlCoordinator:
         changed = False
         with self._lock:
             touched = self._last_physical_event > self._consent_started
-            granted = answer == "allow" or (answer == "timeout" and not touched)
+            granted = answer == "allow" or (
+                answer == "timeout" and not touched and self.consent_timeout == "allow"
+            )
             # Input that answered the prompt, or follows a click on Allow within the grace,
             # is not a takeover. Input after an unattended countdown still is.
             if not granted:
