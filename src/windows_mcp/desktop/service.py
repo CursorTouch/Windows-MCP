@@ -19,6 +19,7 @@ from windows_mcp.tree.views import (
 )
 from PIL import ImageFont, ImageDraw, Image
 from windows_mcp.tree.service import Tree, _excluded_process_names, _window_process_name
+from windows_mcp.tree.host_process import is_host_window
 from windows_mcp.desktop import screenshot as screenshot_capture
 from windows_mcp.desktop.control import get_controller
 from windows_mcp.desktop import flash_overlay
@@ -1549,6 +1550,8 @@ class Desktop:
         # don't pass that into ControlFromHandle, which would raise.
         if not handle:
             return None
+        if is_host_window(handle):
+            return None
         excluded_processes = _excluded_process_names()
         if excluded_processes:
             process_name = _window_process_name(handle)
@@ -1576,6 +1579,8 @@ class Desktop:
                 controls_handles = self.get_controls_handles()
             excluded_processes = _excluded_process_names()
             for depth, hwnd in enumerate(controls_handles):
+                if is_host_window(hwnd):
+                    continue
                 if excluded_processes:
                     process_name = _window_process_name(hwnd)
                     if process_name and process_name.casefold() in excluded_processes:
