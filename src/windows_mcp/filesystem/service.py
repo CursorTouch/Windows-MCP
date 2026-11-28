@@ -162,6 +162,27 @@ def write_file(path: str, content: str, append: bool = False, encoding: str = 'u
         return f'Error writing file: {e}'
 
 
+def _is_link(path: Path) -> bool:
+    """Return whether *path* is a symbolic link or Windows directory junction."""
+    return path.is_symlink() or path.is_junction()
+
+
+def _normalize_preserve_link(path: str) -> Path:
+    """Normalize *path* while keeping a trailing symlink or junction unresolved."""
+    target = Path(os.path.abspath(path))
+    if _is_link(target):
+        return target.parent.resolve() / target.name
+    return target.resolve()
+
+
+def _remove_link(path: Path) -> None:
+    """Remove a symbolic link or directory junction without touching its target."""
+    if path.is_junction():
+        path.rmdir()
+    else:
+        path.unlink()
+
+
 def _kind_mismatch(src: Path, dst: Path, verb: str) -> str | None:
     """Return an error if *dst* exists and only one of *src* and *dst* is a directory.
 
@@ -181,7 +202,9 @@ def _kind_mismatch(src: Path, dst: Path, verb: str) -> str | None:
 def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
     """Copy a file or directory to a new location."""
     src = Path(source).resolve()
-    dst = Path(destination).resolve()
+    dst = _normalize_preserve_link(destination)
+    dst_is_link = _is_link(dst)
+    dst_exists = dst_is_link or dst.exists()
 
     if not src.exists():
         return f'Error: Source not found: {src}'
@@ -192,17 +215,22 @@ def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
     if error := _kind_mismatch(src, dst, 'copy'):
         return error
 
-    if dst.exists() and not overwrite:
+    if dst_exists and not overwrite:
         return f'Error: Destination already exists: {dst}. Set overwrite=True to replace.'
 
     try:
         if src.is_file():
             dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst_is_link and overwrite:
+                _remove_link(dst)
             shutil.copy2(str(src), str(dst))
             return f'Copied file: {src} -> {dst}'
         elif src.is_dir():
-            if dst.exists() and overwrite:
-                _rmtree(dst)
+            if dst_exists and overwrite:
+                if dst_is_link:
+                    _remove_link(dst)
+                else:
+                    _rmtree(dst)
             shutil.copytree(str(src), str(dst))
             return f'Copied directory: {src} -> {dst}'
         else:
@@ -218,14 +246,18 @@ def copy_path(source: str, destination: str, overwrite: bool = False) -> str:
 
 def move_path(source: str, destination: str, overwrite: bool = False) -> str:
     """Move or rename a file or directory."""
-    src = Path(source).resolve()
-    dst = Path(destination).resolve()
+    src = _normalize_preserve_link(source)
+    dst = _normalize_preserve_link(destination)
+    src_is_link = _is_link(src)
+    dst_is_link = _is_link(dst)
+    src_exists = src_is_link or src.exists()
+    dst_exists = dst_is_link or dst.exists()
 
-    if not src.exists():
+    if not src_exists:
         return f'Error: Source not found: {src}'
 
     # On a case-insensitive file system, renaming 'a.txt' to 'A.txt' resolves to the source.
-    raw_dst = Path(destination).absolute()
+    raw_dst = Path(os.path.abspath(destination))
     if (
         src == dst
         and raw_dst.name != src.name
@@ -244,13 +276,15 @@ def move_path(source: str, destination: str, overwrite: bool = False) -> str:
     if error := _kind_mismatch(src, dst, 'move'):
         return error
 
-    if dst.exists() and not overwrite:
+    if dst_exists and not overwrite:
         return f'Error: Destination already exists: {dst}. Set overwrite=True to replace.'
 
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() and overwrite:
-            if dst.is_dir():
+        if dst_exists and overwrite:
+            if dst_is_link:
+                _remove_link(dst)
+            elif dst.is_dir():
                 _rmtree(dst)
             else:
                 dst.unlink()

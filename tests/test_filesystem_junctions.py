@@ -114,3 +114,121 @@ def test_volume_mounted_in_a_folder_is_entered(
 
     assert service._enters(entries["mounted"])
     assert service._enters(entries["target"])
+
+
+@pytest.mark.parametrize("operation", [service.copy_path, service.move_path])
+def test_overwrite_junction_replaces_link_without_touching_target(
+    tmp_path: Path, operation
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("preserve me", encoding="utf-8")
+    link = tmp_path / "link"
+    _junction(link, target)
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "new.txt").write_text("replacement", encoding="utf-8")
+
+    result = operation(str(source), str(link), overwrite=True)
+
+    assert not result.startswith("Error:"), result
+    assert not link.is_junction()
+    assert [p.name for p in link.iterdir()] == ["new.txt"]
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "preserve me"
+    assert [p.name for p in target.iterdir()] == ["keep.txt"]
+    assert source.exists() is (operation is service.copy_path)
+
+
+def test_move_junction_moves_link_without_moving_target(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("stay put", encoding="utf-8")
+    link = tmp_path / "link"
+    _junction(link, target)
+    destination = tmp_path / "moved_link"
+
+    result = service.move_path(str(link), str(destination))
+
+    assert not result.startswith("Error:"), result
+    assert not link.exists() and not link.is_junction()
+    assert destination.is_junction()
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "stay put"
+    assert (destination / "keep.txt").read_text(encoding="utf-8") == "stay put"
+
+
+def test_move_junction_case_only_rename_preserves_target(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("stay put", encoding="utf-8")
+    link = tmp_path / "link"
+    _junction(link, target)
+
+    result = service.move_path(str(link), str(tmp_path / "Link"))
+
+    assert not result.startswith("Error:"), result
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Link", "target"]
+    assert (tmp_path / "Link").is_junction()
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "stay put"
+
+
+@pytest.mark.parametrize("operation", [service.copy_path, service.move_path])
+def test_broken_junction_destination_requires_overwrite_and_can_be_replaced(
+    tmp_path: Path, operation
+) -> None:
+    target = tmp_path / "missing_target"
+    target.mkdir()
+    link = tmp_path / "broken_link"
+    _junction(link, target)
+    target.rmdir()
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "fresh.txt").write_text("fresh", encoding="utf-8")
+
+    denied = operation(str(source), str(link), overwrite=False)
+    assert denied.startswith("Error: Destination already exists:"), denied
+    assert link.is_junction()
+
+    replaced = operation(str(source), str(link), overwrite=True)
+    assert not replaced.startswith("Error:"), replaced
+    assert not link.is_junction()
+    assert (link / "fresh.txt").read_text(encoding="utf-8") == "fresh"
+
+
+def test_move_broken_junction_moves_link(tmp_path: Path) -> None:
+    target = tmp_path / "missing_target"
+    target.mkdir()
+    link = tmp_path / "broken_link"
+    _junction(link, target)
+    target.rmdir()
+    destination = tmp_path / "relocated_broken_link"
+
+    result = service.move_path(str(link), str(destination))
+
+    assert not result.startswith("Error:"), result
+    assert not link.is_junction()
+    assert destination.is_junction()
+
+
+@pytest.mark.parametrize("operation", [service.copy_path, service.move_path])
+def test_overwrite_file_symlink_replaces_link_without_touching_target(
+    tmp_path: Path, operation
+) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation requires Developer Mode or elevation: {exc}")
+
+    source = tmp_path / "source.txt"
+    source.write_text("replacement", encoding="utf-8")
+
+    result = operation(str(source), str(link), overwrite=True)
+
+    assert not result.startswith("Error:"), result
+    assert not link.is_symlink()
+    assert link.read_text(encoding="utf-8") == "replacement"
+    assert target.read_text(encoding="utf-8") == "original"
