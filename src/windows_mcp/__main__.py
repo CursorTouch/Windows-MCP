@@ -1,3 +1,9 @@
+# Before any third-party import: one that lacks free-threading support would
+# re-enable the GIL and hide a free-threaded build from this check.
+from windows_mcp.interpreter import exit_if_free_threaded
+
+exit_if_free_threaded()
+
 from contextlib import asynccontextmanager
 from windows_mcp.config import enable_debug, is_debug
 from windows_mcp.infrastructure.config import ControlConfig, validate_idle_timeout
