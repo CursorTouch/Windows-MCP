@@ -23,6 +23,7 @@ def test_control_thresholds_round_trip(tmp_path: Path):
     config.control.idle_timeout_seconds = 2.5
     config.control.consent_countdown_seconds = 0
     config.control.consent_timeout = "deny"
+    config.control.consent_key_sha256 = "ab" * 32
     path = tmp_path / "config.toml"
     write_config(config, path)
     assert load_config(path).control == config.control
@@ -89,4 +90,12 @@ def test_consent_timeout_rejects_invalid(tmp_path, value):
     path = tmp_path / "config.toml"
     path.write_text(f"[control]\nconsent_timeout = {value}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="control.consent_timeout"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ["true", '"secret"', f'"{"g" * 64}"', f'"{"a" * 63}"'])
+def test_consent_key_sha256_rejects_non_hashes(tmp_path, value):
+    path = tmp_path / "config.toml"
+    path.write_text(f"[control]\nconsent_key_sha256 = {value}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="control.consent_key_sha256"):
         load_config(path)

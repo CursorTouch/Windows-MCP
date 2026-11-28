@@ -1,5 +1,7 @@
 """Consent countdown before a new AI control period."""
 
+import functools
+import hashlib
 import subprocess
 import threading
 import time
@@ -211,7 +213,7 @@ def test_ask_maps_exit_status_to_answer(monkeypatch, code, answer):
     assert control_consent.ask(10) == answer
 
 
-def test_remote_answer_needs_the_open_prompt_id(monkeypatch):
+def test_remote_answer_needs_the_consent_key_and_the_open_prompt_id(monkeypatch):
     killed = threading.Event()
 
     class FakeProcess:
@@ -228,18 +230,30 @@ def test_remote_answer_needs_the_open_prompt_id(monkeypatch):
     monkeypatch.setattr(control_consent, "_process", None)
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     url = "/control/consent"
-    app = Starlette(routes=[Route(url, cli._consent_route, methods=["GET", "POST"])])
+    route = functools.partial(
+        cli._consent_route, key_sha256=hashlib.sha256(b"consent-key").hexdigest()
+    )
+    app = Starlette(
+        routes=[Route(url, route, methods=["GET", "POST"])],
+        middleware=cli._http_middleware(auth_key="mcp-key"),
+    )
+    agent = {"Authorization": "Bearer mcp-key"}  # The MCP caller cannot answer.
+    owner = {"Authorization": "Bearer consent-key"}
     with ThreadPoolExecutor(1) as pool, TestClient(app) as http:
-        assert http.get(url).json() == {"pending": None}
+        assert http.get(url, headers=agent).status_code == 401
+        assert http.get(url, headers=owner).json() == {"pending": None}
         result = pool.submit(control_consent.ask, 10, "deny")
-        while not (pending := http.get(url).json()["pending"]):
+        while not (pending := http.get(url, headers=owner).json()["pending"]):
             time.sleep(0.01)
-        assert http.post(url, json={"id": "stale", "answer": "allow"}).status_code == 409
-        assert http.post(url, json={"id": pending["id"], "answer": "yes"}).status_code == 400
-        assert http.post(url, json={"id": pending["id"], "answer": "allow"}).status_code == 200
+        answer = {"id": pending["id"], "answer": "allow"}
+        assert http.post(url, headers=agent, json=answer).status_code == 401
+        stale = {"id": "stale", "answer": "allow"}
+        assert http.post(url, headers=owner, json=stale).status_code == 409
+        bad = {"id": pending["id"], "answer": "yes"}
+        assert http.post(url, headers=owner, json=bad).status_code == 400
+        assert http.post(url, headers=owner, json=answer).status_code == 200
         assert result.result(timeout=5) == "allow"
-        assert http.post(url, json={"id": pending["id"], "answer": "allow"}).status_code == 409
-        assert http.get(url).json() == {"pending": None}
+        assert http.post(url, headers=owner, json=answer).status_code == 409
 
 
 def test_consent_shows_amber_edges_without_notice_or_cursor(monkeypatch):

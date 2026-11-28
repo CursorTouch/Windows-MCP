@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +52,8 @@ class ControlConfig:
     consent_countdown_seconds: int = 10
     # What an unanswered countdown does: allow (start control) or deny.
     consent_timeout: str = "allow"
+    # SHA-256 hex of the key that answers prompts over HTTP; never the key itself.
+    consent_key_sha256: str | None = None
 
 
 @dataclass
@@ -206,6 +209,11 @@ def load_config(path: Path | None) -> WindowsMCPConfig:
         if control["consent_timeout"] not in ("allow", "deny"):
             raise ValueError("control.consent_timeout must be allow or deny")
         cfg.control.consent_timeout = control["consent_timeout"]
+    if "consent_key_sha256" in control:
+        value = _strict_string(control["consent_key_sha256"], "control.consent_key_sha256")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            raise ValueError("control.consent_key_sha256 must be 64 hex digits (SHA-256)")
+        cfg.control.consent_key_sha256 = value.lower()
 
     for key in ("mouse_takeover_units", "mouse_takeover_pixels"):
         if key in control:
@@ -282,7 +290,7 @@ def write_config(cfg: WindowsMCPConfig, path: Path) -> None:
         for key in ("mouse_takeover_units", "mouse_takeover_pixels", "consent_countdown_seconds")
         if getattr(ctrl, key) != getattr(default_ctrl, key)
     ]
-    for key in ("policy", "consent_timeout"):
+    for key in ("policy", "consent_timeout", "consent_key_sha256"):
         if getattr(ctrl, key) != getattr(default_ctrl, key):
             control_lines.append(f"{key} = {_toml_string(getattr(ctrl, key))}")
     if ctrl.enabled != default_ctrl.enabled:

@@ -671,13 +671,22 @@ Set `consent_timeout = "deny"` to make an unanswered countdown reject the call w
 `CONTROL_DENIED` instead, so control never starts while nobody is there to allow it.
 The dialog then says "Denying in N s"; Allow now works as before.
 
-On HTTP transports with `--auth-key` or OAuth, the prompt can also be answered from
-another device, for example a chat bot that asks the owner. `GET /control/consent`
-returns `{"pending": {"id": "...", "seconds_left": 7}}` while a prompt is open (or
+On HTTP transports, the prompt can also be answered from another device, for example
+a chat bot that asks the owner. This takes its own key, separate from `--auth-key` and
+OAuth, so the agent that asks for control cannot answer for you. Store only its SHA-256:
+
+```shell
+uv run --no-project python -c "import hashlib, secrets; k = secrets.token_urlsafe(32); print('key:', k); print('consent_key_sha256 =', repr(hashlib.sha256(k.encode()).hexdigest()))"
+```
+
+Give the key to the answering device, and put the printed line under `[control]`.
+
+With `Authorization: Bearer <consent key>`, `GET /control/consent` returns
+`{"pending": {"id": "...", "seconds_left": 7}}` while a prompt is open (or
 `{"pending": null}`), and `POST /control/consent` with `{"id": "...", "answer": "allow"}`
-(or `"deny"`) answers it as if the button had been clicked. Each prompt has a new id, so
-a late answer cannot start a later control period: it returns 409. Both use the same
-bearer token as `/mcp`. The route is not registered without authentication.
+(or `"deny"`) answers it as if the button had been clicked. The MCP key gets 401 here.
+Each prompt has a new id, so a late answer cannot start a later control period: it
+returns 409. Without `consent_key_sha256`, the route is not registered.
 
 During AI control, small mouse movements remain blocked without pausing the current
 tool. Mouse takeover adds up the length of each relative raw-input movement,

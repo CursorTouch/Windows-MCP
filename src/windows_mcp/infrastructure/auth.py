@@ -17,6 +17,7 @@ _PUBLIC_PATHS = frozenset({
     "/oauth/register",
     "/oauth/authorize",
     "/oauth/token",
+    "/control/consent",  # Checks its own consent key, never the MCP key.
 })
 
 

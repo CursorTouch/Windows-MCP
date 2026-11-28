@@ -27,6 +27,7 @@ from enum import Enum
 from typing import Any, NoReturn
 import logging
 import asyncio
+import functools
 import shlex
 import secrets
 import subprocess
@@ -139,11 +140,26 @@ def _http_middleware(
     return middleware
 
 
-async def _consent_route(request):
-    """GET the open consent prompt, or POST ``{"id", "answer"}`` to answer it."""
+async def _consent_route(request, key_sha256: str):
+    """GET the open consent prompt, or POST ``{"id", "answer"}`` to answer it.
+
+    Takes its own bearer key, checked against a SHA-256 hash, so a client that only
+    holds the MCP key (the agent asking for control) cannot answer its own prompt.
+    """
+    import hashlib
+
     from starlette.responses import JSONResponse
     from windows_mcp.desktop import control_consent
 
+    header = request.headers.get("Authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else ""
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    if not token or not secrets.compare_digest(digest, key_sha256):
+        return JSONResponse(
+            {"error": "Invalid consent key"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if request.method == "GET":
         return JSONResponse({"pending": control_consent.pending()})
     try:
@@ -595,9 +611,11 @@ def _run_server(
         case Transport.STDIO.value:
             mcp.run(transport=Transport.STDIO.value, show_banner=False)
         case Transport.SSE.value | Transport.STREAMABLE_HTTP.value:
-            if auth_key or oauth_validator:
-                # Answering the prompt takes the same credentials as the MCP endpoint.
-                mcp.custom_route("/control/consent", methods=["GET", "POST"])(_consent_route)
+            if _control_config.consent_key_sha256:
+                route = functools.partial(
+                    _consent_route, key_sha256=_control_config.consent_key_sha256
+                )
+                mcp.custom_route("/control/consent", methods=["GET", "POST"])(route)
             uvicorn_config: dict = {}
             if ssl_certfile and ssl_keyfile:
                 uvicorn_config["ssl_certfile"] = ssl_certfile
