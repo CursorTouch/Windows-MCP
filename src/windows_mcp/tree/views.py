@@ -123,6 +123,30 @@ def _truncation_note(element_limit: int) -> str:
     )
 
 
+def _format_failed_window(handle: int, failed_windows: dict[int, str]) -> str:
+    name = failed_windows.get(handle, "")
+    if name:
+        return f'"{_escape_line_breaks(name)}" (handle {handle})'
+    return f"handle {handle}"
+
+
+def format_failed_windows_list(failed_handles: list[int], failed_windows: dict[int, str]) -> str:
+    count = len(failed_handles)
+    noun = "window" if count == 1 else "windows"
+    listed = ", ".join(_format_failed_window(h, failed_windows) for h in failed_handles)
+    return f"{count} {noun} failed UI Automation capture ({listed})"
+
+
+def _failed_capture_note(failed_handles: list[int], failed_windows: dict[int, str]) -> str:
+    summary = format_failed_windows_list(failed_handles, failed_windows)
+    return (
+        f"... [incomplete: {summary} — elements from unresponsive or busy windows are "
+        "omitted. Retry once the window finishes loading, raise "
+        "WINDOWS_MCP_UIA_TRANSACTION_TIMEOUT_MS, or set WINDOWS_MCP_EXCLUDE_PROCESSES "
+        "to skip it.]"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Semantic tree — full parent-child hierarchy (Option B)
 # ---------------------------------------------------------------------------
@@ -222,36 +246,50 @@ class TreeState:
     semantic_tree_root: "SemanticNode | None" = None
     truncated: bool = False
     element_limit: int = 0
+    failed_handles: list[int] = field(default_factory=list)
+    failed_windows: dict[int, str] = field(default_factory=dict)
+
+    def _capture_notes(self) -> list[str]:
+        notes: list[str] = []
+        if self.truncated:
+            notes.append(_truncation_note(self.element_limit))
+        if self.failed_handles:
+            notes.append(_failed_capture_note(self.failed_handles, self.failed_windows))
+        return notes
 
     def semantic_tree_to_string(self) -> str:
+        notes = self._capture_notes()
         if not self.semantic_tree_root:
-            return "No elements"
-        # Label N is interactive_nodes[N], and the scrollable nodes are numbered on after
-        # them (Desktop.get_coordinates_from_label); the annotated screenshot draws the
-        # same numbers on the interactive nodes. The tree lists elements in another order.
-        elements = [*self.interactive_nodes, *self.scrollable_nodes]
-        labels = {id(element): label for label, element in enumerate(elements)}
-        lines: list[str] = []
-        _render_semantic_node(self.semantic_tree_root, lines, "", is_last=True, labels=labels)
-        text = "\n".join(lines)
-        if self.truncated:
-            text += "\n\n" + _truncation_note(self.element_limit)
+            text = "No elements"
+        else:
+            # Label N is interactive_nodes[N], and the scrollable nodes are numbered on after
+            # them (Desktop.get_coordinates_from_label); the annotated screenshot draws the
+            # same numbers on the interactive nodes. The tree lists elements in another order.
+            elements = [*self.interactive_nodes, *self.scrollable_nodes]
+            labels = {id(element): label for label, element in enumerate(elements)}
+            lines: list[str] = []
+            _render_semantic_node(self.semantic_tree_root, lines, "", is_last=True, labels=labels)
+            text = "\n".join(lines)
+        if notes:
+            text += "\n\n" + "\n\n".join(notes)
         return text
 
     def interactive_elements_to_string(self) -> str:
         if not self.interactive_nodes:
             return "No interactive elements"
         text = _render_tree(self.interactive_nodes, _node_meta_str)
-        if self.truncated:
-            text += "\n\n" + _truncation_note(self.element_limit)
+        notes = self._capture_notes()
+        if notes:
+            text += "\n\n" + "\n\n".join(notes)
         return text
 
     def scrollable_elements_to_string(self) -> str:
         if not self.scrollable_nodes:
             return "No scrollable elements"
         text = _render_tree(self.scrollable_nodes, _scroll_meta_str)
-        if self.truncated:
-            text += "\n\n" + _truncation_note(self.element_limit)
+        notes = self._capture_notes()
+        if notes:
+            text += "\n\n" + "\n\n".join(notes)
         return text
 
 

@@ -8,8 +8,13 @@ from collections.abc import Callable, Iterator
 from typing import Any, Literal
 
 from mcp.types import ToolAnnotations
-from windows_mcp.desktop.utils import as_bool as _as_bool
+from windows_mcp.desktop.utils import (
+    as_bool as _as_bool,
+    remove_private_use_chars,
+    repair_surrogates,
+)
 from windows_mcp.infrastructure import with_analytics
+from windows_mcp.tree.views import format_failed_windows_list
 from fastmcp import Context
 
 
@@ -505,7 +510,15 @@ def register(
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                tree_state = getattr(desktop_state, "tree_state", None)
+                failed_handles = getattr(tree_state, "failed_handles", None) or []
+                failed_suffix = ""
+                if failed_handles:
+                    failed_windows = getattr(tree_state, "failed_windows", None) or {}
+                    summary = format_failed_windows_list(failed_handles, failed_windows)
+                    failed_suffix = f" ({repair_surrogates(remove_private_use_chars(summary))})"
                 raise TimeoutError(
-                    f"Timed out after {timeout:.2f}s waiting for '{normalized}': {last_detail}."
+                    f"Timed out after {timeout:.2f}s waiting for '{normalized}': "
+                    f"{last_detail}{failed_suffix}."
                 )
             time.sleep(min(interval, remaining))
